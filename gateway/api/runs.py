@@ -80,7 +80,11 @@ from sqlalchemy.orm import Session as OrmSession
 from adapters.hermes import HermesError
 from domain import runs as runs_ops
 from domain.db import columns_present, schema_checked_db
-from domain.hermes_runtime import _with_reconnect, resolve_profile_adapter
+from domain.hermes_runtime import (
+    _with_reconnect,
+    profile_is_observable,
+    resolve_profile_adapter,
+)
 from domain.models import Run
 from domain.run_recorder import (  # noqa: F401  (re-exported; see module docstring)
     _STORED_SESSION_ID_FIELD,
@@ -260,6 +264,18 @@ async def _reconcile_stale_running(request: Request, db: OrmSession, rows: list[
     closed: list[str] = []
     for profile, runs_for_profile in by_profile.items():
         try:
+            if not profile_is_observable(request.app.state, profile):
+                # One shared connection can DRIVE this profile but cannot see
+                # whether its sessions are running: `session.active_list`
+                # answers only for its own profile. Skipping is the honest
+                # answer -- asking anyway would read "absent" as "finished"
+                # and close a live turn.
+                logger.info(
+                    "staleness reconciliation skipped for profile %r "
+                    "(no connection that can observe it)",
+                    profile,
+                )
+                continue
             adapter = resolve_profile_adapter(request.app.state, profile)
         except Exception as exc:
             # Not connected right now (`resolve_profile_adapter` raises a 503

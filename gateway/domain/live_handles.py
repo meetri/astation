@@ -65,6 +65,10 @@ class LiveHandleCache:
 
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
+        # Readable so a caller holding a lazily-built cache can check it is
+        # still bound to the adapter it means to talk to
+        # (`domain/hermes_runtime.resolve_live_handle_cache`).
+        self.adapter = adapter
         self._handles: dict[tuple[int, str], str] = {}
         # B-29 attribution only -- never read by anything that submits.
         self._stored_by_live: dict[tuple[int, str], str] = {}

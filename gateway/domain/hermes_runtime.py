@@ -142,15 +142,39 @@ def resolve_profile_adapter(app_state: Any, profile: str | None) -> HermesAdapte
         return app_state.hermes_adapter
     manager = getattr(app_state, "profile_connection_manager", None)
     connection = manager.get_connection(profile) if manager is not None else None
-    if connection is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"profile {profile!r} is not connected right now "
-                "(GET /api/profiles reports connection health)"
-            ),
-        )
-    return connection.adapter
+    if connection is not None:
+        return connection.adapter
+    # No per-profile connection. Inside Hermes that is the NORMAL case and not
+    # an error: `session.create` and `session.resume` both accept a `profile`
+    # on 0.21.3, so one connection reaches every profile and no isolated
+    # dashboard (nor the Docker socket needed to launch one) is required.
+    # Measured: a bare resume of another profile's session answers `[4007]
+    # session not found`, which is why the profile has to be PASSED -- see
+    # `_resume_for_live_id`.
+    return app_state.hermes_adapter
+
+
+def profile_is_observable(app_state: Any, profile: str | None) -> bool:
+    """Can we ask a connection "is this profile's session still running?"
+
+    NOT the same question as `resolve_profile_adapter`. One connection can
+    *drive* every profile — `session.create` and `session.resume` both take a
+    `profile` — but `session.active_list` answers only for the profile the
+    connection itself belongs to. **Measured on 0.21.3:** a running session in
+    another profile is absent from `active_list`, with or without a `profile`
+    parameter.
+
+    That distinction is load-bearing. "Absent from active_list" is exactly
+    what the stale-run reconciliation reads as "the turn is over", so asking
+    the shared connection about another profile would close genuinely-running
+    turns (B-136, and the reason `Run.profile` exists). Anything that infers
+    liveness must call this first and SKIP a profile it cannot observe.
+    """
+    if not profile or profile == "default":
+        return True
+    manager = getattr(app_state, "profile_connection_manager", None)
+    connection = manager.get_connection(profile) if manager is not None else None
+    return connection is not None
 
 
 def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
@@ -179,17 +203,34 @@ def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
         return app_state.live_handle_cache
     manager = getattr(app_state, "profile_connection_manager", None)
     connection = manager.get_connection(profile) if manager is not None else None
-    if connection is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"profile {profile!r} is not connected right now "
-                "(GET /api/profiles reports connection health)"
-            ),
-        )
-    if connection.live_handle_cache is None:
-        connection.live_handle_cache = LiveHandleCache(connection.adapter)
-    return connection.live_handle_cache
+    if connection is not None:
+        if connection.live_handle_cache is None:
+            connection.live_handle_cache = LiveHandleCache(connection.adapter)
+        return connection.live_handle_cache
+
+    # One shared connection serving every profile. Each profile still gets its
+    # OWN cache: a stored id is unique only within a profile
+    # (`docs/CHAT_HISTORY_DESIGN.md` §4), so a single cache keyed on
+    # (generation, stored_id) could alias two different sessions that happen to
+    # share an id and hand a route the wrong live handle. The caches all bind
+    # to the same adapter, so they share its generation counter and a
+    # reconnect invalidates every one of them together.
+    adapter = app_state.hermes_adapter
+    caches = getattr(app_state, "shared_profile_handle_caches", None)
+    if caches is None:
+        caches = {}
+        app_state.shared_profile_handle_caches = caches
+    cache = caches.get(profile)
+    # A `LiveHandleCache` is bound to ONE adapter object: it reads that
+    # object's generation counter to key its entries, so a cache built against
+    # a different adapter can hand back a handle resolved on a connection this
+    # adapter never made -- a latent `[4001] session not found`. The default
+    # cache is rebuilt with its adapter by `lifespan`; these are built lazily
+    # and would otherwise outlive a swapped adapter, so check identity.
+    if cache is None or cache.adapter is not adapter:
+        cache = LiveHandleCache(adapter)
+        caches[profile] = cache
+    return cache
 
 
 def _validate_stored_session_id(stored_session_id: str) -> str:
@@ -321,6 +362,7 @@ async def _resume_for_live_id(
     adapter: HermesAdapter,
     stored_session_id: str,
     cache: LiveHandleCache | None = None,
+    profile: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Given a STORED session id, return `(live_handle, raw_resume_result)`.
 
@@ -344,7 +386,14 @@ async def _resume_for_live_id(
     whole point of B-01 (the 1.6 MB transcript was being re-downloaded on
     every message fetch and every prompt submit).
     """
-    result = await adapter.resume_session(stored_session_id)
+    # A stored id is only unique WITHIN a profile, and a bare resume searches
+    # the connection's own profile store only -- measured: resuming another
+    # profile's session without this answers `[4007] session not found`. Naming
+    # the profile lets ONE connection reach every profile, which is what
+    # removed the need for a per-profile isolated dashboard (and the Docker
+    # socket that launching one required).
+    extra = {"profile": profile} if profile and profile != "default" else {}
+    result = await adapter.resume_session(stored_session_id, **extra)
     live_id = HermesAdapter.live_id_from_resume(result)
     if cache is not None:
         cache.put(stored_session_id, live_id)
@@ -356,6 +405,7 @@ async def _with_live_handle(
     cache: LiveHandleCache | None,
     stored_session_id: str,
     operation: Callable[[str], Awaitable[Any]],
+    profile: str | None = None,
 ) -> tuple[str, Any]:
     """Run `operation(live_handle)`, resolving the handle from cache if possible.
 
@@ -395,5 +445,7 @@ async def _with_live_handle(
             )
             cache.discard(stored_session_id)  # type: ignore[union-attr]
 
-    live_id, _result = await _resume_for_live_id(adapter, stored_session_id, cache)
+    live_id, _result = await _resume_for_live_id(
+        adapter, stored_session_id, cache, profile=profile
+    )
     return live_id, await operation(live_id)

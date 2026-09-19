@@ -282,7 +282,7 @@ async def resume_session(
     cache: LiveHandleCache = resolve_live_handle_cache(request.app.state, profile)
     try:
         live_id, result = await _with_reconnect(
-            request.app.state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache)
+            request.app.state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache, profile=profile)
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc
@@ -358,7 +358,7 @@ async def session_messages(
         live_id, history = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history),
+            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history, profile=profile),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc
@@ -429,7 +429,7 @@ async def session_message_detail(
         _live_id, history = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history),
+            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history, profile=profile),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc
@@ -617,6 +617,7 @@ async def submit_turn(
                 cache,
                 stored_id,
                 lambda live: adapter.prompt_submit(live, submission.text),
+                profile=profile,
             ),
         )
     except HermesError as exc:
@@ -727,6 +728,12 @@ async def create_and_file_session(
     # rather than raising, so the session is still made.
     settings = get_settings()
     create_kwargs: dict[str, Any] = {}
+    # WHICH profile's store the session lands in. Honoured since Hermes 0.21.3
+    # (0.20.5 accepted the key and silently ignored it, which is why this was
+    # not sent before); without it a session asked for on `kimi25` is created
+    # on `default` and the user's next message goes to the wrong agent.
+    if body.profile and body.profile != "default":
+        create_kwargs["profile"] = body.profile
     if await instructions_file_exists(
         sandbox_fs_for(request.app.state, adapter), settings, project.id
     ):

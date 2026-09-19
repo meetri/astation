@@ -547,6 +547,7 @@ async def respond_to_approval(
                 cache,
                 stored_id,
                 lambda live: adapter.approval_respond(live, choice, request_id=rid),
+                profile=profile,
             ),
         )
     except HermesError as exc:
@@ -767,7 +768,7 @@ async def interrupt_session(
         live_id, result = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_interrupt),
+            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_interrupt, profile=profile),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc

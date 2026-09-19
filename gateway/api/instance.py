@@ -440,7 +440,12 @@ async def get_vitals(request: Request) -> dict:
 
 
 @instance_router.post("/sessions/{stored_session_id}/title")
-async def rename_session(stored_session_id: str, body: SessionTitle, request: Request) -> dict:
+async def rename_session(
+    stored_session_id: str,
+    body: SessionTitle,
+    request: Request,
+    profile: str = Query(default="default"),
+) -> dict:
     """Rename one session -- the review's ask #2, the buildable half.
 
     `{stored_session_id}` is the **STORED / durable** id, like every other
@@ -463,8 +468,8 @@ async def rename_session(stored_session_id: str, body: SessionTitle, request: Re
     """
     stored_id = _validate_stored_session_id(stored_session_id)
     title = body.title.strip()
-    adapter: HermesAdapter = request.app.state.hermes_adapter
-    cache = request.app.state.live_handle_cache
+    adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
+    cache = resolve_live_handle_cache(request.app.state, profile)
     try:
         live_id, result = await _with_reconnect(
             request.app.state,
@@ -474,6 +479,7 @@ async def rename_session(stored_session_id: str, body: SessionTitle, request: Re
                 cache,
                 stored_id,
                 lambda live: adapter.session_title(live, title),
+                profile=profile,
             ),
         )
     except HermesError as exc:
@@ -496,6 +502,7 @@ async def fork_session(
     stored_session_id: str,
     request: Request,
     body: SessionFork | None = None,
+    profile: str = Query(default="default"),
     db: OrmSession = Depends(workspace_db),
 ) -> dict:
     """Fork a conversation: copy its transcript into a NEW session, same project.
@@ -586,8 +593,8 @@ async def fork_session(
         # which is the worst of the two failure modes.
         branch_params[SESSION_BRANCH_TITLE_PARAM] = body.title.strip()
 
-    adapter: HermesAdapter = request.app.state.hermes_adapter
-    cache = request.app.state.live_handle_cache
+    adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
+    cache = resolve_live_handle_cache(request.app.state, profile)
     try:
         _live_id, result = await _with_reconnect(
             request.app.state,
@@ -597,6 +604,7 @@ async def fork_session(
                 cache,
                 stored_id,
                 lambda live: adapter.session_branch(live, **branch_params),
+                profile=profile,
             ),
         )
     except HermesError as exc:
@@ -872,7 +880,12 @@ async def delete_session(
     when Hermes confirms it.
     """
     stored_id = _validate_stored_session_id_for_argv(stored_session_id)
-    argv = [*HERMES_SESSIONS_DELETE_ARGV, stored_id, HERMES_ASSUME_YES]
+    # `-p <profile>` FIRST, before the subcommand: the CLI reads it as a
+    # global option. Without it the delete searches the default profile's
+    # store and answers "Session ... not found" for a session that plainly
+    # exists -- measured by hand on the deploy host.
+    profile_argv = ["-p", profile] if profile and profile != "default" else []
+    argv = [*profile_argv, *HERMES_SESSIONS_DELETE_ARGV, stored_id, HERMES_ASSUME_YES]
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     cache = resolve_live_handle_cache(request.app.state, profile)
 

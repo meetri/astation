@@ -256,7 +256,7 @@ class ForeignPromptCapture:
         adapter = resolve_profile_adapter(app_state, profile)
         cache = resolve_live_handle_cache(app_state, profile)
         _live_id, result = await _with_reconnect(
-            app_state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache)
+            app_state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache, profile=profile)
         )
         messages = result.get("messages") if isinstance(result, dict) else None
         found = newest_foreign_prompt(messages)
