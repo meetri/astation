@@ -1,0 +1,7 @@
+{
+  "name": "astation",
+  "label": "Agent Station",
+  "description": "Projects, sessions, runs and artifacts for the research app.",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}

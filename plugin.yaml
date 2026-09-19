@@ -1,0 +1,40 @@
+# Agent Station (astation) — a research workspace, as a Hermes plugin.
+#
+# Phase 1 of docs/PLUGIN_V2_PLAN.md. This replaces the Docker sidecar: the same
+# FastAPI routers the gateway has always served are mounted inside the Hermes
+# dashboard process at /api/plugins/astation/, behind Hermes's own auth.
+#
+# Install (see the plan §0):
+#   hermes plugins install <owner>/hermes-astation --ref <sha> --enable
+#   restart the dashboard once
+name: astation
+version: "0.1.0"
+description: "Agent Station — a research workspace inside Hermes: projects, sessions, runs, artifacts, chat history and speech."
+manifest_version: 2
+api_version: 1
+
+# One capability, and only one. `llm.profile_override` lets the plugin ask the
+# host to run a completion on a NAMED profile's own model, which is what makes
+# "rewrite for listening" work for a profile whose provider has no
+# OpenAI-compatible endpoint this process could call itself (a local llama.cpp
+# server, bedrock, moa, openai-codex). Without it the answer is a 503.
+#
+# It still needs granting in config.yaml:
+#   plugins.entries.astation.llm.allow_profile_override: true
+capabilities:
+  - llm.profile_override
+
+# Runtime dependencies that Hermes's own venv does not already carry. fastapi,
+# uvicorn, httpx and websockets ship with Hermes; these do not. They land in
+# $HERMES_HOME/lazy-packages, which is inside the data bind mount, so they
+# survive an image rebuild (measured on the deploy host, plan R3 / P0-5).
+python_dependencies:
+  - sqlalchemy>=2
+  - alembic
+  - pydantic-settings
+  - python-multipart>=0.0.32
+  # Speech. Both are optional at runtime: the routes answer 503 when the
+  # import is missing, so a slim install can drop these two lines.
+  - faster-whisper>=1.2.1
+  - piper-tts>=1.7.0
+  - edge-tts>=7.2.8

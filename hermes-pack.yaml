@@ -1,0 +1,13 @@
+# A Hermes plugin pack: install this plugin at an exact commit.
+#
+#   hermes plugins pack install hermes-pack.yaml
+#
+# The SHA is mandatory and must be a full 40-character commit — Hermes rejects
+# branches, tags and short SHAs, so a pack always names exactly one build.
+name: astation
+description: Research workspace (projects, sessions, runs, artifacts, speech) inside Hermes.
+plugins:
+  - name: astation
+    repo: <owner>/hermes-astation
+    sha: <40-character-commit-sha>
+    enable: true
