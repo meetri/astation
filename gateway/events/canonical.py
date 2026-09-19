@@ -169,6 +169,16 @@ RAW_TO_CANONICAL_TYPE: dict[str, str] = {
     "secret.request": "secret.requested",
     "sudo.expire": "sudo.resolved",
     "secret.expire": "secret.resolved",
+    # B-197: on Hermes 0.21.3 a prompt is a server -> client request, and ONE
+    # `request.cancel {id, method, reason}` withdraws any of them -- the
+    # per-kind `sudo.expire` / `secret.expire` events are gone. The adapter
+    # translates that frame into the kind it withdrew
+    # (`adapters/hermes/client.py::_translate_request_cancel`) so the
+    # canonical type still says which card to tear down.
+    "clarify.cancel": "clarify.resolved",
+    "approval.cancel": "approval.resolved",
+    "sudo.cancel": "sudo.resolved",
+    "secret.cancel": "secret.resolved",
 }
 
 # --- deliberate drops (B-14) ---------------------------------------------
@@ -243,6 +253,14 @@ MERGED_RAW_EVENTS: frozenset[str] = frozenset(
 # only the gateway's own record of having called `*.respond` would produce
 # that side; see events/README note in normalizer.py).
 EXPIRY_RAW_EVENTS: frozenset[str] = frozenset({"sudo.expire", "secret.expire"})
+
+# Raw names produced from a `request.cancel` (B-197). Like an expiry, a
+# withdrawal IS a resolution -- but it carries Hermes's own `reason`
+# (`timeout`, `interrupted`, `shutdown`), which is more than "expired" and is
+# worth keeping.
+CANCEL_RAW_EVENTS: frozenset[str] = frozenset(
+    {"clarify.cancel", "approval.cancel", "sudo.cancel", "secret.cancel"}
+)
 
 
 @dataclass(frozen=True)

@@ -384,17 +384,54 @@ class ClarifyResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    answer: str = Field(min_length=1)
+    answer: str | None = Field(default=None, min_length=1)
+    #: B-197: a **batch** clarify asks several questions under one request,
+    #: each with its own `qid`, and answering it with a single string would
+    #: resolve the whole set with every other question blank -- the same
+    #: silent discard B-39 was. `{qid: answer}` for the whole set.
+    answers: dict[str, str] | None = None
 
     @field_validator("answer")
     @classmethod
-    def _reject_blank(cls, value: str) -> str:
-        if not value.strip():
+    def _reject_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError(
                 "answer must contain non-whitespace characters: a blank answer "
                 "resumes the agent having told it nothing"
             )
         return value
+
+    @field_validator("answers")
+    @classmethod
+    def _reject_blank_batch(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("answers must name at least one question")
+        for qid, answer in value.items():
+            if not qid.strip():
+                raise ValueError("every answer must name the question it answers")
+            if not answer.strip():
+                raise ValueError(
+                    f"answer for {qid!r} must contain non-whitespace characters: a blank "
+                    "answer resumes the agent having told it nothing"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> ClarifyResponse:
+        """One form or the other, never both and never neither.
+
+        Accepting both would leave which one wins to `clarify_respond`'s
+        argument order, and a caller that sent a batch plus a stray `answer`
+        would silently get whichever the adapter preferred.
+        """
+        if (self.answer is None) == (self.answers is None):
+            raise ValueError(
+                "send exactly one of `answer` (a single question) or `answers` "
+                "(a batch, keyed by question id)"
+            )
+        return self
 
 
 class SudoResponse(BaseModel):
@@ -588,19 +625,24 @@ async def respond_to_clarify(
     request: Request,
     profile: str = Query(default="default"),
 ) -> dict:
-    """Answer a `clarify.requested` prompt with free text.
+    """Answer a clarify prompt: one free-text answer, or a whole batch.
+
+    Body is `{"answer": "..."}` for a single question, or
+    `{"answers": {"<qid>": "..."}}` for a batch (B-197) -- a clarify that
+    asked several questions at once, each carrying its own `qid`. Exactly one
+    of the two.
 
     Keyed on `request_id` alone -- no session, no live handle. Hermes looks the
     pending request up directly. `?profile=` (B-136) says which *connection*
     to look it up on, since `request_id`'s namespace is per-Hermes-process,
     not global: a prompt raised on `kimi25` is unknown to `default`.
 
-    The answer goes on the wire under `answer`. That matters more than it
-    looks: sending it under `response` instead is accepted with
-    `{"status": "ok"}` and the clarify tool then completes with
-    `user_response: ""`, so the agent resumes having discarded what the owner
-    typed. That was B-39, observed live; `HermesAdapter.clarify_respond()` owns
-    the correct field name and a test pins it.
+    The answer goes on the wire under `answer` (or `answers`). That matters
+    more than it looks: sending a single answer under `response` instead was
+    accepted with `{"status": "ok"}` and the clarify tool then completed with
+    `user_response: ""`, so the agent resumed having discarded what the owner
+    typed. That was B-39, observed live; `HermesAdapter.clarify_respond()`
+    owns the correct field names and tests pin both shapes.
 
     Responses: **200** answered; **409** unknown/stale/already answered
     (Hermes's `{"status": "expired"}`); **502** upstream failure or an
@@ -610,7 +652,9 @@ async def respond_to_clarify(
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     try:
         result = await _with_reconnect(
-            request.app.state, adapter, lambda: adapter.clarify_respond(rid, body.answer)
+            request.app.state,
+            adapter,
+            lambda: adapter.clarify_respond(rid, body.answer or "", answers=body.answers),
         )
     except HermesError as exc:
         raise _upstream_failure(exc) from exc
@@ -625,7 +669,7 @@ async def respond_to_clarify(
         event_type="clarify.resolved",
         request_id=rid,
         profile=profile,
-        answer=body.answer,
+        answer=body.answer if body.answer is not None else f"{len(body.answers or {})} answers",
     )
     return {"request_id": rid, "status": status}
 
@@ -768,7 +812,9 @@ async def interrupt_session(
         live_id, result = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_interrupt, profile=profile),
+            lambda: _with_live_handle(
+                adapter, cache, stored_id, adapter.session_interrupt, profile=profile
+            ),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc

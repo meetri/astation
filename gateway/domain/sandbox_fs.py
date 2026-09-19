@@ -6,7 +6,8 @@ create in this gateway goes through Hermes's undocumented `/api/files*` and
 same process as those routes and on the same filesystem, so the round trip
 buys nothing: the gateway can `open()` the file.
 
-**But only as a plugin.** The standalone sidecar (`deploy/docker-compose.yml`)
+**But only as a plugin.** The standalone sidecar
+(`obsolete/docker-sidecar/deploy/docker-compose.yml`)
 is a separate container that mounts its own data directory and nothing of
 Hermes's -- the sandbox is not on its filesystem at all. It stays on HTTP, and
 must, because it is the rollback path for the whole plugin cutover (plan

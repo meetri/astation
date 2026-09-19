@@ -26,6 +26,7 @@ from adapters.hermes import (
     HermesAdapter,
     HermesError,
 )
+from adapters.hermes.client import SERVER_REQUEST_ID_FIELD
 from api.projects import (
     _load_project,
     file_stored_session,
@@ -282,7 +283,9 @@ async def resume_session(
     cache: LiveHandleCache = resolve_live_handle_cache(request.app.state, profile)
     try:
         live_id, result = await _with_reconnect(
-            request.app.state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache, profile=profile)
+            request.app.state,
+            adapter,
+            lambda: _resume_for_live_id(adapter, stored_id, cache, profile=profile),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc
@@ -306,11 +309,64 @@ async def resume_session(
         # Verbatim, never reshaped: the app seeds its PendingPromptStore from
         # this (P2-8), and the measured payload is the `approval.request`
         # event's own shape, `choices` included.
-        "pending_approval": result.get("pending_approval") if isinstance(result, dict) else None,
+        "pending_approval": _pending_prompt(result, "approval"),
         # Same treatment for a pending clarify (P2-17/B-74): verbatim
         # `clarify.request` payload shape, forwarded unreshaped.
-        "pending_clarify": result.get("pending_clarify") if isinstance(result, dict) else None,
+        "pending_clarify": _pending_prompt(result, "clarify"),
     }
+
+
+def pending_prompt_from_open_requests(result: Any, method: str) -> dict | None:
+    """The oldest unanswered `method` request on a resumed session, or `None`.
+
+    B-197: Hermes 0.21.3 stopped replaying a pending prompt under its own key
+    and replays every unanswered server -> client request together instead:
+
+        "open_requests": [{"id": "srq-<12 hex>", "method": "clarify",
+                           "params": {"session_id": ..., "questions": [...]}}]
+
+    `pending_clarify` is simply gone from that build's resume payload, and
+    reopening a session with a question outstanding is the ONE way a client
+    that was backgrounded ever learns it owes an answer -- nothing re-emits
+    the request. So this reshapes the entry back into the payload shape the
+    rest of this system already speaks, exactly as the live frame is
+    reshaped in `HermesAdapter._dispatch_server_request`: `request_id` names
+    what answers it, and `_srq_id` is the open request's own id.
+
+    Oldest first is Hermes's own order (`server_requests.open_requests`), and
+    the oldest is the one blocking the turn.
+    """
+    if not isinstance(result, dict):
+        return None
+    for entry in result.get("open_requests") or []:
+        if not isinstance(entry, dict) or entry.get("method") != method:
+            continue
+        params = entry.get("params")
+        payload = dict(params) if isinstance(params, dict) else {}
+        srq_id = entry.get("id")
+        if not isinstance(srq_id, str) or not srq_id:
+            continue
+        payload[SERVER_REQUEST_ID_FIELD] = srq_id
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            payload["request_id"] = srq_id
+        return payload
+    return None
+
+
+def _pending_prompt(result: Any, method: str) -> dict | None:
+    """Hermes's own `pending_<method>` key when this build still sends one,
+    the `open_requests` replay otherwise.
+
+    Both, in that order, because 0.21.3 still replays `pending_approval` and
+    dropped only `pending_clarify` -- and this repo is shared, so an older
+    Hermes must keep working unchanged.
+    """
+    if isinstance(result, dict):
+        own = result.get(f"pending_{method}")
+        if own:
+            return own
+    return pending_prompt_from_open_requests(result, method)
 
 
 @sessions_router.get("/sessions/{stored_session_id}/messages")
@@ -358,7 +414,9 @@ async def session_messages(
         live_id, history = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history, profile=profile),
+            lambda: _with_live_handle(
+                adapter, cache, stored_id, adapter.session_history, profile=profile
+            ),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc
@@ -429,7 +487,9 @@ async def session_message_detail(
         _live_id, history = await _with_reconnect(
             request.app.state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history, profile=profile),
+            lambda: _with_live_handle(
+                adapter, cache, stored_id, adapter.session_history, profile=profile
+            ),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc

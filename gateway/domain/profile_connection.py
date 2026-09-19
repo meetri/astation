@@ -615,6 +615,9 @@ class ProfileConnectionManager:
         self._default_profile_name = default_profile_name
         self._connections: dict[str, ProfileConnection] = {}
         self._run_task: asyncio.Task[None] | None = None
+        #: B-199: the default profile's chat capture, started independently of
+        #: the reconciliation timer because it is a different job.
+        self._capture_task: asyncio.Task[None] | None = None
         self._warned_no_broadcaster = False
 
     def _resolve_base_adapter(self) -> HermesAdapter:
@@ -803,7 +806,52 @@ class ProfileConnectionManager:
             self.run(interval_s), name="profile-connection-reconcile"
         )
 
+    async def ensure_default_capture(self) -> None:
+        """Start the DEFAULT profile's chat capture, with no reconciliation.
+
+        **B-199.** Capturing the default profile's assistant and tool messages
+        into `chat_messages` and launching a dashboard process per non-default
+        profile are two unrelated jobs that shared one switch: the capture
+        pump was only ever started from `run()`, and `run()` only starts when
+        `RESEARCH_GATEWAY_PROFILE_RECONCILE_INTERVAL_S > 0`.
+
+        The sidecar set that to 300 because it had the Docker socket and did
+        launch per-profile dashboards, so capture came along for the ride.
+        Inside Hermes there is nothing to launch -- one connection reaches
+        every profile (B-196) -- so the interval stayed at its default of 0,
+        the manager never reconciled, and **no assistant or tool message was
+        written to the chat store at all.** Nothing failed; the timer simply
+        never ran. What the owner saw was a chat that showed the history
+        copied in at migration time and almost nothing after it.
+
+        Idempotent: a second call while the pump is alive does nothing.
+        """
+        name = self._default_profile_name
+        conn = self._connections.get(name)
+        if conn is not None and conn.pump_task is not None and not conn.pump_task.done():
+            return
+        await self._start(name, {"is_default": True})
+
+    def start_default_capture(self) -> None:
+        """`ensure_default_capture()` as a task, for a synchronous caller.
+
+        `api/bootstrap.startup()` is synchronous on purpose and already
+        starts its other pumps this way (`start_artifact_ingestors`,
+        `start_snapshot_sweeper`), so capture joins them rather than making
+        the whole builder async.
+        """
+        if self._capture_task is not None and not self._capture_task.done():
+            return
+        self._capture_task = asyncio.create_task(
+            self.ensure_default_capture(), name="default-profile-chat-capture"
+        )
+
     async def close(self) -> None:
+        if self._capture_task is not None:
+            self._capture_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                await self._capture_task
+            self._capture_task = None
         if self._run_task is not None:
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -892,7 +940,11 @@ class ProfileConnectionManager:
             return
         if conn.pump_task is not None:
             conn.pump_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            # `RuntimeError` as well as `CancelledError`: a task created on a
+            # loop that has already gone cannot be awaited from this one, and
+            # there is nothing left to wait for -- it was cancelled and its
+            # loop is closed. Shutdown must not fail over it.
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
                 await conn.pump_task
         if not conn.is_default:
             with contextlib.suppress(Exception):

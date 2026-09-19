@@ -264,6 +264,11 @@ def wire_event_stream(
         on_background_complete=background_ledger.handle_completed,
         on_generation_change=_on_generation_change,
         on_canonical_event=run_recorder.handle_event,
+        # B-198: one connection serves every profile inside Hermes, so the
+        # frame's profile has to come from whichever profile's cache knows the
+        # session. Those caches are built lazily by
+        # `resolve_live_handle_cache`, hence a callable rather than the dict.
+        profile_caches=lambda: getattr(app_state, "shared_profile_handle_caches", {}) or {},
     )
     app_state.hermes_adapter = adapter
     app_state.event_broadcaster = broadcaster
@@ -305,7 +310,17 @@ def build_prompt_files(app_state: Any, settings: Settings) -> None:
 
 
 def start_profile_reconciliation(app_state: Any, settings: Settings) -> None:
-    """The manager's reconciliation timer, only when the interval is positive."""
+    """The default profile's chat capture, and the reconciliation timer if asked.
+
+    **These are two jobs, and B-199 was them sharing one switch.** The timer
+    launches a dashboard process per non-default profile and is disabled by
+    default (`interval_s == 0`); capturing the default profile's assistant and
+    tool messages into the chat store has nothing to do with that, but was
+    only ever started from the same `run()` loop. Inside Hermes the timer is
+    correctly off -- there is nothing to launch -- and chat capture went off
+    with it, silently, so `chat_messages` grew only the user's own rows.
+    """
+    app_state.profile_connection_manager.start_default_capture()
     # The `ProfileConnectionManager` reconciliation timer -- disabled by
     # default (`interval_s == 0`); see its construction above for why. When
     # enabled, this is the ONLY thing that ever calls `SubprocessProfileLauncher`.

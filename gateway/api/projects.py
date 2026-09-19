@@ -58,6 +58,7 @@ id spaces".
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -77,6 +78,7 @@ from domain.hermes_runtime import (
 )
 from domain.models import HERMES_RUNTIME, Artifact, Project, Run, Session, utcnow
 from domain.project_workspace import ensure_instructions_file, instructions_path
+from domain.run_recorder import DEFAULT_RUN_PROFILE as DEFAULT_PROFILE
 from domain.sandbox_fs import sandbox_fs_for
 from domain.sandbox_paths import validate_sandbox_path
 from domain.snapshot_builder import (
@@ -356,8 +358,10 @@ def filed_project_index(
     }
 
 
-async def _hermes_session_index(request: Request) -> tuple[dict[str, Any] | None, str | None]:
-    """`({stored_id: hermes metadata}, error)` -- read-only, one `session.list`.
+async def _hermes_session_index(
+    request: Request, profiles: Iterable[str] | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """`({stored_id: hermes metadata}, error)` -- read-only `session.list` calls.
 
     Returns `(None, "why")` rather than raising when Hermes cannot be reached.
     A project's session list is *workspace* state and must survive the runtime
@@ -369,25 +373,64 @@ async def _hermes_session_index(request: Request) -> tuple[dict[str, Any] | None
     entry that is not a dict, or has no string `id`, is skipped rather than
     trusted.
 
-    **Known gap (B-136): always calls `session.list` on the `default`
-    connection only.** A project containing a filed non-default-profile
-    session (real once profile-aware filing exists) gets no Hermes
-    enrichment for that row -- title/preview/message count -- same
-    already-accepted degradation as Hermes being unreachable (this
-    function's own docstring above); the row still renders using the
-    workspace's own stored `title`. Doing this properly means one
-    `session.list` call per distinct profile represented in `rows`,
-    resolved via `resolve_profile_adapter` -- left for the follow-up that
-    also builds the app-side profile picker, rather than folded in here.
+    **One call per profile (B-200).** `session.list` is scoped to ONE Hermes
+    profile, so listing only `default` meant a filed session on any other
+    profile was absent from the index -- and absent from a reachable Hermes is
+    how `_filed_session_row` computes `missing: true`, which the app renders
+    as "No longer on Hermes". The owner's `gpt-sol` and `ornith` sessions were
+    being reported as gone while Hermes still had every one of them. This was
+    carried as an accepted degradation ("the row still renders using the
+    workspace's own stored title") on the belief that it only cost
+    enrichment; it cost more than that.
+
+    `profiles` names the profiles actually represented in the caller's rows,
+    so an instance with nine profiles still makes one call when a project's
+    sessions all live on one. A profile whose own call fails is skipped with a
+    log rather than failing the whole listing -- its rows then render with
+    `missing: null`, "we could not check", which is the honest answer and not
+    a claimed loss.
     """
-    adapter: HermesAdapter = request.app.state.hermes_adapter
+    wanted = sorted({(p or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE for p in (profiles or ())})
+    if not wanted:
+        wanted = [DEFAULT_PROFILE]
+
+    index: dict[str, Any] = {}
+    reached_any = False
+    last_error: str | None = None
+    for profile in wanted:
+        listed, error = await _hermes_sessions_for_profile(request, profile)
+        if listed is None:
+            last_error = error
+            continue
+        reached_any = True
+        index.update(listed)
+    if not reached_any:
+        return None, last_error
+    return index, None
+
+
+async def _hermes_sessions_for_profile(
+    request: Request, profile: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One profile's `session.list`, indexed by stored id. `(None, why)` on failure."""
     try:
-        result = await _with_reconnect(request.app.state, adapter, adapter.session_list)
+        adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
+    except Exception as exc:  # pragma: no cover - resolver no longer refuses
+        return None, str(exc)
+    extra = {"profile": profile} if profile and profile != DEFAULT_PROFILE else {}
+    try:
+        result = await _with_reconnect(
+            request.app.state, adapter, lambda: adapter.session_list(**extra)
+        )
     except HermesError as exc:
-        logger.info("Hermes unreachable while enriching a project session list: %s", exc)
+        logger.info(
+            "Hermes unreachable while enriching profile %r's session list: %s", profile, exc
+        )
         return None, str(exc)
     except Exception as exc:
-        logger.warning("unexpected failure listing Hermes sessions", exc_info=True)
+        logger.warning(
+            "unexpected failure listing Hermes sessions for profile %r", profile, exc_info=True
+        )
         return None, str(exc)
 
     sessions = result.get("sessions") if isinstance(result, dict) else None
@@ -793,7 +836,9 @@ async def list_project_sessions(
     latest = latest_snapshots_by_stored_id(db, all_ids, project_id=project.id)
     counts = snapshot_counts_by_stored_id(db, all_ids, project_id=project.id)
 
-    index, runtime_error = await _hermes_session_index(request)
+    # B-200: one `session.list` per profile these rows actually live on --
+    # listing only `default` reported every other profile's session as gone.
+    index, runtime_error = await _hermes_session_index(request, {row.profile for row in rows})
     runtime_available = index is not None
     lookup = index or {}
 

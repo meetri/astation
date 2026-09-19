@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .canonical import (
+    CANCEL_RAW_EVENTS,
     EXPIRY_RAW_EVENTS,
     MERGED_RAW_EVENTS,
     RAW_TO_CANONICAL_TYPE,
@@ -114,6 +115,14 @@ def normalize_event(
         # See canonical.py's module docstring: an expiry *is* a resolution,
         # just not one that went through the matching `*.respond` RPC.
         payload.setdefault("resolution", "expired")
+
+    if method in CANCEL_RAW_EVENTS:
+        # B-197: Hermes says WHY it withdrew the prompt (`timeout`,
+        # `interrupted`, `shutdown`). Keep its word rather than flattening
+        # every withdrawal to "expired" -- "the turn was interrupted" and
+        # "you took too long" are different things to tell someone.
+        reason = payload.get("reason")
+        payload["resolution"] = reason if isinstance(reason, str) and reason else "cancelled"
 
     timestamp = now if now is not None else datetime.now(UTC)
 

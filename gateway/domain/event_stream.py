@@ -844,6 +844,7 @@ class EventBroadcaster:
         on_generation_change: Callable[[int | None, int | None], None] | None = None,
         on_canonical_event: Callable[[Any, dict[str, Any]], None] | None = None,
         profile: str = DEFAULT_PROFILE_NAME,
+        profile_caches: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._adapter = adapter
         # B-136: the profile whose connection `adapter` is. Stamped as
@@ -851,6 +852,18 @@ class EventBroadcaster:
         # upstream; frames from other profiles' connections arrive through
         # `inject()` carrying their own name.
         self._profile = profile
+        # B-198: inside Hermes there are no per-profile connections -- ONE
+        # connection serves every profile, because `session.resume` takes the
+        # profile as a parameter (B-196). So `self._profile` no longer
+        # identifies the frame: it is just the name of the connection, which
+        # is `default` for everything.
+        #
+        # What DOES identify it is which profile's `LiveHandleCache` knows
+        # this session. `domain/hermes_runtime.resolve_live_handle_cache`
+        # gives each profile its own cache on the shared connection; this
+        # callable hands them over (lazily, because they are built on first
+        # use and this object outlives any one of them).
+        self._profile_caches = profile_caches
         # P2-1/P2-2 hooks, wired by `lifespan`. Optional so a broadcaster
         # built without them (tests, a second mount) still forwards
         # everything -- the hooks add durability, attribution and injection,
@@ -1105,22 +1118,81 @@ class EventBroadcaster:
         research session.
         """
         stored_id, live_id = session_identity_from_payload(raw_type, payload)
-
-        cache = self._live_handle_cache
-        if cache is not None:
-            if stored_id is not None and live_id is not None:
-                cache.observe_live_mapping(stored_id, live_id)
-            elif live_id is not None:
-                stored_id = cache.stored_for_live(live_id)
-            elif stored_id is not None:
-                live_id = cache.get(stored_id)
+        stored_id, live_id, profile = self._resolve_identity(stored_id, live_id)
 
         # Assigned, never `setdefault`: `_`-prefixed keys are the gateway's
         # namespace (B-02/B-14), so upstream must not be able to forge one.
         payload[STORED_SESSION_ID_FIELD] = stored_id
         payload[LIVE_SESSION_ID_FIELD] = live_id
         payload[CONNECTION_GENERATION_FIELD] = generation
-        payload[PROFILE_FIELD] = self._profile
+        payload[PROFILE_FIELD] = profile
+
+    def _caches(self) -> list[tuple[str, Any]]:
+        """`(profile, cache)` for every profile this connection serves.
+
+        Own connection first, so the default profile keeps resolving exactly
+        as it did before B-198 and the common case costs one lookup.
+        """
+        caches: list[tuple[str, Any]] = []
+        if self._live_handle_cache is not None:
+            caches.append((self._profile, self._live_handle_cache))
+        if self._profile_caches is not None:
+            try:
+                extra = self._profile_caches()
+            except Exception:  # pragma: no cover - defensive
+                extra = {}
+            for name, cache in (extra or {}).items():
+                if cache is not None and cache is not self._live_handle_cache:
+                    caches.append((name, cache))
+        return caches
+
+    def _resolve_identity(
+        self, stored_id: str | None, live_id: str | None
+    ) -> tuple[str | None, str | None, str]:
+        """Complete the id pair, and name the profile the session belongs to.
+
+        **The profile comes from the session, not from the socket (B-198).**
+        With one connection serving every profile, the connection's own name
+        is `default` for all of them; the cache that can resolve this
+        session's handle is the one that resumed it, and it knows which
+        profile that was. Getting this wrong is silent and total: the app
+        drops any frame whose `_profile` disagrees with the chat it has open
+        (`Session.swift::attribution`), so a mis-tagged stream looks exactly
+        like an idle agent.
+
+        Falls back to this connection's own name when nothing resolves, which
+        is the honest answer for a frame we cannot place -- and the same
+        answer the default profile gets, so nothing regresses.
+        """
+        caches = self._caches()
+
+        if stored_id is not None and live_id is not None:
+            # The frame names both, so it TEACHES rather than asks. Teach the
+            # cache that already knows this session; otherwise our own, which
+            # is where an unseen default-profile session belongs.
+            for name, cache in caches:
+                if cache.stored_for_live(live_id) == stored_id or cache.get(stored_id) == live_id:
+                    cache.observe_live_mapping(stored_id, live_id)
+                    return stored_id, live_id, name
+            if self._live_handle_cache is not None:
+                self._live_handle_cache.observe_live_mapping(stored_id, live_id)
+            return stored_id, live_id, self._profile
+
+        if live_id is not None:
+            for name, cache in caches:
+                resolved = cache.stored_for_live(live_id)
+                if resolved is not None:
+                    return resolved, live_id, name
+            return None, live_id, self._profile
+
+        if stored_id is not None:
+            for name, cache in caches:
+                resolved = cache.get(stored_id)
+                if resolved is not None:
+                    return stored_id, resolved, name
+            return stored_id, None, self._profile
+
+        return None, None, self._profile
 
     def inject(self, envelope: dict[str, Any], *, profile: str) -> None:
         """Fan out a frame that came off ANOTHER profile's connection (B-136).

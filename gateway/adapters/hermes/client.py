@@ -107,6 +107,47 @@ _MAX_WS_FRAME_BYTES = 64 * 1024 * 1024
 #: (HANDOFF), so 10,000 is minutes of streaming with the drainer alive.
 _MAX_QUEUED_UPSTREAM_EVENTS = 10_000
 
+# --- Server -> client requests (B-197, Hermes 0.21.3) ---------------------
+#
+# The four human-in-the-loop prompts USED to be event notifications
+# (`clarify.request`) answered by a matching RPC (`clarify.respond`). On
+# 0.21.3 they are JSON-RPC requests sent FROM the server TO this client:
+#
+#   {"jsonrpc": "2.0", "id": "srq-<12 hex>", "method": "clarify",
+#    "params": {"session_id": "...", "questions": [...]}}
+#
+# and are answered with `request.answer {id, result}` (or by writing a bare
+# response frame with the same id). Hermes's own `tui_gateway/server_requests.py`
+# states the change outright: "no paired `*.request` notification /
+# `*.respond` method, no per-kind `*.expire`". The event catalogue on 0.21.3
+# contains none of `clarify.request`, `approval.request`, `sudo.request`,
+# `secret.request`, `sudo.expire`, `secret.expire`.
+#
+# Rather than teach every layer above a second shape, the adapter translates
+# the request back into the raw event name the normalizer already knows, so
+# `events/canonical.py`, the run recorder, persistence and the app's own
+# decoder are untouched by the migration.
+SERVER_REQUEST_RAW_TYPES: dict[str, str] = {
+    "clarify": "clarify.request",
+    "approval": "approval.request",
+    "sudo": "sudo.request",
+    "secret": "secret.request",
+}
+
+#: The open request's own id, stamped into the payload so the answer routes
+#: can address it. `_`-prefixed: the gateway's namespace (B-02/B-14), never
+#: forgeable from upstream because it is assigned, not merged.
+SERVER_REQUEST_ID_FIELD = "_srq_id"
+
+#: Hermes withdraws any open request with one of these, replacing the old
+#: per-kind `sudo.expire` / `secret.expire` events.
+REQUEST_CANCEL_EVENT = "request.cancel"
+
+#: How many `srq-id -> request_id` pairs to remember so a `request.cancel`
+#: can name the prompt the client is showing. One per outstanding prompt in
+#: practice; the cap only bounds a pathological run.
+_MAX_TRACKED_SERVER_REQUESTS = 256
+
 
 class HermesAdapter:
     """One Hermes session's worth of transport: HTTP login/ticket + one WS connection.
@@ -160,6 +201,12 @@ class HermesAdapter:
         self._recv_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        # B-197: `srq-<id>` -> the `request_id` clients were shown for it, so a
+        # `request.cancel` can name the card to tear down. Insertion-ordered
+        # and capped (`_MAX_TRACKED_SERVER_REQUESTS`).
+        self._server_request_ids: dict[str, str] = {}
+        #: In-flight declines, held so the loop cannot collect them mid-send.
+        self._decline_tasks: set[asyncio.Task[None]] = set()
         # Bounded (CLEANUP_PLAN 3.9): nothing legitimately leaves this many
         # frames unread -- the broadcaster and every profile pump drain it
         # continuously -- so a full queue means the drainer is gone, and the
@@ -707,6 +754,14 @@ class HermesAdapter:
                 future.set_result(frame)
             return
 
+        # B-197: a server -> client REQUEST. Hermes mints string ids
+        # (`srq-<12 hex>`) precisely so they cannot collide with a client's
+        # integer ones, so a string id on a frame carrying a `method` is
+        # never an answer to something we sent.
+        if not is_response and isinstance(frame_id, str) and isinstance(frame.get("method"), str):
+            self._dispatch_server_request(frame_id, frame["method"], frame.get("params"))
+            return
+
         # Anything else is a server-initiated event: gateway.ready,
         # message.delta, tool.start/progress/complete, approval.request,
         # clarify.request, sudo.request/expire, secret.request/expire, etc.
@@ -740,9 +795,100 @@ class HermesAdapter:
 
             frame = {"method": event_type, "params": normalized_params}
 
+            if event_type == REQUEST_CANCEL_EVENT:
+                translated = self._translate_request_cancel(normalized_params)
+                if translated is None:
+                    return
+                frame = translated
+
         if frame.get("method") == _READY_EVENT_METHOD:
             self._ready.set()
         self._enqueue_event(frame)
+
+    def _dispatch_server_request(self, srq_id: str, method: str, params: Any) -> None:
+        """Turn one server -> client request into the raw event it replaced.
+
+        A method we cannot render is DECLINED rather than ignored. Hermes
+        routes each request to the single transport that owns the session
+        (`tui_gateway/server.py::write_json`), so nobody else is waiting to
+        answer it, and an unanswered request blocks the agent for the whole
+        clarify timeout -- which the owner may have configured as unlimited.
+        An error response is what Hermes itself documents a client without a
+        handler for that method doing, and it frees the turn immediately.
+        """
+        payload = dict(params) if isinstance(params, dict) else {}
+        raw_type = SERVER_REQUEST_RAW_TYPES.get(method)
+        if raw_type is None:
+            self._decline_server_request(srq_id, method)
+            return
+
+        payload[SERVER_REQUEST_ID_FIELD] = srq_id
+        # Approval carries its own `request_id` (the approval queue's, which
+        # `approval.respond` still takes); the other three have none, and the
+        # open request's id is what answers them.
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            request_id = srq_id
+            payload["request_id"] = srq_id
+        self._remember_server_request(srq_id, request_id)
+        self._enqueue_event({"method": raw_type, "params": payload})
+
+    def _remember_server_request(self, srq_id: str, request_id: str) -> None:
+        self._server_request_ids[srq_id] = request_id
+        while len(self._server_request_ids) > _MAX_TRACKED_SERVER_REQUESTS:
+            self._server_request_ids.pop(next(iter(self._server_request_ids)))
+
+    def _translate_request_cancel(self, params: dict[str, Any]) -> dict[str, Any] | None:
+        """`request.cancel {id, method, reason}` -> the raw `*.cancel` name.
+
+        Returns `None` for a request kind this gateway never surfaced, so a
+        withdrawn `vault.unlock_prompt` does not reach clients as a
+        resolution for a card they were never shown.
+        """
+        method = params.get("method")
+        raw_type = SERVER_REQUEST_RAW_TYPES.get(method) if isinstance(method, str) else None
+        if raw_type is None:
+            return None
+        srq_id = params.get("id")
+        payload = dict(params)
+        if isinstance(srq_id, str):
+            payload[SERVER_REQUEST_ID_FIELD] = srq_id
+            # The id the client is showing, which for an approval is not the
+            # open request's id.
+            payload["request_id"] = self._server_request_ids.pop(srq_id, srq_id)
+        return {"method": raw_type.replace(".request", ".cancel"), "params": payload}
+
+    def _decline_server_request(self, srq_id: str, method: str) -> None:
+        """Answer one unrenderable request with a JSON-RPC error, best effort."""
+        logger.warning(
+            "declining Hermes server request %r: this gateway has no handler for it, "
+            "and leaving it unanswered would block the turn until its timeout",
+            method,
+        )
+        frame = {
+            "jsonrpc": "2.0",
+            "id": srq_id,
+            "error": {"code": -32601, "message": f"no handler for {method!r}"},
+        }
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - dispatch always runs on the loop
+            return
+        # Referenced so the task cannot be garbage-collected mid-flight
+        # (RUF006): a decline that vanishes is a turn that blocks.
+        task = loop.create_task(self._write_frame(frame))
+        self._decline_tasks.add(task)
+        task.add_done_callback(self._decline_tasks.discard)
+
+    async def _write_frame(self, frame: dict[str, Any]) -> None:
+        """Write one frame with no correlated answer. Never raises: this runs
+        detached from any request, and a failed decline must not take the
+        receive loop's task tree down with it."""
+        try:
+            if self._ws is not None:
+                await self._ws.send(json.dumps(frame) + "\n")
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("failed to write an unsolicited frame", exc_info=True)
 
     def _enqueue_event(self, frame: dict[str, Any]) -> None:
         """Queue one event for `events()`, dropping (loudly) if nobody drains."""
@@ -1379,26 +1525,101 @@ class HermesAdapter:
             params["request_id"] = request_id
         return await self.request("approval.respond", {**params, **extra_params})
 
-    async def clarify_respond(
-        self, request_id: str, answer: str, **extra_params: Any
+    async def request_answer(
+        self, request_id: str, result: dict[str, Any], **extra_params: Any
     ) -> dict[str, Any]:
-        """Answer a `clarify.request`. **Verified live 2026-08-30.**
+        """Answer one open server -> client request (B-197, Hermes 0.21.3).
 
-        The field is `answer`. Sending `response` instead is not an error --
-        Hermes replies `{"status": "ok"}` and the clarify tool completes with
-        `user_response: ""`, so the turn resumes having thrown the user's
-        answer away. That was B-39; both behaviours were observed one turn
-        apart on the same session.
+        `request_id` is the open request's own id (`srq-<12 hex>`), which the
+        adapter stamped onto the prompt's payload as both `_srq_id` and
+        `request_id` before forwarding it.
 
-        Keyed on `request_id` alone -- no session lookup, unlike
-        `approval.respond`.
-
-        Returns `{"status": "ok"}` or `{"status": "expired"}`. `expired`
-        arrives as a normal result, not an error, and means the request is
-        unknown / stale / already answered.
+        Returns `{"status": "ok"}` or `{"status": "expired"}`. As with the
+        RPCs this replaced, `expired` is a normal result and not an error: the
+        request already timed out, was withdrawn, or someone else answered.
         """
         return await self.request(
-            "clarify.respond", {"request_id": request_id, "answer": answer, **extra_params}
+            "request.answer", {"id": request_id, "result": result, **extra_params}
+        )
+
+    async def clarify_lock(
+        self, request_id: str, question_id: str, answer: str, **extra_params: Any
+    ) -> dict[str, Any]:
+        """Lock ONE answer of a batch clarify (B-197).
+
+        A batch asks several questions in one request. Answers stay editable
+        until every question is locked, and the lock that empties `remaining`
+        resolves the whole request -- so a caller that locks every question
+        never needs `request_answer` at all.
+
+        Returns `{"status": "ok"|"expired", "remaining": [qid, ...]}`.
+        """
+        return await self.request(
+            "clarify.lock",
+            {
+                "request_id": request_id,
+                "question_id": question_id,
+                "answer": answer,
+                **extra_params,
+            },
+        )
+
+    async def _answer_or_legacy(
+        self,
+        request_id: str,
+        result: dict[str, Any],
+        legacy_method: str,
+        legacy_params: dict[str, Any],
+        **extra_params: Any,
+    ) -> dict[str, Any]:
+        """`request.answer` on 0.21.3, the pre-0.21.3 `*.respond` RPC below it.
+
+        The fallback is not politeness: this repo is shared, the two shapes
+        are a version apart, and the failure mode of guessing wrong is the one
+        B-39 already cost us -- Hermes answering `{"status": "ok"}` while
+        throwing the user's answer away. `[-32601] unknown method` is the one
+        error that means "this build does not have that RPC", so it is the
+        only one that falls through.
+        """
+        try:
+            return await self.request_answer(request_id, result, **extra_params)
+        except HermesRPCError as exc:
+            if exc.code != -32601:
+                raise
+            logger.info(
+                "request.answer is unknown to this Hermes; falling back to %s", legacy_method
+            )
+        return await self.request(
+            legacy_method, {"request_id": request_id, **legacy_params, **extra_params}
+        )
+
+    async def clarify_respond(
+        self,
+        request_id: str,
+        answer: str = "",
+        *,
+        answers: dict[str, str] | None = None,
+        **extra_params: Any,
+    ) -> dict[str, Any]:
+        """Answer a clarify prompt, single question or batch (B-197).
+
+        `answers` is the batch form: `{question_id: answer}` for the whole
+        set. `answer` is the single-question form, and `""` means skip.
+
+        On 0.21.3 this is `request.answer {id, result}`; `clarify.respond` no
+        longer exists on that build and is only reached through the version
+        fallback. What the old docstring recorded still matters, because the
+        result KEY is the same trap one level in: the field is `answer`, and
+        sending `response` was not an error -- Hermes replied
+        `{"status": "ok"}` and the clarify tool completed with
+        `user_response: ""`, resuming the turn having discarded what the user
+        typed. That was B-39, observed twice on one session.
+        """
+        result: dict[str, Any] = (
+            {"answers": dict(answers)} if answers is not None else {"answer": answer}
+        )
+        return await self._answer_or_legacy(
+            request_id, result, "clarify.respond", {"answer": answer}, **extra_params
         )
 
     async def sudo_respond(
@@ -1419,14 +1640,21 @@ class HermesAdapter:
         never persisted, never put in an event payload, never in a URL and
         never echoed in a response body, on any layer above this one.
 
-        A matching `sudo.expire` event carries the same `request_id` and
-        clears only that pending prompt.
+        On 0.21.3 this is `request.answer {id, result: {"value": ...}}` --
+        the result key is `value` for both credential prompts, and
+        `sudo.respond`'s `password` field survives only behind the version
+        fallback. A withdrawn prompt now arrives as one `request.cancel`
+        rather than a per-kind `sudo.expire`.
 
         Returns `{"status": "ok"}` / `{"status": "expired"}` (confirmed live
         for an unknown request_id, probed with a fake placeholder).
         """
-        return await self.request(
-            "sudo.respond", {"request_id": request_id, "password": password, **extra_params}
+        return await self._answer_or_legacy(
+            request_id,
+            {"value": password},
+            "sudo.respond",
+            {"password": password},
+            **extra_params,
         )
 
     async def secret_respond(
@@ -1443,8 +1671,8 @@ class HermesAdapter:
         `value` is a §14 credential -- see `sudo_respond`. Never logged here
         or anywhere else in this module.
         """
-        return await self.request(
-            "secret.respond", {"request_id": request_id, "value": value, **extra_params}
+        return await self._answer_or_legacy(
+            request_id, {"value": value}, "secret.respond", {"value": value}, **extra_params
         )
 
     async def cli_exec(self, argv: list[str], **extra_params: Any) -> dict[str, Any]:
