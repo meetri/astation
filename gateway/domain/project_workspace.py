@@ -38,10 +38,10 @@ from domain.sandbox_fs import SandboxFS
 from domain.sandbox_paths import is_under_root
 
 #: Per-project workspace directories live here, relative to the sandbox root:
-#: `<root>/trg-researcher/projects/<project_id>/`. Alongside the speech
-#: prompts' `trg-researcher/prompts` (`domain/prompt_files.py`) -- one
+#: `<root>/astation/projects/<project_id>/`. Alongside the speech
+#: prompts' `astation/prompts` (`domain/prompt_files.py`) -- one
 #: gateway-owned corner of the sandbox, not scattered.
-DEFAULT_WORKSPACE_SUBDIR = "trg-researcher/projects"
+DEFAULT_WORKSPACE_SUBDIR = "astation/projects"
 
 #: The instructions file's name inside a project's workspace directory. This
 #: is the name Hermes looks for FIRST when building a system prompt (ahead of

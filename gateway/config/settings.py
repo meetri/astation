@@ -305,7 +305,7 @@ class Settings(BaseSettings):
     # File-backed rewrite prompts (owner, 2026-09-07): the speech prompts as
     # files the app's own editor can open and save, rather than a redeploy or
     # a Settings text field. Empty (the default) means
-    # `<HERMES_SANDBOX_ROOT>/trg-researcher/prompts`. The directory MUST be
+    # `<HERMES_SANDBOX_ROOT>/astation/prompts`. The directory MUST be
     # inside the sandbox root -- that is the only place the app's editor can
     # write (`PUT /api/sandbox/text`), and the gateway validates against the
     # same root before reading. A file that is missing, empty, oversized or
@@ -361,7 +361,7 @@ class Settings(BaseSettings):
     # `<HERMES_SANDBOX_ROOT>/<this>/<project_id>/`, edited with the app's file
     # editor and baked into each new session's system prompt via its `cwd`
     # (`domain/project_workspace.py`, `docs/PROJECT_INSTRUCTIONS_DESIGN.md`).
-    # Empty (the default) means `trg-researcher/projects`, alongside the
+    # Empty (the default) means `astation/projects`, alongside the
     # speech prompts. MUST resolve inside the sandbox root -- that is the only
     # place the app's editor can write and the gateway validates before it
     # `mkdir`s or writes; a subdir that escapes the root disables the feature

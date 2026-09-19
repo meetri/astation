@@ -596,6 +596,9 @@ class Artifact(Base):
         # The P3-1 dedup/refresh lookup: "is this sandbox path already
         # ingested?" runs on every structured file signal.
         Index("ix_artifacts_source_path", "source_path"),
+        # The bookmark shelf is read on every project open, so it gets its
+        # own index rather than scanning the whole table each time.
+        Index("ix_artifacts_bookmarked_at", "bookmarked_at"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("art"))
@@ -617,6 +620,16 @@ class Artifact(Base):
     source_path: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    #: When this artifact was bookmarked, or NULL when it is not.
+    #:
+    #: A timestamp rather than a boolean, for two reasons: it orders the
+    #: bookmark shelf by when the user actually starred something (which is
+    #: not the same as when the artifact was produced), and "un-bookmark then
+    #: re-bookmark" reads as a fresh entry rather than silently keeping its
+    #: old position.
+    bookmarked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ArtifactLink(Base):

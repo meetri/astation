@@ -69,6 +69,8 @@ from domain.artifact_ingest import (  # noqa: F401  (re-exported; see module doc
     SandboxDiffIngestor,
     extract_media_tag_paths,
 )
+from domain.artifact_kinds import KINDS as ARTIFACT_KINDS
+from domain.artifact_kinds import is_valid_kind
 from domain.artifact_store import (  # noqa: F401  (re-exported; see module docstring)
     MAX_INGEST_BYTES,
     STATUS_AVAILABLE,
@@ -78,7 +80,7 @@ from domain.artifact_store import (  # noqa: F401  (re-exported; see module docs
     _artifact_json,
 )
 from domain.db import columns_present, schema_checked_db
-from domain.models import Artifact, Project, Run
+from domain.models import Artifact, Project, Run, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,55 @@ def _collapse_to_latest(rows) -> list[dict]:
     return ordered
 
 
+def _filter_by_kind(rows: list[dict], kind: str | None) -> list[dict]:
+    """Keep only rows of one kind.
+
+    Applied to the SERIALIZED rows rather than as SQL, because `kind` is
+    derived from mime type and extension (`domain/artifact_kinds.py`) and is
+    deliberately not a column — so improving the classification applies to
+    every existing row without a migration. The cost is that `limit` counts
+    rows before filtering, which is why the routes fetch the cap and then
+    filter rather than the other way round.
+    """
+    if not kind:
+        return rows
+    return [row for row in rows if row.get("kind") == kind]
+
+
+def _validated_kind(kind: str | None) -> str | None:
+    """422 on an unknown kind rather than silently returning nothing.
+
+    An empty list for a typo'd filter reads as "there are none of those",
+    which is a different and wrong answer.
+    """
+    if kind is None or kind == "":
+        return None
+    if not is_valid_kind(kind):
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown kind {kind!r}; expected one of {', '.join(ARTIFACT_KINDS)}",
+        )
+    return kind
+
+
+def _bookmark_shelf(db: OrmSession, *, limit: int, kind: str | None) -> list[dict]:
+    """Every bookmarked artifact, newest bookmark first.
+
+    Deliberately NOT scoped to a project: the owner's ask is that a bookmarked
+    artifact is reachable from wherever they are, including a project that did
+    not produce it. It is returned as its own field rather than mixed into the
+    project's own list, so the existing project-scoped contract still holds and
+    the app can render a separate shelf.
+    """
+    query = (
+        select(Artifact)
+        .where(Artifact.bookmarked_at.is_not(None))
+        .order_by(Artifact.bookmarked_at.desc(), Artifact.id)
+    )
+    rows = [_artifact_json(a) for a in db.execute(query.limit(limit)).scalars()]
+    return _filter_by_kind(rows, kind)
+
+
 def _listing(db: OrmSession, query, *, latest: bool, limit: int) -> list[dict]:
     """The rows of one listing query: capped at `limit` either way, but with
     `latest=True` the cap applies AFTER collapsing versions, so the page is
@@ -234,6 +285,8 @@ async def list_project_artifacts(
     project_id: str,
     limit: int = Query(default=100, ge=1, le=500),
     latest: bool = Query(default=False),
+    kind: str | None = Query(default=None),
+    bookmarks: bool = Query(default=True),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
     """This project's artifacts, newest first (P3-2, project-scoped).
@@ -255,10 +308,16 @@ async def list_project_artifacts(
         .where(Artifact.project_id == project_id)
         .order_by(Artifact.created_at.desc(), Artifact.id)
     )
+    wanted = _validated_kind(kind)
     return {
         "project_id": project_id,
         "latest_only": latest,
-        "artifacts": _listing(db, query, latest=latest, limit=limit),
+        "kind": wanted,
+        "artifacts": _filter_by_kind(_listing(db, query, latest=latest, limit=limit), wanted),
+        # The bookmark shelf is global by design -- see `_bookmark_shelf`. It
+        # is a SEPARATE field so this route's "only this project's artifacts"
+        # guarantee still holds for `artifacts`.
+        "bookmarked": _bookmark_shelf(db, limit=limit, kind=wanted) if bookmarks else [],
     }
 
 
@@ -268,6 +327,8 @@ async def list_artifacts(
     unfiled: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
     latest: bool = Query(default=False),
+    kind: str | None = Query(default=None),
+    bookmarked: bool = Query(default=False),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
     """Global artifact listing, newest first, with two mutually exclusive filters.
@@ -334,6 +395,9 @@ async def list_artifacts(
         )
     if unfiled:
         query = query.where(Artifact.project_id.is_(None))
+    if bookmarked:
+        query = query.where(Artifact.bookmarked_at.is_not(None))
+    wanted = _validated_kind(kind)
     return {
         "session": stored_session_id,
         # True only for a session-scoped query: see the docstring -- artifacts
@@ -341,13 +405,48 @@ async def list_artifacts(
         "run_attributed_only": stored_session_id is not None,
         "unfiled_only": unfiled,
         "latest_only": latest,
-        "artifacts": _listing(db, query, latest=latest, limit=limit),
+        "kind": wanted,
+        "bookmarked_only": bookmarked,
+        "artifacts": _filter_by_kind(_listing(db, query, latest=latest, limit=limit), wanted),
     }
+
+
+@artifacts_router.get("/artifacts/kinds")
+async def list_artifact_kinds() -> dict:
+    """The filter vocabulary, so the app's chips come from the server rather
+    than a copy that can drift out of step with the classifier."""
+    return {"kinds": list(ARTIFACT_KINDS)}
 
 
 @artifacts_router.get("/artifacts/{artifact_id}")
 async def get_artifact(artifact_id: str, db: OrmSession = Depends(_artifacts_db)) -> dict:
     return _artifact_json(_load_artifact(db, artifact_id))
+
+
+@artifacts_router.put("/artifacts/{artifact_id}/bookmark")
+async def bookmark_artifact(artifact_id: str, db: OrmSession = Depends(_artifacts_db)) -> dict:
+    """Bookmark an artifact so it is reachable from every project.
+
+    Idempotent, but re-bookmarking DOES move it to the top of the shelf: the
+    timestamp records when the user last said this matters, which is the order
+    they expect to find it in.
+    """
+    artifact = _load_artifact(db, artifact_id)
+    artifact.bookmarked_at = utcnow()
+    db.commit()
+    db.refresh(artifact)
+    return _artifact_json(artifact)
+
+
+@artifacts_router.delete("/artifacts/{artifact_id}/bookmark")
+async def unbookmark_artifact(artifact_id: str, db: OrmSession = Depends(_artifacts_db)) -> dict:
+    """Remove a bookmark. A no-op on an artifact that has none, not a 404 --
+    the caller's intent ("this should not be bookmarked") is already true."""
+    artifact = _load_artifact(db, artifact_id)
+    artifact.bookmarked_at = None
+    db.commit()
+    db.refresh(artifact)
+    return _artifact_json(artifact)
 
 
 @artifacts_router.get("/artifacts/{artifact_id}/content")

@@ -218,7 +218,7 @@ _DESYNCHRONIZED_MESSAGE = (
 # the time they reach the app, and only ONE of them means "a fresh turn is
 # now streaming back". They come from Hermes's own `tui_gateway/server.py`,
 # and `redirected` was additionally observed live on 2026-08-29 (submitting
-# to `trg-researcher Phase 0 spike DEBUG` while that session was busy). See
+# to `astation Phase 0 spike DEBUG` while that session was busy). See
 # `docs/PROTOCOL_VERIFIED.md`, "prompt.submit outcomes".
 SUBMIT_STATUS_STREAMING = "streaming"  # new turn started; output will stream
 SUBMIT_STATUS_REDIRECTED = "redirected"  # applied as a CORRECTION to the in-flight turn

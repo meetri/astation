@@ -30,6 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from domain.artifact_kinds import extension_of, kind_for
 from domain.models import Artifact
 from domain.timeutil import iso_z
 
@@ -152,4 +153,12 @@ def _artifact_json(artifact: Artifact) -> dict[str, Any]:
         "source_path": artifact.source_path,
         "metadata": artifact.metadata_json,
         "created_at": iso_z(artifact.created_at),
+        # Grouping for the listing filter. Derived rather than stored, so a
+        # better classification applies to every existing row without a
+        # migration (`domain/artifact_kinds.py`).
+        "kind": kind_for(artifact.mime_type, artifact.source_path),
+        "extension": extension_of(artifact.source_path),
+        #: NULL when not bookmarked; the shelf orders by this.
+        "bookmarked_at": iso_z(artifact.bookmarked_at) if artifact.bookmarked_at else None,
+        "bookmarked": artifact.bookmarked_at is not None,
     }

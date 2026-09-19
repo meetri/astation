@@ -76,7 +76,7 @@ SNAPSHOT_FORMAT = "trg-session-snapshot/1"
 
 #: Who wrote the document -- so a reader of a file found on disk in a year
 #: knows what produced it without the database.
-SNAPSHOT_PRODUCER_SERVICE = "trg-researcher/research-gateway"
+SNAPSHOT_PRODUCER_SERVICE = "astation/research-gateway"
 
 #: Why a snapshot was taken. `manual` is the only one a client may request;
 #: the others are minted by the gateway itself (`DELETE`, the sweep, compress).

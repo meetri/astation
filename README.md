@@ -1,6 +1,4 @@
-# Agent Station
-
-**`astation`** — a research workspace that runs inside Hermes.
+# astation — a Research Gateway inside Hermes
 
 A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a durable research
 workspace: projects, sessions, runs, artifacts, chat history, speech, and a phone-friendly API for

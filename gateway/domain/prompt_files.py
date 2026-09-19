@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 #: Directory holding the prompt files, relative to the sandbox root, when
 #: `REWRITE_PROMPT_DIR` is empty.
-DEFAULT_PROMPT_SUBDIR = "trg-researcher/prompts"
+DEFAULT_PROMPT_SUBDIR = "astation/prompts"
 
 #: `style` -> file name. Same three styles `api/rewrite.py` knows; the file
 #: names say what they are for rather than repeating the wire value, because
@@ -95,7 +95,7 @@ MAX_PROMPT_CHARS = 32_768
 def prompt_dir(settings: Any) -> str:
     """The directory the prompt files live in.
 
-    `REWRITE_PROMPT_DIR` when set; otherwise `<sandbox root>/trg-researcher/
+    `REWRITE_PROMPT_DIR` when set; otherwise `<sandbox root>/astation/
     prompts`, so the default follows the sandbox root instead of hardcoding
     `/opt/data` a second time.
     """
