@@ -178,7 +178,7 @@ def persist_run_event(
     `seq` is the caller-allocated **per-run** cursor value (P2-2c), not the
     broadcaster's global counter. `payload` is stored as forwarded --
     including the gateway's `_stored_session_id` / `_live_session_id` /
-    `_connection_generation` attribution keys (B-29), which are part of the
+    `_connection_generation` attribution keys, which are part of the
     honest record of what was sent.
     """
     run_event = RunEvent(

@@ -1,9 +1,9 @@
 """Runtime provider configuration: `/api/config/providers` (P5-9).
 
-The owner's principle, verbatim: *"It shouldn't matter the logistics I use --
+The operator's principle, verbatim: *"It shouldn't matter the logistics I use --
 what should matter is having control over the configs."* Every provider choice
 in this service used to be a hand edit of the repo-root `.env` on one specific
-Mac, which meant the owner could not change their own setup without a
+Mac, which meant the operator could not change their own setup without a
 developer. Which machine or engine is in use is theirs to decide and change at
 will, so these four routes make it changeable from the app:
 
@@ -44,7 +44,7 @@ OpenAI-compatible endpoint" need three different fixes.
 ## Why probe exists
 
 A text field for the model id is configurable but not usable: model ids are
-opaque, namespaced, and differ per endpoint, so the owner would be typing a
+opaque, namespaced, and differ per endpoint, so the operator would be typing a
 string they can only verify by getting a rewrite back wrong. `probe` GETs
 `{base}/models` -- the OpenAI-compatible discovery route every server in the
 measured list speaks (MTPLX on 127.0.0.1:8001, Ollama on 11434, OpenRouter) --
@@ -141,7 +141,7 @@ class ProviderConfigUpdate(BaseModel):
     Closed schema like every other body here, and closed *twice*: the model
     refuses an unknown top-level field, and the route refuses an unknown name
     inside `values`/`reset`. A typo'd setting name that was quietly dropped
-    would leave the owner believing they had changed something they had not --
+    would leave the operator believing they had changed something they had not --
     the exact failure the no-silent-fallback discipline exists to prevent.
     """
 
@@ -161,7 +161,7 @@ class ProviderProbe(BaseModel):
     `api_key` is a **tri-state** and the distinction is the point:
 
     * **absent / null** -- use whatever key is currently in force for
-      `capability`, so the owner can probe an already-configured endpoint
+      `capability`, so the operator can probe an already-configured endpoint
       without re-typing a secret they cannot read back.
     * **`""`** -- probe with no `Authorization` header at all. This is the
       normal case for a local llama.cpp / vLLM / MTPLX server and must be
@@ -253,7 +253,7 @@ def _probe_secrets(settings: Settings, used_key: str) -> list[str]:
     `RESEARCH_GATEWAY_PASSWORD` set, a blanket scrub rewrote every letter "p"
     in the error text ("no HTTP res***onse from htt***://..."), turning an
     honest diagnostic into noise. A scrubber that mangles the message is a
-    scrubber the owner learns to ignore.
+    scrubber the operator learns to ignore.
 
     Built fresh per call, never stored, logged or returned.
     """
@@ -369,7 +369,7 @@ async def update_provider_config(body: ProviderConfigUpdate) -> dict[str, Any]:
     is a 422 naming it, never a silent drop.
 
     `reset` drops the overlay entry so the value falls back to `.env`, which is
-    how the owner gets back to a known state from the app. `.env` itself is
+    how the operator gets back to a known state from the app. `.env` itself is
     never written by this route or any other.
 
     Response: `{"updated": [...], "reset": [...]}` plus the full
@@ -512,7 +512,7 @@ def models_from_payload(payload: Any) -> list[dict[str, Any]] | None:
     Accepts the documented `{"object": "list", "data": [...]}` and the bare
     list some servers answer with. `None` -- not `[]` -- when the body is
     neither, because "this endpoint serves no models" and "this is not a models
-    endpoint" are different answers and only the second means the owner has
+    endpoint" are different answers and only the second means the operator has
     typed the wrong URL.
 
     Entries are bounded (`MAX_PROBE_MODELS`, `MAX_MODEL_ID_CHARS`): this list
@@ -645,7 +645,7 @@ async def probe_provider(body: ProviderProbe) -> dict[str, Any]:
     endpoint did. The probe's job is to find out, and it succeeded at that; the
     app renders `outcome`. A malformed `base_url` is a 422 from the same
     validator `PUT` uses, so "that is not a URL" is answered identically
-    wherever the owner types it -- including the refusal of `user:key@host`,
+    wherever the operator types it -- including the refusal of `user:key@host`,
     which would otherwise put a secret into every later report.
 
     `outcome` is one of `ok`, `unreachable`, `unauthorized`, `http_error`,

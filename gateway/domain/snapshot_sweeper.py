@@ -212,7 +212,7 @@ def _rows_by_stored_id(result: Any, key: str) -> dict[str, dict[str, Any]]:
     `session.list` keys its rows on `id` (the STORED id there); `active_list`
     carries the stored id as `session_key` and the LIVE handle as `id`. The
     caller says which. Anything that is not a dict, or has no such key, is
-    dropped rather than guessed at (B-34).
+    dropped rather than guessed at.
     """
     sessions = result.get("sessions") if isinstance(result, dict) else None
     if not isinstance(sessions, list):

@@ -70,7 +70,7 @@ def validate_view_path(raw_path: str, sandbox_root: str, view_roots: tuple[str, 
     """The READ-ONLY viewer rule: inside the sandbox root, or any `view_roots` entry.
 
     Same 422s and the same 403 status as `validate_sandbox_path`; the detail
-    names every root that would have been accepted, so a 403 tells the owner
+    names every root that would have been accepted, so a 403 tells the operator
     what to add to `RESEARCH_GATEWAY_VIEW_ROOTS` rather than only what failed.
 
     Read-only is the whole point: a path this admits but

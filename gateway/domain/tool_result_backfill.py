@@ -1,4 +1,4 @@
-"""Put captured tool results back onto a reloaded transcript (B-156).
+"""Put captured tool results back onto a reloaded transcript.
 
 Hermes's stored transcript (`session.resume` / `session.history`) keeps every
 tool call's ARGUMENTS and never its RESULT -- measured 2026-09-06 on the

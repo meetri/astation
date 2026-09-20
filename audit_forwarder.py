@@ -228,7 +228,7 @@ class AuditForwarder:
     def record_tool_result(self, kw: dict[str, Any]) -> None:
         """One `post_tool_call`: how long it took and whether it worked.
 
-        **The tool's output is deliberately not sent** (owner, 2026-09-20).
+        **The tool's output is deliberately not sent**.
         Hermes hands the whole result to this hook, and a file read returns the
         file. The archive is under compliance-mode object lock, so anything
         written there cannot be edited or deleted for the retention window; a

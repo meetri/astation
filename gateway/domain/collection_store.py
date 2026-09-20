@@ -1,7 +1,7 @@
 """Reading and writing collections.
 
 `docs/ARTIFACT_ORGANIZATION_PLAN.md` §4.3/§5.3. A collection is a named,
-ordered, cross-project set the owner curates. **Ordered is the whole
+ordered, cross-project set the operator curates. **Ordered is the whole
 difference from a tag**: "figures for the L328 paper" has a figure 1 and a
 figure 2, and a tag has no such thing.
 
@@ -177,7 +177,7 @@ def add(db: OrmSession, collection: Collection, artifact_ids: list[str]) -> int:
     """Append artifacts to the end. Returns how many were actually added.
 
     Already-a-member is not an error and does NOT move the row: a collection's
-    order is the owner's decision, and re-adding something should not silently
+    order is the operator's decision, and re-adding something should not silently
     send it to the bottom of a list they arranged.
     """
     present = {

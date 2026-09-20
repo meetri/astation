@@ -2,7 +2,7 @@
 
 Two routes. One turns text into audio bytes the app plays as a file; the
 other says which voices the configured engine *actually* has, so the app
-offers a dropdown instead of asking the owner to type an opaque id.
+offers a dropdown instead of asking the operator to type an opaque id.
 
     POST /api/speak         {"text": str, "voice": str?}  ->  audio bytes
     GET  /api/speak/voices  ->  {"provider", "voices": [...], "voice", ...}
@@ -11,14 +11,14 @@ offers a dropdown instead of asking the owner to type an opaque id.
 
 Speech output was `AVSpeechSynthesizer` on the phone and nothing else. That
 is a fine floor -- it needs no network, it is why the speak button can never
-do nothing -- but it is the only voice the owner had. This route gives them
+do nothing -- but it is the only voice the operator had. This route gives them
 a choice of engine without giving up the floor: the app still falls back to
 on-device synthesis on **every** failure this module can produce.
 
 ## The provider split that matters is credentials, not vendor
 
 Hermes names eight TTS providers and has **none of them installed**
-(measured twice), so there was nothing to call into and this gateway runs
+, so there was nothing to call into and this gateway runs
 its own. Grouped by what they need rather than by who sells them:
 
 | Provider | Where it runs | Credential | Shipped here |
@@ -34,9 +34,9 @@ its own. Grouped by what they need rather than by who sells them:
 
 The six that are not shipped answer an honest **503 that names what is
 missing** -- a package to install, or a key to set -- and never a fallback
-to one of the two that work. Getting audio from a provider the owner did
+to one of the two that work. Getting audio from a provider the operator did
 not choose is exactly the failure `api/transcribe.py` refuses, and it is
-worse here: the owner would hear a different voice and have no way to know
+worse here: the operator would hear a different voice and have no way to know
 why.
 
 ## `piper`: local, keyless, and it needs a voice file
@@ -50,7 +50,7 @@ artifact store, inside the already-gitignored `data/`)::
         --download-dir data/piper-voices en_US-lessac-medium
 
 That directory is the **only** authority on which piper voices exist. There
-is no hardcoded catalog anywhere in this file, because the owner already hit
+is no hardcoded catalog anywhere in this file, because the operator already hit
 the other thing: Hermes reported `tts.provider = edge` while `edge_tts` was
 not installed, i.e. a configuration that named a capability nothing could
 deliver. `GET /api/speak/voices` scans the directory and asks Microsoft,
@@ -151,7 +151,7 @@ except ImportError:  # pragma: no cover - dep is installed in this project
 class TTSProvider:
     """One synthesis backend, and what it needs before it can speak.
 
-    `local` and `keyless` are the split the owner actually cares about --
+    `local` and `keyless` are the split the operator actually cares about --
     "does this leave my machine" and "does this need an account" -- and they
     are what the app's picker groups on. `shipped` is the honest third fact:
     this gateway implements two of the eight, and the other six say so.
@@ -502,8 +502,8 @@ class SpeakRequest(BaseModel):
 
     Closed schema like every other body in this service: a typo'd field is a
     422, never a silently-dropped instruction. `voice` is the one thing a
-    request may choose -- the provider is the owner's setting, and a request
-    that could pick one would let a client route the owner's text to a
+    request may choose -- the provider is the operator's setting, and a request
+    that could pick one would let a client route the operator's text to a
     service they had not chosen.
     """
 
@@ -593,7 +593,7 @@ async def available_voices(settings: Settings, spec: TTSProvider) -> list[dict[s
 
 
 def default_voice_id(voices: list[dict[str, Any]], spec: TTSProvider) -> str | None:
-    """Which voice to use when the owner has configured none.
+    """Which voice to use when the operator has configured none.
 
     The engine's own documented default **if the probe actually found it**,
     else the first voice in the list. The order matters and is measured:
@@ -789,7 +789,7 @@ async def speak_voices() -> dict[str, Any]:
 
     Probed, not declared. For `piper` that is a scan of `TTS_PIPER_VOICE_DIR`
     for `.onnx` files that have their `.onnx.json` beside them; for `edge` it
-    is a live query to the service. The owner already hit the failure this
+    is a live query to the service. The operator already hit the failure this
     prevents: a configuration reporting `tts.provider = edge` while
     `edge_tts` was not installed -- a claim about a capability nothing could
     deliver.

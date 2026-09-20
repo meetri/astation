@@ -1,4 +1,4 @@
-"""`ChatStore` -- the read/write interface over `chat_messages` (B-136).
+"""`ChatStore` -- the read/write interface over `chat_messages`.
 
 See `docs/CHAT_HISTORY_DESIGN.md` §3/§4 for the design this implements.
 Follows the same shape as the P2-1/P2-2 ledgers (`api/background.py`'s
@@ -9,7 +9,7 @@ the event pump or the turn-submit route it rides inside.
 
 ## What gets captured, and the idempotency rule
 
-These write rows here (`docs/CHAT_HISTORY_DESIGN.md` §3's table, extended):
+These write rows here:
 
 * `message.interim` (a segment finished) -> one `assistant` row.
 * `tool.completed` (raw wire name `tool.complete`) -> one `tool` row.
@@ -38,7 +38,7 @@ These write rows here (`docs/CHAT_HISTORY_DESIGN.md` §3's table, extended):
   `capture_submitted_user_row` BEFORE Hermes is called (so a durable copy of
   what the user typed exists even if the Hermes call then fails; the route
   calls `discard_row` in that case).
-* `domain/foreign_prompt_capture.py` (B-190) -> one `user` row with
+* `domain/foreign_prompt_capture.py` -> one `user` row with
   `source="backfill"` and its `hermes_row_id`, for a turn started from
   Hermes's own TUI or another client -- the one prompt the submit route
   never sees. Written via `capture_backfilled_user_row`.
@@ -47,7 +47,7 @@ These write rows here (`docs/CHAT_HISTORY_DESIGN.md` §3's table, extended):
 natural key"):** none of the three live event payloads Hermes actually pushes
 (`message.interim`, `tool.complete`, `message.complete`) carry a Hermes-side
 row id on the wire -- only the transcript rows `session.resume` /
-`session.history` return do (`docs/PROTOCOL_VERIFIED.md`). `hermes_row_id`
+`session.history` return do. `hermes_row_id`
 is therefore populated by backfill, not by live capture, and this store's
 live-capture idempotency has to substitute something else:
 
@@ -115,7 +115,7 @@ _MAX_SEQ_RETRIES = 5
 
 
 def _turn_id(envelope: Any) -> str | None:
-    """The envelope's `run_id` as a turn id, or None (B-188)."""
+    """The envelope's `run_id` as a turn id, or None."""
     if not isinstance(envelope, dict):
         return None
     run_id = envelope.get("run_id")
@@ -125,7 +125,7 @@ def _turn_id(envelope: Any) -> str | None:
 def notice_kind(row: ChatMessage) -> str | None:
     """Which notice a `marker` row is, for the app to render without re-parsing.
 
-    Derived from the row, not stored (B-191): `compacted` from the flag,
+    Derived from the row, not stored: `compacted` from the flag,
     `memory` when the text names Hindsight, and `process` for the only other
     marker this store writes. Null for every non-marker row. If a fourth
     marker source is ever added, it needs its own rule here -- the fallback
@@ -220,7 +220,7 @@ class ChatStore:
             )
 
     def attach_turn(self, profile: str, stored_session_id: str, turn_id: str) -> int:
-        """Give the user row that started `turn_id` its run id (B-188).
+        """Give the user row that started `turn_id` its run id.
 
         The submit route writes the user's row BEFORE Hermes is called, so
         no run exists yet to stamp it with; `RunRecorder` reports the open
@@ -271,7 +271,7 @@ class ChatStore:
         hermes_row_id: int,
         turn_id: str | None,
     ) -> str | None:
-        """Write a user prompt read back from Hermes's own transcript (B-190).
+        """Write a user prompt read back from Hermes's own transcript.
 
         The foreign-prompt path (`domain/foreign_prompt_capture.py`): a turn
         started from the TUI or another client has no submit-route row, so
@@ -398,7 +398,7 @@ class ChatStore:
             # attribution path in this codebase (P2-2).
             return None
 
-        # B-188: the run this frame belongs to, stamped on the envelope by
+        # the run this frame belongs to, stamped on the envelope by
         # `RunRecorder.handle_event` (which runs BEFORE this capture on both
         # pump paths -- `ProfileConnectionManager._forward_one` and the
         # broadcaster's `_forward_one`). `run_id` == `turn_id`: a run is one
@@ -603,7 +603,7 @@ class ChatStore:
     # -- reads --------------------------------------------------------------
 
     def tool_rows(self, *, profile: str, stored_session_id: str) -> list[dict[str, Any]]:
-        """Every captured tool row for one session, ascending by `seq` (B-156).
+        """Every captured tool row for one session, ascending by `seq`.
 
         The input to `domain.tool_result_backfill.attach_captured_results`:
         Hermes's own transcript keeps a call's arguments but never its result,
@@ -629,7 +629,7 @@ class ChatStore:
 
         The audit store deliberately does NOT hold tool output: a file read
         returns the file, and the audit archive cannot be edited or deleted for
-        the retention window (owner, 2026-09-20). This store does hold it, as
+        the retention window. This store does hold it, as
         part of the conversation, and it is what the audit detail screen offers
         behind an explicit tap.
 
@@ -641,10 +641,10 @@ class ChatStore:
         `profile` is not a parameter: the audit trail's tool call id is
         unique on its own, and requiring a profile here would make the lookup
         fail for exactly the sessions whose profile the run ledger records
-        wrongly (B-206).
+        wrongly.
 
         Bounded by `max_chars`, and says whether it truncated. Results run past
-        200,000 characters on the owner's host; a screen must not be handed the
+        200,000 characters on the operator's host; a screen must not be handed the
         whole thing by default.
         """
         with self._session_factory() as db:

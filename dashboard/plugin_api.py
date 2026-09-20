@@ -10,7 +10,7 @@ Three things differ from ``api/main.py``, and only three:
 
 1. **No ``/api`` prefix and no ``require_basic_auth``.** The mount supplies the
    prefix, and Hermes's own auth gate already refuses an unauthenticated
-   request to ``/api/plugins/...`` before the route runs (measured: 401).
+   request to ``/api/plugins/...`` before the route runs.
    ``RESEARCH_GATEWAY_USERNAME``/``_PASSWORD`` cease to exist.
 2. **No FastAPI lifespan.** A plugin does not own the app, so the services
    ``api/bootstrap.startup()`` builds are created from a router startup

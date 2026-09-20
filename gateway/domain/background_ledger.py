@@ -10,7 +10,7 @@ events, no pollable status, no transcript row, and a background-only session
 is never persisted. Completion is exactly one `background.complete`
 `{task_id, text}` event, delivered only to connections attached to the
 session at that instant. Until P2-1 the gateway dropped that event unmapped
-(B-42), so the app could never learn a task finished. The `background_tasks`
+, so the app could never learn a task finished. The `background_tasks`
 table (written at submit, updated on completion) plus that one event are the
 background pill's entire data source.
 
@@ -372,7 +372,7 @@ class BackgroundLedger:
 def synthesized_transcript_row(task: BackgroundTask) -> dict[str, Any]:
     """One finished task as a Hermes-shaped transcript row.
 
-    Follows the measured row contract (B-34): `role` is the one guaranteed
+    Follows the measured row contract: `role` is the one guaranteed
     key and the app treats everything else as optional, so extra keys are
     safe. `role: "assistant"` + `text` is the shape the Phase 1 renderer
     already displays (the result is already markdown). The marker keys let a

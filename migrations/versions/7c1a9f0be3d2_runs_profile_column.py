@@ -8,7 +8,7 @@ all and the Run Inspector had nothing to show.
 
 Recording them needs this column for one specific reason on the READ path:
 `api/runs.py::_reconcile_stale_running` asks Hermes "is this session still
-working" to close runs whose `message.completed` went missing (B-62), and
+working" to close runs whose `message.completed` went missing, and
 it asks the default connection. A non-default profile's session is simply
 absent from that answer, which the reconciler reads as "over" and closes --
 so without a per-run profile, turning recording on would have started

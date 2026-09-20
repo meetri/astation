@@ -97,7 +97,7 @@ def db_dependency(request: Request) -> Iterator[OrmSession]:
     """FastAPI dependency yielding one workspace DB session per request.
 
     Reads the factory from `request.app.state`, never a module global, for the
-    same reason `_ensure_connected()` takes the caller's state (B-22): a router
+    same reason `_ensure_connected()` takes the caller's state: a router
     mounted on a second `FastAPI()` must use *that* app's engine.
     """
     factory: sessionmaker[OrmSession] = request.app.state.db_sessions

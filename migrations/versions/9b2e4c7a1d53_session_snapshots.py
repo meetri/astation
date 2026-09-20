@@ -1,6 +1,6 @@
 """session snapshots
 
-P6-3 (`docs/SESSION_ARCHIVE_DESIGN.md` §6.1). Two changes, one revision, because
+P6-3. Two changes, one revision, because
 `tests/test_projects.py::test_alembic_chain_matches_the_models` requires the
 models and the chain to land together:
 

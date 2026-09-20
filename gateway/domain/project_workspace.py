@@ -6,7 +6,7 @@ different sessions owned by different profiles to be able to join the same
 project and have the same foundation in terms of what they're working on."*
 
 The mechanism, measured live before it was built
-(`docs/PROJECT_INSTRUCTIONS_DESIGN.md`): Hermes bakes a session's system
+: Hermes bakes a session's system
 prompt at `session.create` from a `HERMES.md` found at the session's working
 directory. So the gateway keeps one folder per project under the sandbox
 root, holds the instructions in its `HERMES.md`, and creates every session
@@ -15,7 +15,7 @@ that session's system prompt itself -- no per-turn cost, nothing in the
 transcript, identical for every profile.
 
 **The file is the single source of truth.** There is no `instructions` column:
-the owner edits `HERMES.md` with the app's own file editor
+the operator edits `HERMES.md` with the app's own file editor
 (`PUT /api/sandbox/text`), and a DB mirror would only be a second copy to
 drift. "Tied to the project" is expressed by the path -- the folder is keyed
 by the project's id and goes when the project goes.
@@ -23,7 +23,7 @@ by the project's id and goes when the project goes.
 **Instructions are frozen at session creation** (measured: an edited
 `HERMES.md` did not change a session even on a cold resume -- Hermes stores a
 `system_prompt_hash` at create). So an edit reaches sessions created *after*
-it, which is the behaviour the owner chose ("new sessions only"). The
+it, which is the behaviour the operator chose ("new sessions only"). The
 `folder_path` file-browser bookmark is a separate concern entirely
 (`Project.folder_path`); nothing here reads it.
 """
@@ -130,7 +130,7 @@ async def ensure_instructions_file(fs: SandboxFS, settings: Any, project_id: str
     (404 on a missing one) and cannot create a parent directory. This does
     both, idempotently -- `files_mkdir` is `mkdir -p`, and the file is only
     written when it does not already exist, so re-opening never clobbers what
-    the owner wrote.
+    the operator wrote.
 
     The seed is `INSTRUCTIONS_SEED`: the filing convention, and nothing else.
     It was empty until C3, on the reasoning that "opened but never written"

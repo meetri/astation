@@ -1,4 +1,4 @@
-"""Give pre-existing chat rows their run id, from timestamps alone (B-192).
+"""Give pre-existing chat rows their run id, from timestamps alone.
 
 ## The gap
 
@@ -304,7 +304,7 @@ def backfill_turn_ids(
 
 
 def run_turn_backfill(session_factory: Any) -> BackfillReport | None:
-    """The lifespan's best-effort call: log the report, never raise (B-192)."""
+    """The lifespan's best-effort call: log the report, never raise."""
     try:
         report = backfill_turn_ids(session_factory)
     except Exception:

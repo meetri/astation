@@ -8,7 +8,7 @@ property: each is a passthrough of a Hermes method whose wire shape was
 measured live on 2026-09-01 (`docs/PROTOCOL_VERIFIED.md`, "Profiles" and
 "`session.title` and `cli.exec -p`").
 
-* **`GET /api/profiles`** -- `profiles.list`, verbatim. The owner's
+* **`GET /api/profiles`** -- `profiles.list`, verbatim. The operator's
   "agents"/"channels". A **lens, not a picker**: `session.create` accepts
   `profile` and `model` and silently ignores both (measured with a
   deliberately bogus model id -- the session was still created and still
@@ -18,9 +18,9 @@ measured live on 2026-09-01 (`docs/PROTOCOL_VERIFIED.md`, "Profiles" and
   (`api/main.py`) and why this response states the constraint explicitly.
 * **`GET /api/vitals`** -- the instance's `approvals.mode`. The live instance
   runs `smart`, whose LLM auto-approved four `DANGEROUS_PATTERNS` commands
-  (B-44), and until now the app never said so. Read-only on purpose: this
+, and until now the app never said so. Read-only on purpose: this
   gateway wraps `config.get` and deliberately does NOT wrap `config.set` --
-  changing the owner's approval policy from a phone is not a feature anyone
+  changing the operator's approval policy from a phone is not a feature anyone
   asked for, and the failure mode of getting it wrong is unbounded.
 * **`POST /api/sessions/{stored_id}/title`** -- rename, the one verified
   write in the review's ask #2. Session-scoped but a pure Hermes passthrough,
@@ -45,10 +45,10 @@ measured live on 2026-09-01 (`docs/PROTOCOL_VERIFIED.md`, "Profiles" and
 **Archive lives in `api/snapshots.py`, not here, and it is not a hide flag.**
 Hermes's `hermes sessions archive` is still **filter-only** (no single-session
 positional, re-verified 2026-09-03), so it is not wrapped and never will be.
-The owner declined "archive" on 2026-09-01 while it meant a workspace-local
+The operator declined "archive" on 2026-09-01 while it meant a workspace-local
 soft-hide over nothing; on 2026-09-03 they reopened it as *durability*: a
 gateway-owned complete copy of the transcript, reasoning included, filed into
-a project (`docs/SESSION_ARCHIVE_DESIGN.md`). `sessions.archived_at` exists
+a project. `sessions.archived_at` exists
 because it rides on that copy. What this module contributes is
 `HERMES_SESSIONS_PIN_ARGV` -- the deployed CLI's per-session `sessions pin`,
 which archive rides along with so auto-prune cannot take an archived session
@@ -306,7 +306,7 @@ class SessionFork(BaseModel):
 @instance_router.get("/profiles")
 async def list_profiles(request: Request) -> dict:
     """Every Hermes profile ("agent"/"channel"), Hermes's payload verbatim,
-    each with the gateway's own live connection status added (B-136).
+    each with the gateway's own live connection status added.
 
     Response: `{"profiles": [...], "session_create_honours_profile": false,
     "session_create_supports_profile": true}`. The `profiles` list is
@@ -326,7 +326,7 @@ async def list_profiles(request: Request) -> dict:
 
     * `session_create_honours_profile` (constant `false`) -- Hermes's own
       `session.create` RPC accepts a `profile` param and silently ignores it
-      (measured, PV "Profiles"). Unchanged; still means nothing above this
+. Unchanged; still means nothing above this
       route may pass `profile` to that RPC expecting it to route the call.
     * `session_create_supports_profile` (constant `true`, B-136) --
       `POST /projects/{id}/sessions/new` *can* create a session under a
@@ -392,7 +392,7 @@ async def get_vitals(request: Request) -> dict:
       own `config get` answers, **from `InstanceConfigCache`**, never awaited
       here (each `cli.exec` is ~3-4 s). `null` until the first background
       pass lands, and `null` for anything the parse rules do not accept. On
-      the owner's instance, measured 2026-09-03: `false` / `90`.
+      the operator's instance, measured 2026-09-03: `false` / `90`.
 
     Read-only. There is no companion write route and there is not going to be
     one from a phone (module docstring).
@@ -507,14 +507,14 @@ async def fork_session(
 ) -> dict:
     """Fork a conversation: copy its transcript into a NEW session, same project.
 
-    The owner's requirement, verbatim: *"Can you check what it will take to
+    The operator's requirement, verbatim: *"Can you check what it will take to
     support context / conversation forking? If we do fork I want the fork to
     be under the same project."* The second sentence is the whole reason this
     route exists rather than the app calling `session.branch` and shrugging --
     Hermes has no idea what a project is, so filing the fork where its parent
     lives is the gateway's job.
 
-    **What a fork IS, exactly** (measured 2026-09-02, PV "Session branching"):
+    **What a fork IS, exactly**:
     a new, independent Hermes session pre-loaded with a **complete, verbatim
     copy** of the source's transcript -- every row `session.history` returns
     for the parent, same order, `row_id`s included, final assistant reply
@@ -564,7 +564,7 @@ async def fork_session(
     project is invented for it.
 
     **Hermes's `messages` are deliberately NOT echoed.** The branch result
-    carries the whole copied transcript -- 1.6 MB on a real session (B-01) --
+    carries the whole copied transcript -- 1.6 MB on a real session --
     and the client already has `GET /api/sessions/{id}/messages` for that. The
     counts and the ids are what a client needs to navigate to the fork.
 
@@ -669,7 +669,7 @@ def _fork_http_error(exc: HermesError, stored_id: str) -> HTTPException:
     `[4008] nothing to branch -- send a message first` (measured live
     2026-09-02) is not an upstream failure and not a missing session: it is a
     request for something that cannot exist, i.e. a **422**. Mapping it to 502
-    would tell the owner the gateway is broken when the honest answer is "this
+    would tell the operator the gateway is broken when the honest answer is "this
     conversation has no turns yet".
     """
     if isinstance(exc, HermesRPCError) and _rpc_error_code(exc) == HERMES_NOTHING_TO_BRANCH_CODE:
@@ -689,7 +689,7 @@ def _file_fork_with_its_parent(
 ) -> dict[str, Any]:
     """File the fork into whatever project its parent is filed in.
 
-    The owner's actual requirement. Reuses `api/projects.py`'s
+    The operator's actual requirement. Reuses `api/projects.py`'s
     `file_stored_session()` rather than writing a second filing path, for the
     same reason `_find_filing` is imported rather than re-implemented: the
     idempotency, the 409-on-already-filed and the unique-constraint race
@@ -822,7 +822,7 @@ async def delete_session(
 ) -> dict:
     """**Delete one session from Hermes's own store -- after copying it.**
 
-    `?profile=` (B-152) names the agent whose store holds the session. A
+    `?profile=` names the agent whose store holds the session. A
     stored id is only unique *within* a profile and every Hermes call below
     -- the pre-delete snapshot's resume, `cli.exec sessions delete`, the
     `session.close` -- goes to that profile's own connection through

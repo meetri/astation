@@ -1,9 +1,9 @@
 """collections, the pinned deliverable, and filing at promotion
 
-A collection is a named, ORDERED, cross-project set of artifacts the owner
+A collection is a named, ORDERED, cross-project set of artifacts the operator
 curates: "figures for the L328 paper". Ordered because a curated set has an
 order -- figure 1 before figure 2 -- which is the whole difference between a
-collection and a tag. Cross-project because the owner's corpus is one project
+collection and a tag. Cross-project because the operator's corpus is one project
 holding 95% of everything, so "which project" answers nothing.
 
 `projects.pinned_artifact_id` is the one deliverable a project is currently
@@ -17,7 +17,7 @@ read path renders `null` for a row it cannot find.
 this week and works; the app presents it as a built-in collection. Doing two
 data models' worth of churn to remove one column is not worth it, and the
 column can fold in later if collections prove out
-(`docs/ARTIFACT_ORGANIZATION_PLAN.md` §10).
+.
 
 Revision ID: e2a91f4d6b83
 Revises: d4b8e6c1729f

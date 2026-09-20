@@ -47,7 +47,7 @@ decoded with replacement characters -- writing it back would corrupt it.
 Both open read-only with the reason; the app shows it.
 
 **Atomicity, honestly.** A single write is as atomic as Hermes's
-temp-file + rename (measured from source: it is). The compare-then-write
+temp-file + rename. The compare-then-write
 in `PUT` is NOT locked: an agent's `patch` tool can write the same file
 between this route's read and its write, and that write is then lost
 under the editor's. The design accepts this (section 4): Hermes offers no

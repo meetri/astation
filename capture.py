@@ -16,7 +16,7 @@ What hooks add, and what this module is for:
   never did. That deletes an entire delta-subtraction in `profile_stats`.
 * **A run-close safety net.** `on_session_end` carries `completed` /
   `interrupted` at the moment the turn ends, so a run whose closing frame never
-  arrived (B-62) closes on a signal instead of on a timeout heuristic.
+  arrived closes on a signal instead of on a timeout heuristic.
 * **Foreign prompt text.** `pre_llm_call.user_message` is what
   `foreign_prompt_capture.py` currently pays a whole `session.resume` per
   foreign turn to recover.
@@ -258,7 +258,7 @@ class HookDrain:
         self.stats["usage_recorded"] += 1
 
     def _on_on_session_end(self, kw: dict) -> None:
-        """Close a run whose closing frame never arrived (B-62).
+        """Close a run whose closing frame never arrived.
 
         A safety net, not the primary close: the socket's `message.completed`
         carries `status`/`error`, which this hook does not, so it must not

@@ -1,4 +1,4 @@
-"""Capture the prompt of a turn that was started outside this gateway (B-190).
+"""Capture the prompt of a turn that was started outside this gateway.
 
 ## The gap
 
@@ -16,7 +16,7 @@ is read through the Hermes connection this gateway already holds.
 ## The rule
 
 When `RunRecorder` opens a run it reports `(profile, stored_id, run_id)`
-(B-188). `ChatStore.attach_turn` runs first and links the user row the
+. `ChatStore.attach_turn` runs first and links the user row the
 submit route wrote before the turn opened. **If it attached nothing, no
 prompt was waiting, and the turn was started elsewhere** -- that is the
 whole test, and it is decided from the store alone with no Hermes call. Only
@@ -26,7 +26,7 @@ then is a capture scheduled:
    `_with_reconnect`, like every other Hermes-touching path;
 2. `session.resume(stored_id)` -- idempotent within a connection, returns
    the transcript rows with `role` / `row_id` / `text` / `timestamp`
-   (`docs/PROTOCOL_VERIFIED.md`, "Transcript message shape"). The freshly
+. The freshly
    resolved live handle goes into the profile's `LiveHandleCache` as a side
    effect, exactly as a route's resume would;
 3. take the NEWEST `role == "user"` row that is a real prompt: not a
@@ -42,7 +42,7 @@ then is a capture scheduled:
 The run-open hook runs synchronously inside the event pump (both
 `EventBroadcaster._forward_one` and `ProfileConnectionManager._forward_one`),
 and a `session.resume` is a network round trip that can carry a 1.6 MB
-transcript (B-01). The pump is never blocked on it: the capture is an
+transcript. The pump is never blocked on it: the capture is an
 `asyncio` task on the pump's own loop, one per foreign-started run, and it
 costs one resume per such turn. A gateway-started turn costs nothing here.
 
@@ -70,7 +70,7 @@ from domain.hermes_runtime import (
 logger = logging.getLogger(__name__)
 
 #: Text prefixes of the `role: user` rows Hermes serves after a compaction
-#: (measured in the live `state.db`, B-175/B-176). They are Hermes's summary
+#:. They are Hermes's summary
 #: of the conversation, not something the operator typed, and never a prompt.
 SUMMARY_MARKERS: tuple[str, ...] = (
     "[Durable Summary",

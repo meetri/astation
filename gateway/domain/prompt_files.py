@@ -1,6 +1,6 @@
-"""File-backed rewrite prompts, editable from the phone (owner, 2026-09-07).
+"""File-backed rewrite prompts, editable from the phone.
 
-The owner's ask: *"Can these prompts be saved on the file system and then I
+The operator's ask: *"Can these prompts be saved on the file system and then I
 can use the app's editing capabilities to edit it"* -- so the speech prompts
 stop being a redeploy (or a Settings text field) and become files you open in
 the app's own source editor, change, and save.

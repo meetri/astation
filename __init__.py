@@ -40,7 +40,8 @@ from typing import Any
 
 log = logging.getLogger("astation.plugin")
 
-# Hooks the capture path consumes, and what each one replaces.
+# Hooks the capture path consumes, and what each one replaces. See
+# docs/PLUGIN_V2_PLAN.md §4.3.
 CAPTURE_HOOKS = (
     "on_session_start",  # opens a run
     "pre_llm_call",  # the user's message, including one typed in the TUI

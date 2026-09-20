@@ -12,7 +12,7 @@ a gateway-owned per-project folder (`domain/project_workspace.py`), edited with
 the app's own file editor and baked into each new session's system prompt via
 its `cwd` at `session.create` (measured 2026-09-07,
 `docs/PROJECT_INSTRUCTIONS_DESIGN.md`). The bookmark and the instructions are
-two separate layers by the owner's explicit instruction, so the bookmark is
+two separate layers by the operator's explicit instruction, so the bookmark is
 the only new column.
 
 Plain `add_column` -- no constraint changes, so SQLite needs no table rebuild.

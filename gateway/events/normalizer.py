@@ -76,7 +76,7 @@ def normalize_event(
     allow-list of "event types I know this handles".
 
     A `None` covers two *different* situations, and the caller is expected
-    to tell them apart via `DELIBERATELY_DROPPED_RAW_EVENTS` (B-14): a name
+    to tell them apart via `DELIBERATELY_DROPPED_RAW_EVENTS`: a name
     listed there was dropped on purpose, for the reason recorded next to it,
     while any other `None` is a type nobody has looked at yet and should be
     logged once so it becomes discoverable. Keeping the *decision* here and
@@ -117,7 +117,7 @@ def normalize_event(
         payload.setdefault("resolution", "expired")
 
     if method in CANCEL_RAW_EVENTS:
-        # B-197: Hermes says WHY it withdrew the prompt (`timeout`,
+        # Hermes says WHY it withdrew the prompt (`timeout`,
         # `interrupted`, `shutdown`). Keep its word rather than flattening
         # every withdrawal to "expired" -- "the turn was interrupted" and
         # "you took too long" are different things to tell someone.

@@ -21,7 +21,7 @@ it -- see `api/auth.py`.
 
 `get_settings()` applies a **runtime configuration overlay** on top of what is
 loaded here (`config/runtime_config.py`, `api/config.py`): a small JSON file the
-gateway owns and writes, so the owner can change which endpoint, which model
+gateway owns and writes, so the operator can change which endpoint, which model
 and which key are in force **from the app**, with no file edit and no restart.
 `.env` keeps its job unchanged -- it is the floor, it is hand-maintained, and
 nothing in this service ever writes to it.
@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # Hermes upgrade could change that confinement silently.
     hermes_sandbox_root: str = Field(alias="HERMES_SANDBOX_ROOT", default="/opt/data")
 
-    # B-61: Hermes-internal churn the sandbox-diff auto-promoter must never
+    # Hermes-internal churn the sandbox-diff auto-promoter must never
     # ingest. Empty (the default) means "use the built-in defaults" in
     # api/artifacts.py (SANDBOX_DIFF_DENYLIST_DIRS /
     # SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS -- the rationale lives there);
@@ -413,7 +413,7 @@ class Settings(BaseSettings):
     #
     # Like `REWRITE_BASE_URL`, EMPTY (the default) cleanly DISABLES the route
     # with an honest 503 naming the variable. It used to default to Ollama on
-    # 127.0.0.1:11434 (measured 2026-09-02: `llama3.2:3b` answers in ~2.8 s),
+    # 127.0.0.1:11434,
     # but inside Docker that address is the gateway container itself, so the
     # "works with no config edit" intent never held for the deployed form and
     # only produced a confusing 502. Set it to Ollama's OpenAI-compatible base
@@ -762,7 +762,7 @@ def get_settings() -> Settings:
     environment, then the overlay `api/config.py` writes. The overlay wins
     because pydantic-settings ranks init kwargs above every other source.
 
-    **What that costs, measured** (2026-09-02, this machine, 2,000 calls):
+    **What that costs, measured**:
     a bare `Settings()` is ~1,000 us, dominated by re-parsing `.env` -- which
     is what it already cost before the overlay existed. With **no overlay
     file** this function adds **~17 us** (a `stat()` and a dict check). With an

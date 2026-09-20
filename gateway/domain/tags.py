@@ -25,7 +25,7 @@ The rules, and the reason for each:
 * **32 characters.** A chip has to fit on a phone. Longer is a note, and
   notes have their own home.
 
-Every rejection names the rule it broke, because "invalid tag" tells the owner
+Every rejection names the rule it broke, because "invalid tag" tells the operator
 nothing about what to type instead.
 """
 

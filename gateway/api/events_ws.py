@@ -58,7 +58,7 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
 
     broadcaster: EventBroadcaster = app_state.event_broadcaster
     async with broadcaster.subscribe(encoded=True) as queue:
-        # B-28: say "you are subscribed" before anything else, so the client
+        # say "you are subscribed" before anything else, so the client
         # can distinguish a live-but-quiet stream from one that never came
         # back. Sent from inside `subscribe()` so no upstream frame can
         # overtake it or be lost behind it. It names the Hermes connection
@@ -70,7 +70,7 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
 
         forward = asyncio.create_task(_forward_events(websocket, queue))
         disconnected = asyncio.create_task(_watch_for_disconnect(websocket))
-        # B-27: this socket staying open says nothing about the gateway's own
+        # this socket staying open says nothing about the gateway's own
         # socket to Hermes. Watch that too, or an upstream death is silence.
         upstream_lost = asyncio.create_task(_watch_upstream(adapter))
         try:
@@ -89,7 +89,7 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
             if upstream_lost in done and disconnected not in done:
                 await _report_upstream_loss(websocket)
             elif forward in done and disconnected not in done:
-                # B-33: `_forward_events` only returns when it has sent the
+                # `_forward_events` only returns when it has sent the
                 # `stream.desynchronized` frame. Nothing more will ever be
                 # delivered on this subscription, so leaving the socket open
                 # would leave the client believing it is live.
@@ -109,7 +109,7 @@ async def _forward_events(websocket: WebSocket, queue: asyncio.Queue[Any]) -> No
     so this sends text and never re-serializes.
 
     Normally never returns -- the stream is endless. It returns in exactly one
-    case: after forwarding the `stream.desynchronized` frame (B-33), which is
+    case: after forwarding the `stream.desynchronized` frame, which is
     the last frame this subscription will ever produce. `ws_events` turns that
     return into the close that makes the loss visible to the client.
     """
@@ -145,7 +145,7 @@ async def _watch_upstream(
     so the client one staying open proves nothing about the other. When the
     upstream dies, `EventBroadcaster` simply stops having anything to forward
     and every connected app goes permanently quiet mid-reply with no error on
-    either side (B-27).
+    either side.
 
     Polled rather than pushed because `HermesAdapter` has no "connection
     lost" callback to hook and `is_connected` is the flag every other
@@ -161,7 +161,7 @@ async def _watch_upstream(
 
 
 async def _report_upstream_loss(websocket: WebSocket) -> None:
-    """Tell this client the upstream died, then close (B-27).
+    """Tell this client the upstream died, then close.
 
     Reuses the exact frame shape the "could not reach Hermes at connect time"
     path already sends -- `{"type": "error", "payload": {"message": ...}}`
@@ -179,7 +179,7 @@ async def _report_upstream_loss(websocket: WebSocket) -> None:
 
 
 async def _report_desynchronized(websocket: WebSocket) -> None:
-    """Close a socket the gateway has stopped buffering for (B-33).
+    """Close a socket the gateway has stopped buffering for.
 
     The `stream.desynchronized` frame has already gone out by the time this
     runs -- that is what ended `_forward_events`. This adds the

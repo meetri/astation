@@ -2,7 +2,7 @@
 
 Moved out of `api/instance.py` (CLEANUP_PLAN step 3.5); the vitals route stays
 there and re-exports these names. The cache exists because each `cli.exec`
-takes ~3-4 s (measured 2026-09-03) and the ws `config.get` allowlist answers
+takes ~3-4 s and the ws `config.get` allowlist answers
 `[4002]` for both keys, so a route must never await them -- see the class.
 """
 
@@ -51,7 +51,7 @@ class InstanceConfigCache:
 
     Parse rules, exactly: `"true"`/`"false"` (after strip) -> bool; a bare int
     -> int. Anything else, a non-zero `code`, `blocked: true`, or a raised
-    error -> `null` for that key. Nothing here is a number the owner has not
+    error -> `null` for that key. Nothing here is a number the operator has not
     actually been told by their own Hermes.
 
     `start()`/`close()` exist so a lifespan can own the task outright (the

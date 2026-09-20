@@ -60,7 +60,7 @@ def names_for(db: OrmSession, owner: str, owner_ids: list[str]) -> dict[str, lis
     Batched because the alternative is a query per row in a 200-row listing.
     An owner with no tags is simply absent; the caller renders `[]`, which is
     always present on the wire so a client never has to treat absence as a
-    special case (B-34).
+    special case.
     """
     if not owner_ids:
         return {}
@@ -168,9 +168,9 @@ def catalog(
     Counts come from the joins rather than being stored, so they cannot drift
     from the rows they describe.
 
-    **Scoped on request (2026-09-19).** `project_id` (or `unfiled=True`)
+    **Scoped on request.** `project_id` (or `unfiled=True`)
     narrows to the tags that scope's artifacts actually carry, with that
-    scope's counts, and drops the rest of the vocabulary entirely. The owner's
+    scope's counts, and drops the rest of the vocabulary entirely. The operator's
     report was about stars, but the same complaint applies here: a brand-new
     project offering forty tags that match nothing in it is a menu of dead
     ends. The vocabulary itself stays shared -- this only changes which part
@@ -240,7 +240,7 @@ def delete_tag(db: OrmSession, tag_id: str) -> tuple[bool, int]:
 def rename(db: OrmSession, tag_id: str, name: str) -> Tag | None:
     """Rename a tag, merging into an existing one if the new name is taken.
 
-    Merging rather than refusing: the owner asking to rename `fig` to
+    Merging rather than refusing: the operator asking to rename `fig` to
     `figure` when `figure` exists means "these are the same thing", and a 409
     would leave them to do it by hand across every artifact.
     """

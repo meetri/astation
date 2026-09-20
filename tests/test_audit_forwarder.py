@@ -263,7 +263,7 @@ def test_a_result_row_carries_the_duration_and_the_outcome():
 
 
 def test_the_tools_output_never_leaves_this_process():
-    """The owner's decision, 2026-09-20: duration yes, results no. Hermes hands
+    """The operator's decision, 2026-09-20: duration yes, results no. Hermes hands
     the whole result to this hook and a file read returns the file. The archive
     is under compliance-mode object lock, so anything written there cannot be
     deleted for the retention window."""

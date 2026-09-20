@@ -229,7 +229,7 @@ def _collapse_to_latest(rows) -> list[dict]:
     P3-1 dedup rule is `(source_path, checksum)`, so every time the agent
     rewrites a file the library gains a row: measured live 2026-09-13, one
     project's listing was 500 rows for 242 distinct paths (`STATE.md` alone
-    35 times). The owner reads that as duplicates, and for a library it is
+    35 times). The operator reads that as duplicates, and for a library it is
     -- a file, not each of its saves, is the unit. A row with no
     `source_path` (nothing to collapse on) passes through untouched. The
     newest row wins even when it is `unavailable`: that is the file's
@@ -288,7 +288,7 @@ def _bookmark_shelf(
     """One scope's starred artifacts, newest star first.
 
     **Scoped since 2026-09-19.** A star used to live on the artifact row, so
-    there was one shelf and every project showed it -- the owner opened a
+    there was one shelf and every project showed it -- the operator opened a
     brand-new project onto forty files it had nothing to do with. A star is
     now a decision taken inside a scope (`domain/bookmark_store.py`), and this
     reads the scope it was asked for; `None` means "starred anywhere".
@@ -453,7 +453,7 @@ def _after_cursor(query, position: tuple[datetime, str] | None):
     """Keyset, never offset.
 
     This listing is ordered newest-first and grows at the FRONT -- the agent
-    files artifacts while the owner is scrolling -- so an offset page would
+    files artifacts while the operator is scrolling -- so an offset page would
     skip rows it had already passed and repeat others. A keyset position is
     stable against inserts anywhere.
     """
@@ -476,7 +476,7 @@ def _page(
     With `latest=true` the collapse runs over everything after the cursor
     before the page is cut, because the version COUNT on a row is only right
     if every version of that path was seen -- the same reason `limit` has
-    always applied after the collapse (B-184).
+    always applied after the collapse.
     """
     if latest:
         # The cursor is applied AFTER the collapse, not in SQL. A collapsed
@@ -533,7 +533,7 @@ def _with_tags(db: OrmSession, rows: list[dict]) -> list[dict]:
     """Attach tags to a whole page in ONE query.
 
     `tags` is always present, `[]` when there are none, so a client never has
-    to treat absence as a special case (B-34).
+    to treat absence as a special case.
     """
     if not rows:
         return rows
@@ -567,7 +567,7 @@ def _with_bookmarks(db: OrmSession, rows: list[dict], *, scope: str | None) -> l
     `scope` is the scope the request named -- a project id, the unfiled
     sentinel, or `None` for "starred anywhere". The rule the whole feature
     rests on: **the scope in the request is the scope the stars are read in**,
-    so the star a row shows is the one the owner would be toggling if they
+    so the star a row shows is the one the operator would be toggling if they
     tapped it here.
     """
     if not rows:
@@ -608,7 +608,7 @@ async def list_project_artifacts(
     appear here (§14 access control at the only boundary this single-user
     gateway has).
 
-    `?latest=true` (B-184): one row per `source_path`, the newest, each
+    `?latest=true`: one row per `source_path`, the newest, each
     carrying `versions` = how many saves it stands for; `limit` then counts
     files, not saves. See `_collapse_to_latest`.
     """
@@ -669,7 +669,7 @@ async def list_artifacts(
 ) -> dict:
     """Global artifact listing, newest first, with two mutually exclusive filters.
 
-    `?latest=true` (B-184) collapses to the newest row per `source_path`
+    `?latest=true` collapses to the newest row per `source_path`
     with a `versions` count, and `limit` then counts files -- the same
     rule as the project listing (`_collapse_to_latest`).
 
@@ -778,14 +778,14 @@ def _folder_tree(
 
     `rows` is `(source_path, created_at)` for every visible artifact in scope,
     already deduplicated by path -- folder counts are DISTINCT FILES, not
-    rows, because the library's default view is one row per file (B-184) and a
+    rows, because the library's default view is one row per file and a
     folder claiming 612 when it shows 242 is a folder nobody trusts.
 
     **A chain of single-child directories is collapsed into one entry.** Every
-    path on the owner's instance starts `/opt/data/...`, so an uncollapsed
+    path on the operator's instance starts `/opt/data/...`, so an uncollapsed
     top level is a single "opt" row hiding everything behind two taps that ask
     nothing. `a/b/c` with no content of its own in `a` or `b` shows as
-    `a/b/c`, which is what the owner would have named the folder anyway.
+    `a/b/c`, which is what the operator would have named the folder anyway.
     """
     depth = len([part for part in (prefix or "").strip("/").split("/") if part])
     direct = 0
@@ -1046,7 +1046,7 @@ async def rename_tag(
     """Rename a tag, **merging** when the new name already exists.
 
     Merging rather than refusing: renaming `fig` to `figure` when `figure`
-    exists means "these are the same thing", and a 409 would leave the owner
+    exists means "these are the same thing", and a 409 would leave the operator
     to redo it by hand on every artifact.
     """
     _normalized_or_422(body.name)
@@ -1086,7 +1086,7 @@ async def untag_artifact(
     artifact_id: str, name: str, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
     """Take a tag off. Idempotent, and the TAG survives -- it is a vocabulary
-    entry the owner typed, and deleting it because its last artifact lost it
+    entry the operator typed, and deleting it because its last artifact lost it
     would make the tag list flicker with their own work."""
     artifact = _load_artifact(db, artifact_id)
     tag_detach(db, "artifact", artifact.id, _normalized_or_422(name))
@@ -1230,7 +1230,7 @@ async def add_to_collection(
     collection_id: str, artifact_id: str, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
     """Append one artifact. Idempotent, and an existing member does NOT move:
-    the order is the owner's decision, and re-adding should not send a row to
+    the order is the operator's decision, and re-adding should not send a row to
     the bottom of a list they arranged."""
     collection = _load_collection(db, collection_id)
     _load_artifact(db, artifact_id)
@@ -1322,7 +1322,7 @@ def _write_scope(
     The scope the caller names -- `?project=` for a project, `?unfiled=true`
     for the unfiled view -- else **the artifact's own project**, which is
     where someone starring from a project listing is standing and the only
-    default that cannot put a star somewhere the owner was not looking.
+    default that cannot put a star somewhere the operator was not looking.
 
     `unfiled` is explicit rather than implied by an absent project because the
     two are different asks: a client browsing the unfiled view is standing in
@@ -1356,7 +1356,7 @@ async def bookmark_artifact(
     to want, and the same rule already governs the pinned deliverable.
 
     Idempotent, but re-starring DOES move it to the top of that scope's
-    shelf: the timestamp records when the owner last said this matters.
+    shelf: the timestamp records when the operator last said this matters.
     """
     artifact = _load_artifact(db, artifact_id)
     scope = _write_scope(db, artifact, project, unfiled)
@@ -1391,7 +1391,7 @@ async def archive_artifact(artifact_id: str, db: OrmSession = Depends(_artifacts
 
     **Not a delete.** The bytes stay in the store, the provenance stays on the
     row, and every transcript chip that opens this artifact keeps working --
-    a link the owner followed yesterday must not break because they tidied up
+    a link the operator followed yesterday must not break because they tidied up
     today. Archived rows come back under `?archived=true` (or `all`), and are
     kept off the bookmark shelf and out of folder counts meanwhile.
 
@@ -1431,7 +1431,7 @@ def _bulk_set_archived(db: OrmSession, ids: list[str], *, archived: bool) -> int
 
     Unknown ids are skipped rather than failing the batch: bulk work runs
     against a page the client fetched a moment ago, and one row deleted
-    underneath it must not lose the other 199 the owner selected. The count
+    underneath it must not lose the other 199 the operator selected. The count
     returned is what actually changed, so a caller can tell.
     """
     rows = list(db.execute(select(Artifact).where(Artifact.id.in_(ids))).scalars())
@@ -1472,7 +1472,7 @@ async def archive_ignored_artifacts(
     """Archive every visible row the current ignore rules would refuse today.
 
     The rules only gate NEW ingests; the library already holds what was filed
-    before they existed. Measured on the owner's instance 2026-09-19: npm
+    before they existed. Measured on the operator's instance 2026-09-19: npm
     logs, curator backup blobs and profile internals, all operational trees
     nobody asked to keep.
 

@@ -10,7 +10,7 @@ answers *when* as well as *whether*.
 **Archive is not delete.** An archived artifact keeps its bytes, its
 provenance and every link into it from a transcript; it is only hidden from
 the library's default listings. There is deliberately no delete for an
-artifact anywhere in this system (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §10).
+artifact anywhere in this system.
 
 Revision ID: c7f3a2e18b40
 Revises: b5e1d7c93f04

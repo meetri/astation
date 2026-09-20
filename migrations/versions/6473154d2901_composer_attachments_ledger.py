@@ -2,7 +2,7 @@
 
 P3-3. New `attachments` table -- the ledger for the asynchronous two-turn
 composer attach (`domain/models.py::Attachment` carries the full rationale).
-Hermes has no upload endpoint (measured, PV "Phase 3 probe"), so an
+Hermes has no upload endpoint, so an
 attachment's bytes travel gateway -> capability URL -> priming-turn `curl` ->
 sandbox -> byte-exact verify -> `image.attach`/path-reference (measured
 chain, PV "Phase 3 build probes", P3-0c). The flow takes minutes, so its

@@ -1,6 +1,6 @@
 """Agent (profile) model management: detail, catalog, model write, lifecycle (P6).
 
-The owner's ask, verbatim (`docs/AGENT_MODEL_DESIGN.md`): *"I need a way to
+The operator's ask, verbatim: *"I need a way to
 manage each profile. I want to be able to select which model is used for each
 profile if it's local, openrouter, etc... which models I can choose from, how
 much it costs, latency, etc."* Six routes, the §8 contract exactly:
@@ -32,7 +32,7 @@ and nothing here needs `resolve_profile_adapter`.
 **A user-defined provider is mirrored into the profile's own config.** After a
 successful `profiles.create` / `profiles.configure` naming a provider that
 `model.options` marks `is_user_defined` (a `providers.<slug>` entry in the
-default profile's config.yaml, e.g. the owner's second local llama.cpp box),
+default profile's config.yaml, e.g. the operator's second local llama.cpp box),
 the route runs `hermes -p <profile> config set providers.<slug>.{name,base_url,
 discover_models}` through `cli.exec`. Measured 2026-09-06: without it the write
 lands but the agent's first turn answers `Unknown provider '<slug>'`, because a
@@ -44,7 +44,7 @@ and a miss is a 422 naming the provider and how many models it lists -- a
 typo'd model id that reached `profiles.configure` would be written verbatim
 into the profile's `config.yaml`, and the first sign would be the next
 session failing to start. For OpenRouter the check also takes any id on
-OpenRouter's public list (the app lets the owner paste one, 2026-09-10); a
+OpenRouter's public list (the app lets the operator paste one, 2026-09-10); a
 public list that cannot be read is a 422 saying so, never a pass.
 
 **Names that become process arguments are gated by a regex.** Rename and
@@ -73,8 +73,8 @@ decoration on the profile row: an OpenRouter fetch that fails yields
 `stats: null`, and the profile is still shown.
 
 **A profile's model need not be in Hermes's curated list.** `model.options`
-carries 44 OpenRouter ids; the owner's `kimi25` runs on `moonshotai/kimi-k2.5`,
-which is not among them and works fine (measured 2026-09-06). So the detail
+carries 44 OpenRouter ids; the operator's `kimi25` runs on `moonshotai/kimi-k2.5`,
+which is not among them and works fine. So the detail
 route's facts and spend fall back to the fetched OpenRouter index
 (`ModelCatalogCache.cached_openrouter()`) for the OpenRouter provider; the
 index itself never enters a payload.
@@ -300,7 +300,7 @@ async def _validate_selection(
     answers -- the same fallback `GET /api/models/catalog` shows, so the
     picker and this check never disagree. For OpenRouter it also takes any
     id on OpenRouter's public list: Hermes curates a few dozen, the app
-    lets the owner paste the rest (2026-09-10), and a profile on an
+    lets the operator paste the rest, and a profile on an
     uncurated id runs fine (`kimi25`, measured 2026-09-06).
     """
     ids = await selectable_model_ids(options, provider, cache=_catalog_cache(request))
@@ -385,7 +385,7 @@ async def _mirror_provider_into_profile(
     Built-in providers (`openrouter`, `anthropic`, ...) need nothing. A
     user-defined one (`is_user_defined` in `model.options`, with an `api_url`)
     exists only in whichever config.yaml declares it -- the default profile's,
-    where the owner added it -- and a profile created or re-pointed from the
+    where the operator added it -- and a profile created or re-pointed from the
     app has its own config.yaml, loaded by its own process. Without this the
     model write lands and the agent's first turn fails with `Unknown provider`.
     Idempotent: `config set` on an existing key rewrites the same value.

@@ -77,7 +77,7 @@ def open_run(
     `workspace_session_id`/`project_id` are the filing lookup's answer and
     are both None for an unfiled session (P2-2d).
 
-    `profile` is which Hermes connection the turn was observed on (B-136).
+    `profile` is which Hermes connection the turn was observed on.
     Open time is the only moment it is known for certain -- see
     `Run.profile`'s own comment for why it cannot be recovered later.
     """

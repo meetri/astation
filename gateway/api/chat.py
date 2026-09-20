@@ -19,7 +19,7 @@ of use rather than capturing it once (see
 staleness hazard"). What is NOT wired is the reconciliation timer that would
 ever actually provision a non-default profile's connection --
 `RESEARCH_GATEWAY_PROFILE_RECONCILE_INTERVAL_S` defaults to `0` pending
-B-137 (`docs/BUGS.md`): the default profile's connection reuses
+the default profile's connection reuses
 `app.state.hermes_adapter`, the same object `EventBroadcaster` already
 drains for `/ws/events`, and running both pumps concurrently would split
 that single-consumer queue (B-08's failure class, reintroduced).

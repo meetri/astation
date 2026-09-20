@@ -8,7 +8,7 @@ The agent cannot call the gateway's own API -- it has no credential for it and
 no tool that speaks it -- so the convention it CAN follow is the one thing it
 already controls: the path it writes to. Every session created under a project
 runs with its `cwd` set to that project's workspace folder
-(`docs/PROJECT_INSTRUCTIONS_DESIGN.md` §3), so a relative write lands there,
+, so a relative write lands there,
 and the folders it chooses are the filing.
 
     <workspace>/<project_id>/figures/roc.png       -> tags: figure
@@ -23,7 +23,7 @@ Two deliberate limits keep this from inventing a vocabulary:
   called `Run 7 (final!!)` is filed as a folder and not as a tag, rather than
   becoming a tag nobody can type.
 
-Nothing here reaches outside a project workspace. The owner's existing library
+Nothing here reaches outside a project workspace. The operator's existing library
 -- 2,443 files under the sandbox root -- is untouched by this, because none of
 it is under `astation/projects/<id>/`.
 """
@@ -97,7 +97,7 @@ def _experiment_tag(directories: list[str]) -> str | None:
     "Nothing" is a real answer here. A directory that cannot be a tag name
     (punctuation, too long, a leading dash) is left as a folder rather than
     forced into the vocabulary: the folder view already shows it, and a tag
-    the owner cannot type is worse than no tag.
+    the operator cannot type is worse than no tag.
     """
     for directory in directories:
         if directory.lower() in ROLE_FOLDERS:

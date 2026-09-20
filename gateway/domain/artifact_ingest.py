@@ -123,7 +123,7 @@ Four decisions this closes (TASKS.md left them open):
    background ledger and `ArtifactIngestor`'s own `self._lock` already use
    elsewhere in this codebase.
 
-A fifth decision arrived later, the hard way (B-61): `/opt/data` is Hermes's
+A fifth decision arrived later, the hard way: `/opt/data` is Hermes's
 ENTIRE operational data root, so the raw diff swept up Hermes's own churn
 (logs, SQLite WALs, heartbeats) on every turn -- multi-MB, differently
 checksummed each time, misattributed, unbounded. `SandboxDiffDenylist`
@@ -151,7 +151,7 @@ denylist does NOT apply here -- an explicit MEDIA: tag is an intentional
 signal and wins over the denylist (logged when it would have matched, since
 the model flagging Hermes-internal churn would be odd).
 
-B-182 (2026-09-13): the model is inconsistent about the tag -- `Media:` in
+the model is inconsistent about the tag -- `Media:` in
 mixed case, `MEDIA: /path` with a space, `**MEDIA:** /path` in bold, a list
 bullet in front, and most often the bare absolute path dropped on its own
 line with no tag at all. `extract_media_references` tolerates every shape
@@ -888,7 +888,7 @@ def _denylist_csv(raw: str) -> tuple[str, ...]:
 
 
 class SandboxDiffDenylist:
-    """Decides which sandbox paths the diff ingestor must never promote (B-61).
+    """Decides which sandbox paths the diff ingestor must never promote.
 
     Built from the module defaults above, or from the settings overrides via
     `from_settings()`. Purely lexical: paths are compared against the sandbox
@@ -1003,7 +1003,7 @@ class SandboxDiffIngestor:
         self._max_scan_dirs = max_scan_dirs
         self._max_scan_depth = max_scan_depth
         self._max_pending_runs = max_pending_runs
-        # B-61: Hermes-internal churn is filtered out of every diff. None
+        # Hermes-internal churn is filtered out of every diff. None
         # (the unit-test/default construction) means the built-in defaults
         # against this root; api.main passes `from_settings(...)` so the env
         # overrides apply in the deployed process.
@@ -1143,7 +1143,7 @@ class SandboxDiffIngestor:
             )
             return
         new_or_changed = self._new_or_changed_paths(before, after)
-        # B-61: refuse Hermes's own operational churn BEFORE ingestion. The
+        # refuse Hermes's own operational churn BEFORE ingestion. The
         # walk already skips denylisted top-level directories; this catches
         # the root-level files (state.db-wal, channel_directory.json, ...).
         denied = [p for p in new_or_changed if self._denylist.denies_file(p)]
@@ -1237,7 +1237,7 @@ class SandboxDiffIngestor:
                     continue
                 if entry.get("is_directory"):
                     if self._denylist.denies_dir(entry_path):
-                        # B-61: Hermes's own trees (logs/, cron/, state/,
+                        # Hermes's own trees (logs/, cron/, state/,
                         # cache/) are never entered -- nothing under them can
                         # be promoted, and skipping the descent spends the
                         # max_scan_dirs budget on real user directories.
@@ -1354,7 +1354,7 @@ _DESCRIPTION_LEADERS = "(-—–:,;|[)"
 
 @dataclass(frozen=True)
 class MediaReference:
-    """One file the model pointed the owner at inside a message text."""
+    """One file the model pointed the operator at inside a message text."""
 
     path: str
     #: True for an explicit `MEDIA:` tag; False for a bare absolute path
@@ -1578,7 +1578,7 @@ class MediaTagIngestor:
         frame: Any,
     ) -> tuple[list[MediaReference], str | None, str | None] | None:
         """`(references, run_id, project_id)` if this frame carries MEDIA
-        tags or bare media paths (B-182), else None.
+        tags or bare media paths, else None.
 
         Triggers on the two whole-segment text frames (`message.completed` +
         `message.interim` -- see `_MESSAGE_INTERIM_TYPE`'s note). Malformed

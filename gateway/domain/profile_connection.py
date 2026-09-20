@@ -1,4 +1,4 @@
-"""`ProfileConnectionManager` -- one `HermesAdapter` per Hermes profile (B-136).
+"""`ProfileConnectionManager` -- one `HermesAdapter` per Hermes profile.
 
 See `docs/CHAT_HISTORY_DESIGN.md` §4 for the design this implements. Replaces
 the single global `HermesAdapter`/`EventBroadcaster` pairing the gateway has
@@ -160,7 +160,7 @@ _DESYNCHRONIZED_TYPE = STREAM_DESYNCHRONIZED_EVENT_TYPE
 
 @dataclass(frozen=True)
 class _EnvelopeAsCanonical:
-    """Just enough of a `CanonicalEvent` for `ChatStore.capture_event` (B-137).
+    """Just enough of a `CanonicalEvent` for `ChatStore.capture_event`.
 
     `broadcaster.subscribe()` hands back already-`to_dict()`-ed envelopes, not
     `CanonicalEvent` objects -- but `ChatStore.capture_event(profile,
@@ -265,7 +265,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
 
     Never invoked for the `default` profile -- `ProfileConnectionManager._start`
     only calls `launch()` for a non-default profile, reusing the unified
-    dashboard connection for `default` (`docs/CHAT_HISTORY_DESIGN.md` §4), so
+    dashboard connection for `default`, so
     this class never needs to special-case an omitted `-p` flag itself.
 
     Verified live 2026-09-05: the process prints exactly one line of the form
@@ -295,7 +295,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
         reap_orphans: bool = False,
     ) -> None:
         """`command_prefix` and `dashboard_host` exist for the gateway-container /
-        Hermes-container split (2026-09-05): the gateway does not run on the
+        Hermes-container split: the gateway does not run on the
         same host as Hermes's CLI, so `hermes` cannot be exec'd directly.
         `command_prefix=("docker", "exec", "hermes")` runs the real CLI
         inside the Hermes container over the mounted Docker socket instead --
@@ -311,7 +311,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
         self._dashboard_host = dashboard_host
         self._ready_timeout_s = ready_timeout_s
         self._subprocess_factory = subprocess_factory or _default_subprocess_factory
-        #: B-165: kill the container-side dashboard(s) this profile already has
+        #: kill the container-side dashboard(s) this profile already has
         #: before launching a new one, and after stopping ours. Opt-in because
         #: it needs `/proc` (Linux -- the Hermes container) and because the
         #: repo's launcher tests assert the exact command list.
@@ -472,7 +472,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
     async def stop(self, process: LaunchedProcess) -> None:
         """Always kills the local client process handle, `command_prefix` or not.
 
-        B-138 (`docs/BUGS.md`): this used to run `hermes -p <profile>
+        this used to run `hermes -p <profile>
         dashboard --stop` under `command_prefix`, on the assumption `-p`
         scoped it to that profile's own dashboard. It does not -- the CLI's
         own `--help` text says `--stop` "Stop[s] all running Hermes web
@@ -498,7 +498,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
                     proc.kill()
                 with contextlib.suppress(Exception):
                     await proc.wait()
-        # B-165: the container-side process outlives our exec client. Reap it
+        # the container-side process outlives our exec client. Reap it
         # by argv fingerprint -- see `reap()`; a no-op unless `reap_orphans`.
         await self.reap(process.profile)
 
@@ -586,11 +586,11 @@ class ProfileConnectionManager:
         `app_state`, tests that don't care about the default profile's event
         stream may omit it entirely.
 
-        `on_canonical_event` (B-136) is called `(canonical, envelope,
+        `on_canonical_event` is called `(canonical, envelope,
         profile)` for every frame this manager drains DIRECTLY -- i.e. every
         non-default connection. In production it is `RunRecorder.handle_event`,
         which is what makes a non-default profile's turns appear in the Run
-        Inspector at all (the owner reported that they did not: runs are
+        Inspector at all (the operator reported that they did not: runs are
         recorded from the event stream, and only the default connection's
         stream reached the recorder).
 
@@ -615,7 +615,7 @@ class ProfileConnectionManager:
         self._default_profile_name = default_profile_name
         self._connections: dict[str, ProfileConnection] = {}
         self._run_task: asyncio.Task[None] | None = None
-        #: B-199: the default profile's chat capture, started independently of
+        #: the default profile's chat capture, started independently of
         #: the reconciliation timer because it is a different job.
         self._capture_task: asyncio.Task[None] | None = None
         self._warned_no_broadcaster = False
@@ -818,10 +818,10 @@ class ProfileConnectionManager:
         The sidecar set that to 300 because it had the Docker socket and did
         launch per-profile dashboards, so capture came along for the ride.
         Inside Hermes there is nothing to launch -- one connection reaches
-        every profile (B-196) -- so the interval stayed at its default of 0,
+        every profile -- so the interval stayed at its default of 0,
         the manager never reconciled, and **no assistant or tool message was
         written to the chat store at all.** Nothing failed; the timer simply
-        never ran. What the owner saw was a chat that showed the history
+        never ran. What the operator saw was a chat that showed the history
         copied in at migration time and almost nothing after it.
 
         Idempotent: a second call while the pump is alive does nothing.
@@ -956,7 +956,7 @@ class ProfileConnectionManager:
     # -- capture: wiring ChatStore.capture_event to a connection's stream ---
 
     async def _launch_pump(self, conn: ProfileConnection) -> None:
-        """Dispatch to the right pump coroutine for this connection (B-137).
+        """Dispatch to the right pump coroutine for this connection.
 
         The `default` connection's `adapter` IS `app.state.hermes_adapter` --
         the same object `EventBroadcaster._run` already drains for
@@ -1028,7 +1028,7 @@ class ProfileConnectionManager:
                                 conn.profile,
                             )
                             break
-                        # B-136: the broadcaster now also carries every OTHER
+                        # the broadcaster now also carries every OTHER
                         # profile's frames (injected by `_forward_one` below,
                         # which already captured them under their own
                         # profile). Capturing those here too would file a
@@ -1060,7 +1060,7 @@ class ProfileConnectionManager:
         class B-14 was originally about). Used for every non-default
         connection (each has its own dedicated adapter nobody else drains),
         and as the default connection's fallback when no broadcaster is
-        configured -- see `_launch_pump` (B-137).
+        configured -- see `_launch_pump`.
         """
         while True:
             try:

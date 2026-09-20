@@ -7,7 +7,7 @@ events, no pollable status, no transcript row, and a background-only session
 is never persisted. Completion is exactly one `background.complete`
 `{task_id, text}` event, delivered only to connections attached to the
 session at that instant. Until P2-1 the gateway dropped that event unmapped
-(B-42), so the app could never learn a task finished. The `background_tasks`
+, so the app could never learn a task finished. The `background_tasks`
 table (written at submit, updated on completion) plus that one event are the
 background pill's entire data source.
 
@@ -73,7 +73,7 @@ class BackgroundSubmission(BaseModel):
     Same closed schema and blank-text rules as `TurnSubmission`
     (`api.main`), for the same reasons: `text` is the only thing a client
     can put on the wire, a whitespace-only prompt must never start a real
-    task (B-24), and the rewind/truncate fields are rejected by name even
+    task, and the rewind/truncate fields are rejected by name even
     though `prompt.background` is not known to read them -- "not known to"
     is not "does not", and the guard costs nothing.
     """
@@ -140,7 +140,7 @@ async def submit_background_task(
     extra steps -- the task may be running, but this gateway cannot track it
     and says so instead of pretending.
 
-    NOTE (measured, PV "Phase 2 probe"): a 200 here means *accepted*, and
+    NOTE: a 200 here means *accepted*, and
     that is all the wire can ever say. No progress events will follow; the
     next observable fact about this task is its single
     `background.complete` event, surfaced via the ledger as
@@ -204,7 +204,7 @@ async def list_session_background_tasks(
     Served entirely from the gateway's own ledger: Hermes has nothing to ask
     (no status surface exists for background tasks -- measured). No Hermes
     round trip, so this works even while Hermes is unreachable, which is
-    exactly when the owner wants to know what was in flight.
+    exactly when the operator wants to know what was in flight.
     """
     stored_id = _validate_stored_session_id(stored_session_id)
     tasks = ledger_ops.tasks_for_session(db, stored_id)

@@ -8,7 +8,7 @@ session id spaces". Live handles are resolved per request through
 `LiveHandleCache` (`domain/hermes_runtime.py`'s `_with_live_handle`).
 
 The transcript projection the read routes apply is `domain/transcript.py`
-(B-34 / B-86); the `prompt.submit` outcome vocabulary is
+; the `prompt.submit` outcome vocabulary is
 `domain/event_stream.py` (B-05o).
 """
 
@@ -87,7 +87,7 @@ def _attach_captured_tool_results(
 async def list_sessions(request: Request, profile: str | None = Query(default=None)) -> dict:
     """List Hermes sessions, backed by `HermesAdapter.session_list()`.
 
-    `?profile=<name>` scopes the listing to one Hermes profile -- the owner's
+    `?profile=<name>` scopes the listing to one Hermes profile -- the operator's
     "agent"/"channel" (`GET /api/profiles` lists them). Verified live
     2026-09-01 (PV "Profiles"): unscoped returned 130 sessions and
     `{"profile": "mlx"}` returned 8, so the filter is genuinely honoured
@@ -105,7 +105,7 @@ async def list_sessions(request: Request, profile: str | None = Query(default=No
     owns the sessions; the workspace is an index over them, so every session on
     the instance appears here whether it has been filed into a project or not.
     Filing is gradual and optional, and nothing a user does in the workspace can
-    make a session unreachable from this list. The owner had 47 sessions the day
+    make a session unreachable from this list. The operator had 47 sessions the day
     projects arrived and all 47 are still here.
 
     What is added -- and it is only ever *added*, no key was removed, renamed or
@@ -135,7 +135,7 @@ async def list_sessions(request: Request, profile: str | None = Query(default=No
     Reads its adapter from `request.app.state`, like every other route: the
     module-global `app` is the same object today, but a route that reaches for
     it directly stops working the moment this router is mounted anywhere else
-    (B-22).
+.
     """
     adapter: HermesAdapter = request.app.state.hermes_adapter
     scope: str | None = None
@@ -237,7 +237,7 @@ async def resume_session(
 
     `messages` is forwarded element for element, in Hermes's own order, and no
     row is reshaped: 58% of real transcript rows are tool calls with no `text`,
-    no `row_id` and no `timestamp` (B-34). See `_transcript()`. The one thing
+    no `row_id` and no `timestamp`. See `_transcript()`. The one thing
     that changes per row is B-86's omission rule -- a `reasoning_content` that
     is byte-identical to `reasoning` is dropped (41% of the measured payload,
     a copy no client has ever read), and `?detail=light` additionally omits
@@ -291,7 +291,7 @@ async def resume_session(
         raise _http_error_from_hermes(exc, stored_id) from exc
 
     message_count, messages = _transcript(result, "message_count")
-    # B-156: Hermes keeps a call's args but never its result; the chat store
+    # Hermes keeps a call's args but never its result; the chat store
     # captured the live `tool.completed` frames, so a reload gets them back.
     _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
     # P2-1: Hermes writes NO transcript row for a background turn, so finished
@@ -319,7 +319,7 @@ async def resume_session(
 def pending_prompt_from_open_requests(result: Any, method: str) -> dict | None:
     """The oldest unanswered `method` request on a resumed session, or `None`.
 
-    B-197: Hermes 0.21.3 stopped replaying a pending prompt under its own key
+    Hermes 0.21.3 stopped replaying a pending prompt under its own key
     and replays every unanswered server -> client request together instead:
 
         "open_requests": [{"id": "srq-<12 hex>", "method": "clarify",
@@ -422,7 +422,7 @@ async def session_messages(
         raise _http_error_from_hermes(exc, stored_id) from exc
 
     count, messages = _transcript(history, "count")
-    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
+    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)  # B-156
     # P2-1: same injection as POST /resume -- a background turn has no Hermes
     # row, so its result rides in from the ledger or nowhere.
     count += append_finished_background_results(request.app.state, stored_id, messages)
@@ -527,7 +527,7 @@ class TurnSubmission(BaseModel):
     hazard instead of a generic "extra inputs are not permitted".
 
     `text` must contain something a person actually typed. `min_length=1`
-    alone accepts `"   "` and `"\\n"` (B-24), which would submit a blank turn
+    alone accepts `"   "` and `"\\n"`, which would submit a blank turn
     to a real research session -- Hermes starts a turn for it and the model
     answers whitespace. The app cannot send one (`ConversationModel.send()`
     trims and `canSend` requires non-empty), but the gateway must not depend
@@ -761,7 +761,7 @@ async def create_and_file_session(
     The live handle is cached (`LiveHandleCache.put`) so the very next
     request for this session -- the app immediately opening the conversation
     it just created -- does not pay a redundant `session.resume` round trip.
-    It is still never written to the database (B-06).
+    It is still never written to the database.
 
     Errors before step 2 succeeds are a plain 502 (nothing exists yet that
     could be named in a 404). A failure in step 3 (DB unreachable) after step
@@ -779,7 +779,7 @@ async def create_and_file_session(
     # Project instructions: if this project has a
     # `HERMES.md`, create the session with its `cwd` pointing at the project's
     # workspace folder. Hermes bakes that file into the session's system
-    # prompt at creation (measured, `docs/PROJECT_INSTRUCTIONS_DESIGN.md`), so
+    # prompt at creation, so
     # every profile's session that is filed here starts on the same
     # foundation. The check reads the file's presence, not its content, and
     # only ADDS a `cwd` -- a project with no instructions creates exactly the

@@ -1,7 +1,7 @@
 """tags, shared by artifacts and projects
 
 One `tags` vocabulary with two join tables, rather than a tag table per
-owner kind: the owner's corpus is one project holding 95% of everything, and
+owner kind: the operator's corpus is one project holding 95% of everything, and
 a tag meaning different things on a project and on a file would be two
 vocabularies wearing one name.
 

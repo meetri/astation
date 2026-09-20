@@ -222,7 +222,7 @@ api.include_router(sandbox_router)
 # Editor text read/write (`api/sandbox_text.py`, P7 phase 1): Hermes's
 # `/api/fs/read-text` + `/api/fs/write-text` behind the SAME gateway-side
 # path confinement as the browse routes -- which, for these two upstream
-# routes, is the only confinement there is (measured: neither confines).
+# routes, is the only confinement there is.
 # Hash-guarded writes (409 on mismatch). Mounted on `api` -- authenticated
 # by construction like everything else.
 api.include_router(sandbox_text_router)
@@ -369,10 +369,10 @@ async def ws_events(websocket: WebSocket) -> None:
 
     * a `stream.ready` envelope sent immediately after subscribing, so the
       client can tell a live-but-quiet stream from one that never came back
-      (B-28). It carries `seq` 0 and never spends a replay-cursor number.
+. It carries `seq` 0 and never spends a replay-cursor number.
     * `{"type": "error", ...}` + close 1011, sent either when Hermes cannot
       be reached at connect time or when the upstream connection dies while
-      this socket is open (B-27). The client's reconnect is what rebuilds the
+      this socket is open. The client's reconnect is what rebuilds the
       upstream, so that path self-heals without needing an HTTP request.
     """
     if not websocket_client_is_authorized(websocket):

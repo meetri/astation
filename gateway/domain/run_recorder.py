@@ -38,7 +38,7 @@ Phase-0 placeholder attribution ids on every envelope.
      what remains is ~a dozen coarse rows per multi-tool turn, and a
      single-row SQLite insert against a local file is microseconds --
      measured well under the per-frame budget the pump already spends on
-     `json.dumps` size-checking (B-02). **Batching boundary: one forwarded
+     `json.dumps` size-checking. **Batching boundary: one forwarded
      frame = one session = one commit** (run-open + event row + run-close
      share the transaction when they coincide). Rejected alternatives:
      per-turn batching (a crash loses the whole turn's timeline, and an
@@ -58,7 +58,7 @@ Phase-0 placeholder attribution ids on every envelope.
      `after_seq` is durable. The broadcaster's global `seq` (which resets
      with the process) is never used for this.
 
-   * **Synthesized rows (B-189).** An answered prompt produces no
+   * **Synthesized rows.** An answered prompt produces no
      `*.resolved` frame on the wire -- Hermes emits one only for a sudo/
      secret EXPIRY -- so the ledger could see a turn block on
      `approval.requested` and never see it unblock, and the blocked span
@@ -73,7 +73,7 @@ Phase-0 placeholder attribution ids on every envelope.
      carried (`stored_id_for_request`). That mapping is the fast path; when
      it misses (a gateway restart between the prompt and the answer, or a
      `*.requested` frame this process never saw) the persisted ledger is
-     the fallback (B-193): the newest `*.requested` row carrying that
+     the fallback: the newest `*.requested` row carrying that
      `request_id` names the run, and the resolved row is appended to THAT
      run even when it is closed, `seq` continuing from the run's last
      persisted row. A request whose newest ledger row is already a
@@ -127,7 +127,7 @@ FAILED_WITHOUT_REASON_EXPLANATION = "Hermes reported this turn failed but did no
 
 
 def completion_close(payload: Any) -> tuple[str, str | None]:
-    """(run status, note) for a `message.completed` payload (B-186).
+    """(run status, note) for a `message.completed` payload.
 
     `error` -> `failed` with the frame's `error` text; `interrupted` ->
     `interrupted` with the Hermes-side note; anything else (`complete`, a
@@ -290,7 +290,7 @@ class RunRecorder:
     ) -> None:
         self._session_factory = session_factory
         self._open: dict[str, _OpenRun] = {}
-        # B-188: `(profile, stored_id, run_id)` after a run row is committed.
+        # `(profile, stored_id, run_id)` after a run row is committed.
         # `ChatStore.attach_turn` hangs off this so the user row the submit
         # route wrote BEFORE the turn opened gets the run's id -- the one
         # row of a turn the capture hook can never stamp itself. Never
@@ -360,7 +360,7 @@ class RunRecorder:
         Mutates `envelope`'s `project_id`/`session_id`/`run_id` in place
         (they arrive as None from the normalizer -- P2-2a). Never raises.
 
-        `profile` (B-136) is which Hermes connection the frame came off, and
+        `profile` is which Hermes connection the frame came off, and
         is recorded on any run this frame OPENS. It defaults so the
         `EventBroadcaster` hook -- which only ever carries the default
         connection's stream -- keeps calling this with two arguments;
@@ -501,7 +501,7 @@ class RunRecorder:
 
     @staticmethod
     def _remember_request(record: _OpenRun, event_type: str, payload: Any) -> None:
-        """Note a `*.requested` frame's `request_id` on its open run (B-189)."""
+        """Note a `*.requested` frame's `request_id` on its open run."""
         if not event_type.endswith(_REQUESTED_SUFFIX) or not isinstance(payload, dict):
             return
         request_id = payload.get("request_id")
@@ -525,7 +525,7 @@ class RunRecorder:
         `sudo`, `secret` -- Hermes keys them on `request_id` alone). Scoped
         to `profile`, because a request id is only unique per Hermes
         process. The open runs this process saw are checked first (no DB
-        work); on a miss the persisted ledger is searched (B-193), so the
+        work); on a miss the persisted ledger is searched, so the
         answer survives a gateway restart and a closed turn. None when no
         run anywhere carries the id, or its newest ledger row already
         resolves it. Never raises.
@@ -552,7 +552,7 @@ class RunRecorder:
     def _find_requested_row(
         db: OrmSession, request_id: str, profile: str, stored_id: str | None = None
     ) -> tuple[Run, RunEvent] | None:
-        """The newest persisted `*.requested` row carrying `request_id` (B-193).
+        """The newest persisted `*.requested` row carrying `request_id`.
 
         Reads the newest `REQUEST_LOOKUP_LIMIT` prompt rows (`*.requested`
         and `*.resolved`) for `profile` -- and for `stored_id`'s runs only,
@@ -588,14 +588,14 @@ class RunRecorder:
         payload: dict[str, Any],
         profile: str = DEFAULT_RUN_PROFILE,
     ) -> bool:
-        """Append one gateway-authored row to the run that asked (B-189).
+        """Append one gateway-authored row to the run that asked.
 
         Attach-only: it never opens a run. The open run on `stored_id` is
         the fast path (`seq` from its in-memory counter). With no open run
         -- a restart between the prompt and the answer, or a turn that has
         already closed -- the persisted `*.requested` row carrying
         `payload["request_id"]` on one of `stored_id`'s runs names the run
-        (B-193), and the row lands on it, closed or not, with `seq` after
+, and the row lands on it, closed or not, with `seq` after
         the run's last persisted row. Nothing to hang it on means nothing
         is recorded and False comes back. `event_type` must be one of
         `SYNTHETIC_RESOLVED_TYPES`. The stored row's payload is `payload`

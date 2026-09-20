@@ -6,7 +6,7 @@ verified live 2026-09-04":
 
 * The instance's context engine is the **hermes-lcm** plugin. A compress is **in place**:
   same session, same stored id, same live handle, no continuation session. Under LCM only raw
-  messages **outside the fresh tail** (32 messages / 24k tokens on the owner's host) are
+  messages **outside the fresh tail** (32 messages / 24k tokens on the operator's host) are
   eligible, so a short session is an honest no-op and Hermes says so
   (`summary.noop`, headline "No changes from compression: N messages").
 * Two upstream routes, both taking the LIVE handle: `session.compress` (plain; every argument
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 compress_router = APIRouter(tags=["compress"])
 
-#: Hermes: `session busy -- /interrupt the current turn before /compress` (measured 2026-09-04).
+#: Hermes: `session busy -- /interrupt the current turn before /compress`.
 HERMES_SESSION_BUSY_CODE = 4009
 #: The slash command `command.dispatch` executes. `args` carries the raw argument string.
 COMPRESS_COMMAND_NAME = "/compress"
@@ -106,7 +106,7 @@ def _int(text: str | None) -> int | None:
 def parse_dispatch_output(output: str | None) -> dict[str, Any]:
     """Normalise `command.dispatch`'s two-line text into the structured shape.
 
-    Measured lines (2026-09-04):
+    Measured lines:
       "Compressed: 23 → 22 messages\\nApprox request size: ~66,322 → ~66,271 tokens"
       "No changes from compression: 22 messages\\nApprox request size: ~59,724 tokens (unchanged)"
     Anything else is passed through verbatim as `headline` with the numbers `None` --

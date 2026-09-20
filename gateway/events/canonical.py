@@ -169,7 +169,7 @@ RAW_TO_CANONICAL_TYPE: dict[str, str] = {
     "secret.request": "secret.requested",
     "sudo.expire": "sudo.resolved",
     "secret.expire": "secret.resolved",
-    # B-197: on Hermes 0.21.3 a prompt is a server -> client request, and ONE
+    # on Hermes 0.21.3 a prompt is a server -> client request, and ONE
     # `request.cancel {id, method, reason}` withdraws any of them -- the
     # per-kind `sudo.expire` / `secret.expire` events are gone. The adapter
     # translates that frame into the kind it withdrew

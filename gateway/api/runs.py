@@ -39,7 +39,7 @@ re-exported here with its constants:
      what remains is ~a dozen coarse rows per multi-tool turn, and a
      single-row SQLite insert against a local file is microseconds --
      measured well under the per-frame budget the pump already spends on
-     `json.dumps` size-checking (B-02). **Batching boundary: one forwarded
+     `json.dumps` size-checking. **Batching boundary: one forwarded
      frame = one session = one commit** (run-open + event row + run-close
      share the transaction when they coincide). Rejected alternatives:
      per-turn batching (a crash loses the whole turn's timeline, and an
@@ -157,7 +157,7 @@ def run_row(run: Run, last_seq: int) -> dict[str, Any]:
         "ended_at": iso_z(run.ended_at),
         "last_seq": last_seq,
     }
-    # B-186: a close the wire explained (failed / Hermes-reported interrupted)
+    # a close the wire explained (failed / Hermes-reported interrupted)
     # carries its own note; an interruption with no note is this gateway's
     # own (restart / reconnect); a stale close carries the reconciliation note.
     wire_note = runs_ops.close_note(run)
@@ -206,9 +206,9 @@ def _run_age_seconds(run: Run, now: datetime) -> float | None:
 
 
 async def _reconcile_stale_running(request: Request, db: OrmSession, rows: list[Run]) -> None:
-    """Close `running` rows whose session Hermes says is over (B-84/B-62).
+    """Close `running` rows whose session Hermes says is over.
 
-    **Scoped per profile (B-136).** Each stale row is checked against the
+    **Scoped per profile.** Each stale row is checked against the
     connection it was RECORDED on (`Run.profile`, written at open time),
     never against whichever connection happens to be the default. Asking the
     wrong one is not a near-miss: a `kimi25` session is simply absent from
@@ -373,7 +373,7 @@ async def list_run_events(
     `last_seq` in the response is the high-water mark to poll with next.
 
     The `run` in the response gets the SAME B-84/B-62 staleness
-    reconciliation the list route runs, on this one row (B-99). This route
+    reconciliation the list route runs, on this one row. This route
     is reachable on its own: an artifact's "producing run" opens the run
     detail from a run id alone, so it never passes through a reconciling
     list read -- and the detail view then polls here every 3 s, which used

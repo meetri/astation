@@ -24,7 +24,7 @@ def reject_blank_text(value: str, *, message: str = BLANK_TEXT_MESSAGE) -> str:
     Returns the caller's string **verbatim** when it passes: the check is
     `value.strip()`, but silently rewriting a user's text is not a route's
     job, and the transcript should hold what was sent. `min_length=1` alone
-    accepts `"   "` and `"\\n"` (B-24); this is what actually refuses them.
+    accepts `"   "` and `"\\n"`; this is what actually refuses them.
     """
     if not value.strip():
         raise ValueError(message)

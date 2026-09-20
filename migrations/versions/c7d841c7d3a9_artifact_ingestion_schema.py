@@ -8,7 +8,7 @@ nothing ever wrote it; as specced it cannot support Phase 3's ingestion
   (`cc25d09cd72c`) relaxed `runs.project_id`. An artifact's project comes
   from the workspace Session row *filing* its Hermes session, and filing is
   optional -- unfiled spike sessions are this project's standard test path
-  (CLAUDE.md), so the first live P3-1 ingestion against a real spike session
+, so the first live P3-1 ingestion against a real spike session
   would crash on the NOT NULL constraint. NULL = "unfiled", the same answer
   `runs.project_id` and `GET /api/sessions` give; the synthetic-"unfiled"-
   project alternative stays rejected for the same P2-2d reasons.

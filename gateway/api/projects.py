@@ -1,7 +1,7 @@
 """Projects, and the index that files a Hermes session into one.
 
 This is the whole architectural thesis of the product in one module
-(`docs/ARCHITECTURE.md` §5.1): **a project is the durable intellectual
+: **a project is the durable intellectual
 workspace and a session is one replaceable path through it.** A project holds
 many sessions; sessions come and go; the project, its artifacts, its notes and
 its context outlive any particular conversation. Without that separation a
@@ -389,15 +389,15 @@ async def _hermes_session_index(
     making the whole application unavailable"). The rows still render; they just
     render without the upstream title/preview/message count.
 
-    Never indexes into a row it has not checked the shape of (B-34): a session
+    Never indexes into a row it has not checked the shape of: a session
     entry that is not a dict, or has no string `id`, is skipped rather than
     trusted.
 
-    **One call per profile (B-200).** `session.list` is scoped to ONE Hermes
+    **One call per profile.** `session.list` is scoped to ONE Hermes
     profile, so listing only `default` meant a filed session on any other
     profile was absent from the index -- and absent from a reachable Hermes is
     how `_filed_session_row` computes `missing: true`, which the app renders
-    as "No longer on Hermes". The owner's `gpt-sol` and `ornith` sessions were
+    as "No longer on Hermes". The operator's `gpt-sol` and `ornith` sessions were
     being reported as gone while Hermes still had every one of them. This was
     carried as an accepted degradation ("the row still renders using the
     workspace's own stored title") on the belief that it only cost
@@ -675,7 +675,7 @@ async def pin_artifact(
 
     The artifact does not have to belong to this project. A report that lives
     in a shared folder is still the thing this project produced, and refusing
-    would push the owner to file a copy just to pin it.
+    would push the operator to file a copy just to pin it.
     """
     project = _load_project(db, project_id)
     artifact = db.get(Artifact, body.artifact_id)
@@ -937,7 +937,7 @@ async def delete_project(project_id: str, db: OrmSession = Depends(workspace_db)
             select(Session.runtime_session_id).where(Session.project_id == project.id)
         ).scalars()
     )
-    # B-90: `runs.session_id` is ALSO a FK to `sessions.id`, and with
+    # `runs.session_id` is ALSO a FK to `sessions.id`, and with
     # `PRAGMA foreign_keys=ON` (domain/db.py) SQLite refuses to delete a
     # filing row that any run still points at -- so deleting a project whose
     # sessions have ever run a turn raised `IntegrityError` -> 500, and the
@@ -1010,7 +1010,7 @@ async def list_project_sessions(
     `runtime_available: false` with the reason. Workspace state does not depend
     on the runtime being up.
 
-    **P6-3 (`docs/SESSION_ARCHIVE_DESIGN.md` §6.4): every row gains
+    **P6-3: every row gains
     `row_key`, `archived_at`, `snapshot_count`, `latest_snapshot`, `archived`;
     snapshot-only rows are appended after the filed rows** (stored ids with a
     snapshot under this project and no filing row -- deleted or unfiled
@@ -1035,7 +1035,7 @@ async def list_project_sessions(
     latest = latest_snapshots_by_stored_id(db, all_ids, project_id=project.id)
     counts = snapshot_counts_by_stored_id(db, all_ids, project_id=project.id)
 
-    # B-200: one `session.list` per profile these rows actually live on --
+    # one `session.list` per profile these rows actually live on --
     # listing only `default` reported every other profile's session as gone.
     index, checked_profiles, runtime_error = await _hermes_session_index(
         request, {row.profile for row in rows}
@@ -1044,7 +1044,7 @@ async def list_project_sessions(
     lookup = index or {}
 
     def _checked(profile: str | None) -> bool:
-        """Whether THIS row's profile was actually listed (B-200).
+        """Whether THIS row's profile was actually listed.
 
         Global availability is not enough: one project can hold rows on a
         profile Hermes has and rows on one it does not, and only the first
@@ -1133,7 +1133,7 @@ def file_stored_session(
     file" invariant in the module docstring holds for every call *originating
     in this file*; the caller in `api/main.py` is the one with the adapter.
 
-    `profile` (B-136) is the Hermes profile `stored_id` belongs to -- a
+    `profile` is the Hermes profile `stored_id` belongs to -- a
     stored id is only unique *within* a profile, so idempotency and the
     already-filed check below are both scoped by it too (`_find_filing`).
 
@@ -1205,7 +1205,7 @@ async def file_session(
 
     The live handle is deliberately **not** stored (`runtime_live_session_id`
     stays NULL). It is process-local, it is re-minted on every gateway<->Hermes
-    reconnect, and persisting one is this project's recurring bug class (B-06).
+    reconnect, and persisting one is this project's recurring bug class.
     """
     project = _load_project(db, project_id)
     stored_id = _validate_stored_session_id(body.stored_session_id)

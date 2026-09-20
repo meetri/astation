@@ -28,7 +28,7 @@ The state machine, and why it is shaped this way (PV "Phase 2 probe" +
   `api/background.py`'s ledger orchestration; this module only has to
   accept the late good news.
 * `finished` is terminal. A second completion for the same task id is
-  logged and ignored rather than overwriting a result the owner may have
+  logged and ignored rather than overwriting a result the operator may have
   already read.
 """
 

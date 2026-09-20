@@ -79,7 +79,7 @@ def _profile_adapter_factory(base_settings: Settings) -> Callable[[str, int], He
 
     Same scheme and credentials as the unified connection either way. The
     *host* is `research_gateway_profile_dashboard_host` if set, else
-    `hermes_host` -- they differ under the Docker deploy (2026-09-05): a
+    `hermes_host` -- they differ under the Docker deploy: a
     `docker exec`-launched dashboard's ephemeral port is reachable from the
     gateway container only via the Hermes container's name on their shared
     Docker network, not `hermes_host`'s LAN IP (see `config/settings.py`'s field
@@ -150,7 +150,7 @@ def build_profile_connection_manager(app_state: Any, settings: Settings) -> None
     # spawns nothing; a positive interval turning the timer on is a separate,
     # owner-timed decision, not something this change turns on by shipping.
     #
-    # B-137: no `broadcaster=` is passed here even though the default
+    # no `broadcaster=` is passed here even though the default
     # connection's pump needs one. `app.state.event_broadcaster` is not set
     # until `wire_event_stream()` runs (`broadcaster = EventBroadcaster(...)`
     # there), so passing it now would pass `None` -- instead
@@ -171,7 +171,7 @@ def build_profile_connection_manager(app_state: Any, settings: Settings) -> None
         launcher=SubprocessProfileLauncher(
             command_prefix=("docker", "exec", _docker_exec_target) if _docker_exec_target else (),
             dashboard_host="0.0.0.0" if _docker_exec_target else "127.0.0.1",
-            # B-165: only meaningful where `/proc` exists -- i.e. inside the
+            # only meaningful where `/proc` exists -- i.e. inside the
             # Hermes container reached through `docker exec`.
             reap_orphans=bool(_docker_exec_target),
         ),
@@ -206,9 +206,9 @@ def build_run_recorder(app_state: Any) -> RunRecorder:
     # process lost its stream (nothing buffers or replays events), so it is
     # `interrupted`, honestly, before the pump starts. Best-effort; an
     # unmigrated DB logs and moves on (the /api/runs routes 503 with the fix).
-    # B-188: the user row the submit route writes before a turn opens gets
+    # the user row the submit route writes before a turn opens gets
     # its run id the moment the recorder opens one (`ChatStore.attach_turn`).
-    # B-190: when no such row is waiting the turn was started outside this
+    # when no such row is waiting the turn was started outside this
     # gateway (the TUI, another client), and `ForeignPromptCapture` reads
     # the prompt back from Hermes instead -- attach first, capture only on a
     # miss; the composition lives in `ForeignPromptCapture.handle_run_opened`.
@@ -227,7 +227,7 @@ def build_run_recorder(app_state: Any) -> RunRecorder:
 
 
 def backfill_chat_turn_ids(app_state: Any) -> None:
-    """Link null-turn chat rows to their runs by timestamp (B-192), best-effort."""
+    """Link null-turn chat rows to their runs by timestamp, best-effort."""
     # Ordered after the recorder's startup sweep (so a run left `running` by
     # the previous process has its `ended_at` and a bounded window) and
     # before `wire_event_stream` starts any pump (so nothing is capturing
@@ -267,7 +267,7 @@ def wire_event_stream(
         on_background_complete=background_ledger.handle_completed,
         on_generation_change=_on_generation_change,
         on_canonical_event=run_recorder.handle_event,
-        # B-198: one connection serves every profile inside Hermes, so the
+        # one connection serves every profile inside Hermes, so the
         # frame's profile has to come from whichever profile's cache knows the
         # session. Those caches are built lazily by
         # `resolve_live_handle_cache`, hence a callable rather than the dict.
@@ -373,7 +373,7 @@ def start_artifact_ingestors(
     # `artifact_ingestor` above (reused, not duplicated), which is what
     # catches `terminal`-produced files (audio, PDFs) that write_file/patch
     # auto-ingest never sees.
-    # B-61: the diff must never promote Hermes's own operational churn
+    # the diff must never promote Hermes's own operational churn
     # (logs/, cron/, state/, cache/, SQLite WALs, heartbeats, ...) -- built
     # from the module defaults in api/artifacts.py unless the
     # HERMES_SANDBOX_DENYLIST_* env overrides are set.
@@ -532,7 +532,7 @@ async def shutdown(app_state: Any, runtime: GatewayRuntime) -> None:
     # adapter everything below is about to tear down.
     await runtime.snapshot_sweeper.close()
     await runtime.attachment_orchestrator.close()
-    # B-190: a foreign-prompt capture mid-resume holds the adapter too.
+    # a foreign-prompt capture mid-resume holds the adapter too.
     capture = getattr(app_state, "foreign_prompt_capture", None)
     if capture is not None:
         await capture.close()

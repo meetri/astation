@@ -49,7 +49,7 @@ async def _ensure_connected(app_state: Any, adapter: HermesAdapter) -> None:
     `connect()` calls against each other.
 
     **`app_state` is the caller's `request.app.state` / `websocket.app.state`,
-    never the module-global `app.state` (B-22).** The lock and the adapter must
+    never the module-global `app.state`.** The lock and the adapter must
     come from the *same* application object or the serialization is imaginary:
     every route reads its adapter from the request's app, so reaching for the
     module-global app's lock protects a different application's connect. Today
@@ -77,7 +77,7 @@ async def _with_reconnect(
     """Run `operation()`, rebuilding the Hermes socket and retrying once if it was dead.
 
     `app_state` is threaded through to `_ensure_connected()` for the reason
-    given there (B-22): the connect lock has to belong to the same application
+    given there: the connect lock has to belong to the same application
     object the adapter came from.
 
     A socket can die between requests (Hermes restart, idle reap, Wi-Fi blip)
@@ -116,7 +116,7 @@ async def _with_reconnect(
 
 
 def resolve_profile_adapter(app_state: Any, profile: str | None) -> HermesAdapter:
-    """The `HermesAdapter` a session-scoped route should talk to (B-136).
+    """The `HermesAdapter` a session-scoped route should talk to.
 
     `profile` is `None`, `""`, or `"default"` for the connection every route
     used before multi-profile support existed -- `app_state.hermes_adapter`,
@@ -128,7 +128,7 @@ def resolve_profile_adapter(app_state: Any, profile: str | None) -> HermesAdapte
     turned on.
 
     A stored session id is only unique *within* a profile
-    (`docs/CHAT_HISTORY_DESIGN.md` §4), so a route must never guess which
+, so a route must never guess which
     connection to use -- the caller passes `profile` explicitly (a `Session`
     row's own `profile` column for a filed session, or a value the caller
     already has from browsing `GET /api/sessions?profile=...` for an unfiled
@@ -178,7 +178,7 @@ def profile_is_observable(app_state: Any, profile: str | None) -> bool:
 
 
 def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
-    """The `LiveHandleCache` a session-scoped route should read/write (B-136).
+    """The `LiveHandleCache` a session-scoped route should read/write.
 
     `LiveHandleCache` used to be injected as a `cache_factory=` parameter
     because it lived in `api.main`, which imports this module; it lives in
@@ -305,7 +305,7 @@ def _rpc_error_code(exc: HermesRPCError) -> int | None:
 
 
 def _is_session_not_found(exc: HermesError) -> bool:
-    """Whether `exc` is Hermes's "that session isn't here" answer (B-23).
+    """Whether `exc` is Hermes's "that session isn't here" answer.
 
     Decided on the **numeric code** -- `[4001]` for an unknown live handle,
     `[4007]` for a stored id `session.resume` cannot load -- both confirmed

@@ -18,7 +18,7 @@ the sandbox is cleaned. The durable, checksummed artifact library is Tier 2
   streaming-vs-buffering decision is made here, per the task spec), with the
   client's `Range` header passed through untouched and Hermes's own
   `206`/`Content-Range` answer passed back -- Hermes supports Range natively
-  (measured), so no range logic is reimplemented on this side.
+, so no range logic is reimplemented on this side.
 
 Path validation happens on the gateway BEFORE any upstream call, against
 `Settings.hermes_sandbox_root` (default `/opt/data`, the measured
@@ -103,7 +103,7 @@ _DOWNLOAD_HEADER_ALLOWLIST = (
 )
 
 #: Most bytes of an upstream *error* body this gateway will read while
-#: extracting a detail message. Error bodies are tiny JSON (measured); the
+#: extracting a detail message. Error bodies are tiny JSON; the
 #: bound exists so a pathological upstream cannot make the error path buffer.
 _ERROR_BODY_CAP = 4096
 

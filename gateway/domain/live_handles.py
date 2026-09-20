@@ -5,7 +5,7 @@ Moved here from `api/main.py` (CLEANUP_PLAN step 3.1) so `domain/hermes_runtime.
 import it directly instead of taking it as an injected factory or a local
 import to dodge the cycle through the app module. `api/main.py` re-exports it.
 
-The two-id-spaces rule (`CLAUDE.md`): stored ids persist, live handles are
+The two-id-spaces rule: stored ids persist, live handles are
 process-local to one Hermes connection and change across reconnects. This
 class is the only place a stored->live mapping is cached, and its key includes
 the connection generation so a handle from a dead connection is unreachable
@@ -47,7 +47,7 @@ class LiveHandleCache:
     and a live handle must never reach the database (`domain/models.py` keeps
     `runtime_live_session_id` as an ephemeral column for the same reason).
 
-    **Two maps, on purpose (B-29).** `_handles` is stored -> live and is what
+    **Two maps, on purpose.** `_handles` is stored -> live and is what
     `prompt.submit` / `session.history` resolve against; `_stored_by_live` is
     live -> stored and is used only to *label* outgoing events with the
     durable id the app can match on. Every `put()` writes both, but
@@ -118,7 +118,7 @@ class LiveHandleCache:
         self._remember_live_mapping(generation, stored_id, live_id)
 
     def observe_live_mapping(self, stored_id: str, live_id: str) -> None:
-        """Learn a live->stored pairing for *labelling* events only (B-29).
+        """Learn a live->stored pairing for *labelling* events only.
 
         Fed by `session.info`, which is the one Hermes event carrying both ids
         -- so a session started somewhere else entirely (Hermes's own TUI, a

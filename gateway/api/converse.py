@@ -1,6 +1,6 @@
 """Ask a question about your own research: `POST /api/converse` (G-12).
 
-The owner's ask, stated repeatedly: *"Ultimately I'd still like to be able to
+The operator's ask, stated repeatedly: *"Ultimately I'd still like to be able to
 have a conversation realtime about the project / session / document."* This is
 the server half of it -- one route that takes a spoken question and a scope and
 answers in two or three sentences a voice can read out, with citations.
@@ -14,10 +14,10 @@ answers in two or three sentences a voice can read out, with citations.
 ## Why this cannot go through the Hermes agent
 
 Not a preference -- three measurements, the same three that killed the
-Hermes-routed rewrite (2026-09-01 review, ask #4). Real agent turn latency on
+Hermes-routed rewrite. Real agent turn latency on
 the live instance is **2.5 to 15 minutes**; B-62 records completion signals
 arriving **8 to 10 minutes late**; and `prompt.submit` would write the
-question into the owner's own transcript as if they had asked the agent it.
+question into the operator's own transcript as if they had asked the agent it.
 Conversation needs seconds. So this is the second consumer of the review's
 **gateway-resident utility model** reframe (item G-12): something fast beside
 something slow, reading the durable state the gateway already keeps. Measured
@@ -52,7 +52,7 @@ is arranged around that:
   keyword-matched the prose and was wrong twice. When the token is missing the
   response says `context.protocol_followed: false` rather than guessing.
 
-## Measured on the owner's own records, 2026-09-02
+## Measured on the operator's own records, 2026-09-02
 
 29 questions across all three scopes on real sessions -- 14 the records answer,
 11 they genuinely do not, 4 whose premise the records contradict -- with every
@@ -62,7 +62,7 @@ structurally refused, 3 of 4 false premises declined, protocol followed 29/29,
 median 0.9-2.5 s. On `qwen3:8b` through the same endpoint: **0 in 29**, at a
 13.9 s median. On `gemma3:4b`: roughly 6 in 15 adversarial questions -- so
 model choice dominates every other knob here, which is exactly why it is a
-registry setting the owner can change from the app.
+registry setting the operator can change from the app.
 
 ## Error contract
 
@@ -74,7 +74,7 @@ registry setting the owner can change from the app.
 | 502 | endpoint unreachable, non-2xx, non-JSON, 200-with-no-content; or Hermes failing on the transcript read |
 | 503 | `CONVERSE_BASE_URL` / `CONVERSE_MODEL` unset (feature disabled), or the workspace schema is unmigrated |
 
-Never a silent fallback to a provider the owner did not configure -- the
+Never a silent fallback to a provider the operator did not configure -- the
 `api/transcribe.py` rule, inherited whole.
 
 The candidate assembly per source and per scope, and the answer parsing, are
@@ -334,7 +334,7 @@ async def converse(
     request: Request,
     db: OrmSession = Depends(_converse_db),
 ) -> dict[str, Any]:
-    """Answer a spoken question about the owner's own research (G-12).
+    """Answer a spoken question about the operator's own research (G-12).
 
     Body: `{"question", "scope", "session_id"|"project_id"|"artifact_id"}` --
     exactly the one id the scope uses; another one is a 422, not a silently

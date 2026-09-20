@@ -1,6 +1,6 @@
-"""Continue in a new session -- the pure half (owner ask 2026-09-07).
+"""Continue in a new session -- the pure half.
 
-The owner: *"when I want to start a new session continuing from where I left
+The operator: *"when I want to start a new session continuing from where I left
 off ... analyze the last several messages and come up with a good prompt to
 start a new session."* This module turns a transcript into the text a model
 is asked to distil, and nothing else: it makes no request, reads no setting
@@ -11,7 +11,7 @@ and touches no session. The route (`api/handoff.py`) owns the I/O.
 Only the CONVERSATION: `role: "user"` and `role: "assistant"` rows carrying
 non-blank `text`. Everything else is dropped before counting, so `last_n`
 means "the last N things the two of them said" and not "the last N rows",
-which -- measured over the owner's own transcripts (`docs/PROTOCOL_VERIFIED.md`,
+which -- measured over the operator's own transcripts (`docs/PROTOCOL_VERIFIED.md`,
 "Transcript message shape") -- would be 58% tool calls:
 
 * `role: "tool"` rows (a call's `name`/`args`/`context`) -- the *outcome* of a
@@ -140,7 +140,7 @@ def suggested_title(source_title: str | None) -> str:
 
     A title that is already a continuation counts up rather than stacking
     the suffix: `X (continued)` -> `X (continued 2)` -> `X (continued 3)`.
-    An empty or missing title becomes `Continued session`. The owner edits
+    An empty or missing title becomes `Continued session`. The operator edits
     the field before starting, so this only has to be a sensible default.
     """
     title = (source_title or "").strip()

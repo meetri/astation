@@ -31,13 +31,13 @@ and is the better evidence, but it only exists where the work left a trace the
 sensor captures: the file policy records writes, so a session that only reads
 and searches produces no host rows at all. Showing only the corroborated subset
 meant such a session rendered as "nothing traced", while its full account sat
-in the store unread (B-205).
+in the store unread.
 
 This route used to fall back to a TIME WINDOW when no tool call had been
 captured, returning everything the host recorded while the session happened to
 be running. It was labelled as inferred, but a labelled wrong answer is still a
 wrong answer on a screen headed "what this session did": most of those rows
-belonged to something else. Removed 2026-09-20 at the owner's direction. Where
+belonged to something else. Removed 2026-09-20 at the operator's direction. Where
 there is no attribution the route now returns nothing and says why, which is
 the honest shape of "we cannot tell".
 """
@@ -285,7 +285,7 @@ def _profile_of_session(db: OrmSession, stored_session_id: str, rows: list[dict[
     process, about itself, so it cannot be wrong. The ledger's column can be:
     measured 2026-09-20, every run recorded in two hours carried `default`,
     including those of a live `gpt-astra` session whose audit rows and whose
-    kernel exec paths both said otherwise (B-206). Keying the inference below
+    kernel exec paths both said otherwise. Keying the inference below
     on a wrong profile would scope it to the wrong processes, which is the one
     mistake this tier must not make.
 
@@ -369,7 +369,7 @@ async def session_timeline(
     other work at the same time -- other sessions, other containers, the
     machine's own housekeeping -- and none of it appears.
 
-    That is a deliberate narrowing (owner, 2026-09-20). This route previously
+    That is a deliberate narrowing. This route previously
     fell back to a TIME WINDOW when no tool call had been captured, returning
     everything the host recorded while the session happened to be working.
     It was labelled as inferred, but a labelled wrong answer is still a wrong
@@ -703,7 +703,7 @@ async def tool_call_output(
     This is the one route on the audit surface that does not read the audit
     store, and the difference matters enough to state on the response itself.
 
-    The audit trail deliberately holds no tool output (owner, 2026-09-20): a
+    The audit trail deliberately holds no tool output: a
     file read returns the file, and the audit archive cannot be edited or
     deleted for the retention window, so a secret the redaction missed would be
     permanent. The gateway's own chat store has held these results all along,

@@ -15,12 +15,12 @@ Provider abstraction mirroring Hermes's own transcription-tool conventions
   loop the rest of the gateway is serving on. faster-whisper decodes through
   its bundled PyAV, so no system ffmpeg is needed. If `faster_whisper` is not
   importable the answer is an honest 503 naming the missing package -- never
-  a silent fallback to a cloud provider the owner did not configure.
+  a silent fallback to a cloud provider the operator did not configure.
 * **`openai` / `groq`** are keyed passthroughs: an httpx multipart POST to
   `{base}/audio/transcriptions` with a Bearer key. A missing key is an honest
   503 with the env var named.
 
-Vocabulary biasing -- the direct answer to the owner's technical-words
+Vocabulary biasing -- the direct answer to the operator's technical-words
 complaint: the server-configured `STT_VOCAB_HINT` and the request's optional
 `vocab_hint` form field are combined (server hint first, request hint
 appended) and passed to Whisper as `initial_prompt` (local) / `prompt`

@@ -21,7 +21,7 @@ def find_filing(
     """The one workspace row for a stored runtime session, if it is filed.
 
     "The one" is guaranteed by `UNIQUE (runtime, profile, runtime_session_id)`
-    in the schema (B-136), which is also what makes filing idempotent and
+    in the schema, which is also what makes filing idempotent and
     makes "move" a single-row update rather than a delete-and-recreate.
 
     `profile=None` (the default) matches on `(runtime, stored_session_id)`

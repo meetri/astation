@@ -7,13 +7,13 @@ routes and re-exports every name here; the contract is
 `docs/SESSION_ARCHIVE_DESIGN.md` §6 and the concept is explained in that
 module's docstring.
 
-**Measured facts this rests on** (`docs/PROTOCOL_VERIFIED.md`):
+**Measured facts this rests on**:
 
 * Rows come from **one real `session.resume`**, the same call `POST /resume`
   makes, via `_resume_for_live_id`. Not `session.history` -- on a cache miss
   that would download the transcript twice, and it carries neither
   `messages_omitted`, `info` nor `pending_*`. Resume result keys measured on
-  the 3.96 MB B-86 session (2026-09-03): `inflight, info, message_count,
+  the 3.96 MB B-86 session: `inflight, info, message_count,
   messages, messages_omitted, resumed, running, session_id, session_key,
   started_at, status`. Cold resume of that session: 1.84 s, and it did not
   stall a concurrent stream.
@@ -275,7 +275,7 @@ async def _store_document(store: ArtifactStore, document_bytes: bytes) -> tuple[
 
 
 def _profile_for(stored_id: str, db: OrmSession | None) -> str:
-    """Which profile a session belongs to, from its filing row (B-147).
+    """Which profile a session belongs to, from its filing row.
 
     `default` when the session is unfiled or the lookup cannot run: an unfiled
     session has no row to record a profile on, and that is exactly the case
@@ -333,7 +333,7 @@ async def take_snapshot(
     if reason not in SNAPSHOT_REASONS:
         raise ValueError(f"unknown snapshot reason {reason!r}; expected one of {SNAPSHOT_REASONS}")
 
-    # B-147: on the session's OWN connection, not whichever one is default.
+    # on the session's OWN connection, not whichever one is default.
     # A snapshot begins with a real `session.resume`, and resuming a
     # `kimi25`/`qwen38-flash` session against the default connection answers
     # `[4007] session not found` -- which surfaced as archiving simply failing

@@ -165,7 +165,7 @@ async def create_snapshot(
     """
     stored_id = _validate_stored_session_id_for_argv(
         stored_session_id
-    )  # B-120: the id a snapshot records is the one delete/pin later put into argv
+    )  # the id a snapshot records is the one delete/pin later put into argv
     reason = body.reason if body is not None else "manual"
     try:
         # `profile=None` lets `take_snapshot` read it off the filing row --
@@ -187,7 +187,7 @@ async def list_session_snapshots(
     """Every snapshot of one session, newest first. Workspace-only; Hermes is not called."""
     stored_id = _validate_stored_session_id_for_argv(
         stored_session_id
-    )  # B-120: the id a snapshot records is the one delete/pin later put into argv
+    )  # the id a snapshot records is the one delete/pin later put into argv
     rows = db.execute(
         _newest_first(
             select(SessionSnapshot).where(SessionSnapshot.stored_session_id == stored_id)
@@ -306,7 +306,7 @@ async def archive_session(
         # move it") rather than silently re-homing the session.
         file_stored_session(db, project, stored_id, body.title)
 
-    # B-147: the filing row is the honest source now that it exists (it is
+    # the filing row is the honest source now that it exists (it is
     # written with the session's profile), and by here the session is always
     # filed. `?profile=` is the fallback for a row that predates the column.
     session_profile = filing.profile or profile if filing is not None else profile
@@ -341,7 +341,7 @@ async def _pin_best_effort(
 ) -> tuple[bool | None, str | None]:
     """`hermes sessions pin <stored>`; tri-state result, never raises.
 
-    B-147: on the session's own connection. Best-effort either way, but
+    on the session's own connection. Best-effort either way, but
     pinning against the wrong profile's Hermes is a guaranteed no-op.
     """
     try:

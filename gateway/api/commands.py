@@ -172,7 +172,7 @@ async def dispatch_command(body: CommandName, request: Request) -> dict:
     "message"}}` verbatim -- `message` is the full skill prompt, and it is
     the CLIENT's job to submit it as an ordinary turn
     (`POST /api/sessions/{id}/turns`); no agent turn starts here and nothing
-    is written to any session (measured).
+    is written to any session.
 
     400 for `[4018]`: the name is either a core command (Hermes cannot
     dispatch those at all -- there is no remote execution surface) or does

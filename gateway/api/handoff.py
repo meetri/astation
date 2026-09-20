@@ -9,8 +9,8 @@ listening."*
 
 This route is the analysis half. It reads the session's transcript, keeps
 the last N things the user and the assistant said (`domain/handoff.py`), and
-asks the rewrite endpoint to distil them into the message the owner will
-send to a fresh session. It returns that text for the owner to READ AND EDIT
+asks the rewrite endpoint to distil them into the message the operator will
+send to a fresh session. It returns that text for the operator to READ AND EDIT
 in the new-session sheet; it creates nothing and sends nothing to Hermes.
 Creating the session is the existing `POST /api/projects/{id}/sessions/new`,
 untouched, so a continuation is a normal new session that happens to open
@@ -25,9 +25,9 @@ with a good first message.
 ## Why the rewrite path and not a Hermes turn
 
 The same three measurements that keep `api/rewrite.py` off Hermes: a turn on
-the live instance is 2.5-15 minutes, completion signals arrive late (B-62),
+the live instance is 2.5-15 minutes, completion signals arrive late,
 and `prompt.submit` would write the request into the transcript being
-continued. A sheet the owner just opened has to fill in seconds and must
+continued. A sheet the operator just opened has to fill in seconds and must
 leave the old session exactly as it was.
 
 ## What is shared, deliberately
@@ -102,7 +102,7 @@ class HandoffRequest(BaseModel):
 
 
 async def resolve_handoff_prompt(app_state: Any, settings: Settings) -> str:
-    """`handoff.md` if the owner wrote one, else `HANDOFF_PROMPT`.
+    """`handoff.md` if the operator wrote one, else `HANDOFF_PROMPT`.
 
     The same resolution the speech prompts use (`domain/prompt_files.py`): the
     file is an override, never a requirement, and a missing, empty or

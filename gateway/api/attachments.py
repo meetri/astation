@@ -124,7 +124,7 @@ def resolve_mime(declared: str | None, filename: str) -> str:
 
 def kind_for_mime(mime_type: str) -> str:
     """`image` rides `image.attach` (the P3-0b/P3-0c measured RPC);
-    everything else -- PDF and documents first, per the owner's multimedia
+    everything else -- PDF and documents first, per the operator's multimedia
     priority -- is referenced by its verified sandbox path."""
     return "image" if mime_type.startswith("image/") else "document"
 

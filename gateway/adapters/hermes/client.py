@@ -201,7 +201,7 @@ class HermesAdapter:
         self._recv_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
-        # B-197: `srq-<id>` -> the `request_id` clients were shown for it, so a
+        # `srq-<id>` -> the `request_id` clients were shown for it, so a
         # `request.cancel` can name the card to tear down. Insertion-ordered
         # and capped (`_MAX_TRACKED_SERVER_REQUESTS`).
         self._server_request_ids: dict[str, str] = {}
@@ -590,7 +590,7 @@ class HermesAdapter:
         """`POST /api/files/mkdir` `{"path": <abs>}` -- create a directory and
         its parents.
 
-        Measured live 2026-09-07 (`docs/PROJECT_INSTRUCTIONS_DESIGN.md`): the
+        Measured live 2026-09-07: the
         handler is `target.mkdir(parents=True, exist_ok=True)`, so a nested
         path is made in one call and an existing directory is a no-op 200.
         409 if a *file* already sits at the path; 403 if the directory is not
@@ -754,7 +754,7 @@ class HermesAdapter:
                 future.set_result(frame)
             return
 
-        # B-197: a server -> client REQUEST. Hermes mints string ids
+        # a server -> client REQUEST. Hermes mints string ids
         # (`srq-<12 hex>`) precisely so they cannot collide with a client's
         # integer ones, so a string id on a frame carrying a `method` is
         # never an answer to something we sent.
@@ -812,7 +812,7 @@ class HermesAdapter:
         routes each request to the single transport that owns the session
         (`tui_gateway/server.py::write_json`), so nobody else is waiting to
         answer it, and an unanswered request blocks the agent for the whole
-        clarify timeout -- which the owner may have configured as unlimited.
+        clarify timeout -- which the operator may have configured as unlimited.
         An error response is what Hermes itself documents a client without a
         handler for that method doing, and it frees the turn immediately.
         """
@@ -981,7 +981,7 @@ class HermesAdapter:
         `{"sessions": [{"id", "title", "preview", "started_at",
         "message_count", "source"}, ...]}`.
 
-        `profile` scopes the listing to one Hermes **profile** (the owner's
+        `profile` scopes the listing to one Hermes **profile** (the operator's
         "agent"/"channel"): measured live 2026-09-01 (PV "Profiles"), `{}`
         returned 130 sessions and `{"profile": "mlx"}` returned 8. The key is
         exactly `profile` -- `profile_name` is silently ignored and returns
@@ -1020,7 +1020,7 @@ class HermesAdapter:
         )
 
     async def profiles_list(self) -> dict[str, Any]:
-        """Every Hermes profile (the owner's "agents"/"channels"), one call.
+        """Every Hermes profile (the operator's "agents"/"channels"), one call.
 
         Verified live 2026-09-01 (PV "Profiles"): returns `{"profiles":
         [{name, path, is_default, model, provider, description, display_name,
@@ -1030,7 +1030,7 @@ class HermesAdapter:
         instance (`default`, `gpu-a`, `gpu-b`, `mlx`).
 
         A **lens**, not a picker: `session.create` accepts `profile` and
-        silently ignores it (measured with a bogus value), so nothing here
+        silently ignores it, so nothing here
         can create a session inside a chosen profile. Browsing and filtering
         (`session_list(profile=...)`) is the honest use.
         """
@@ -1078,7 +1078,7 @@ class HermesAdapter:
         provider?, model?, ...}`.
 
         Verified live 2026-09-06 on a throwaway profile
-        (`docs/AGENT_MODEL_DESIGN.md` §7): `{name, description, provider,
+: `{name, description, provider,
         model}` answers `{ok, name, path, model_set: true, mirrored: {env,
         auth, voice}}`, and `profiles.list` shows the pinned model straight
         away. The new profile inherits the launch profile's `.env` /
@@ -1096,7 +1096,7 @@ class HermesAdapter:
         {name, model?, provider?, description?, ...}`.
 
         Verified live 2026-09-06 on a throwaway profile
-        (`docs/AGENT_MODEL_DESIGN.md` §7): `{name, provider, model}` answers
+: `{name, provider, model}` answers
         `{ok, applied: {model: true}}`, and both `profiles.list` and
         `hermes -p <name> config get model` read the new value back. **Works
         from the default connection** -- the write is by profile *directory*,
@@ -1177,7 +1177,7 @@ class HermesAdapter:
         **A transcript row's only guaranteed key is `role`** -- notably NOT
         `text`. Measured over all 47 live sessions / 16,572 messages, 58% are
         `role: "tool"` rows carrying `args` / `context` / `name` and no
-        `text`, `row_id` or `timestamp` whatsoever (B-34). The full table is
+        `text`, `row_id` or `timestamp` whatsoever. The full table is
         in `docs/PROTOCOL_VERIFIED.md`, "Transcript message shape"; do not
         write a decoder for these rows from an example transcript.
 
@@ -1282,7 +1282,7 @@ class HermesAdapter:
 
         So callers MUST record `task_id` (against the STORED session id) at
         submit time -- the gateway's `background_tasks` ledger is the only
-        durable record the task ever existed (B-42).
+        durable record the task ever existed.
         """
         return await self.request(
             "prompt.background", {"session_id": session_id, "text": text, **extra_params}
@@ -1416,7 +1416,7 @@ class HermesAdapter:
         *plain* compress only; the partial form (`here N`) goes through
         `command_dispatch("/compress", args=..., session_id=live)`. Under LCM
         only raw messages outside the fresh tail (32 messages / 24k tokens on
-        the owner's host) are eligible, so a short session is an honest no-op
+        the operator's host) are eligible, so a short session is an honest no-op
         (`summary.noop`). Events: `status.update` kind `compressing` ->
         `compacting` -> `compacted` -> `session.info` -> `status` "ready".
         See PV "Compress + the LCM context engine".
@@ -1545,7 +1545,7 @@ class HermesAdapter:
     async def clarify_lock(
         self, request_id: str, question_id: str, answer: str, **extra_params: Any
     ) -> dict[str, Any]:
-        """Lock ONE answer of a batch clarify (B-197).
+        """Lock ONE answer of a batch clarify.
 
         A batch asks several questions in one request. Answers stay editable
         until every question is locked, and the lock that empties `remaining`
@@ -1601,7 +1601,7 @@ class HermesAdapter:
         answers: dict[str, str] | None = None,
         **extra_params: Any,
     ) -> dict[str, Any]:
-        """Answer a clarify prompt, single question or batch (B-197).
+        """Answer a clarify prompt, single question or batch.
 
         `answers` is the batch form: `{question_id: answer}` for the whole
         set. `answer` is the single-question form, and `""` means skip.
@@ -1631,7 +1631,7 @@ class HermesAdapter:
         is read from the deployed Hermes's own source
         (`/opt/hermes/tui_gateway/methods_prompt.py`, `_respond(rid, params,
         "password")`), not measured -- provoking a real `sudo.request` means
-        producing a real credential on the owner's machine. Treat a `200` from
+        producing a real credential on the operator's machine. Treat a `200` from
         this call the way B-39 teaches: a wrong field name here would answer
         `{"status": "ok"}` and drop the password.
 

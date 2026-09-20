@@ -3,7 +3,7 @@
 Pure functions over the `messages` list `session.resume` / `session.history`
 return, moved here from `api/main.py` (CLEANUP_PLAN step 3.2) so the session
 routes (`api/sessions.py`) and the snapshot reader (`api/snapshots.py`) share
-THE one place a transcript row can lose anything (B-86) without one of them
+THE one place a transcript row can lose anything without one of them
 importing a private from the app module.
 
 Two rules, both measured, both load-bearing:

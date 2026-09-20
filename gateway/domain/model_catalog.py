@@ -24,11 +24,11 @@ complete on its own, and §8 fixes the merged shape the app is built against:
 **Every external fetch is best-effort.** A failure -- offline, a timeout, a
 body that is not the expected shape -- yields `null` for the facts that source
 would have supplied and *never* a route failure: the catalog's job is to help
-the owner choose, and "OpenRouter is unreachable right now" must not take the
+the operator choose, and "OpenRouter is unreachable right now" must not take the
 local model list down with it. The two external results are cached in-process
 for `CATALOG_TTL_S` (one hour, monotonic clock) by `ModelCatalogCache`;
 `refresh=True` bypasses the cache. `model.options` itself is not cached here:
-it is one cheap RPC and it is the thing that changes when the owner configures
+it is one cheap RPC and it is the thing that changes when the operator configures
 a provider.
 
 **The OpenRouter fetch sends no key, ever.** The public list needs none, and a
@@ -167,7 +167,7 @@ async def probe_local_models(
 ) -> dict[str, dict[str, Any]] | None:
     """`GET {api_url}/models` on a local OpenAI-compatible endpoint, as `{id: entry}`.
 
-    Measured on the owner's llama.cpp (§7): `data[0].meta {n_ctx, n_ctx_train,
+    Measured on the operator's llama.cpp (§7): `data[0].meta {n_ctx, n_ctx_train,
     n_params, ftype}`. The whole entry is kept so `_local_facts()` can read
     `meta` regardless of which keys a given server fills in. `None` on any
     failure, same reasoning as `fetch_openrouter_models`. No key is sent: the

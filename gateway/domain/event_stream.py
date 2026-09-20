@@ -5,9 +5,9 @@ carries, moved here from `api/main.py` (CLEANUP_PLAN step 3.1) so nothing
 below `api/` has to import the app module to reach it:
 
 * `EventBroadcaster` -- the ONE task that drains the default connection's
-  adapter, plus `inject()` for every other profile's frames (B-136), each
-  subscriber on its own bounded `_Subscriber` queue (B-33), one shared `seq`.
-* The frame budget (B-02/B-16): `_frame_size`, `_bounded_client_frame*` and
+  adapter, plus `inject()` for every other profile's frames, each
+  subscriber on its own bounded `_Subscriber` queue, one shared `seq`.
+* The frame budget: `_frame_size`, `_bounded_client_frame*` and
   the two placeholder tiers an oversized event degrades into.
 * The gateway's own control frames (`stream.ready` B-28, `stream.resync`
   B-29, `stream.desynchronized` B-33) and the payload keys that identify
@@ -149,7 +149,7 @@ _SEQ_GATEWAY_SYNTHETIC = 0
 STORED_SESSION_ID_FIELD = "_stored_session_id"
 LIVE_SESSION_ID_FIELD = "_live_session_id"
 CONNECTION_GENERATION_FIELD = "_connection_generation"
-# B-136: WHICH Hermes profile's connection a frame came off. A stored session
+# WHICH Hermes profile's connection a frame came off. A stored session
 # id is only unique within a profile, so a client matching on
 # `_stored_session_id` alone could attribute one agent's frame to another
 # agent's open chat once every profile's stream shares `/ws/events`. Stamped
@@ -398,11 +398,11 @@ def _oversized_event_placeholder(payload: dict[str, Any], size: int) -> dict[str
     event of this type happened, and names the keys that were dropped so the
     loss is explicit rather than silent.
 
-    The session-identity keys (B-29) are **kept**, not dropped: attribution is
+    The session-identity keys are **kept**, not dropped: attribution is
     what lets the client decide whether this event is even about the
     conversation it is showing.
 
-    The key list is capped in count and in per-key length (B-16), and
+    The key list is capped in count and in per-key length, and
     `_dropped_key_count` always reports the true total, so "how much was lost"
     survives even when the list itself had to be cut.
     """
@@ -529,7 +529,7 @@ def _gateway_frame(
 
     * **`seq` is 0 and never drawn from the broadcaster's counter.** That
       counter is the client's replay cursor over the *upstream* stream
-      (B-14); spending one of its numbers on a frame Hermes never sent would
+; spending one of its numbers on a frame Hermes never sent would
       put a permanent hole in the one value a resume protocol has to trust.
     * **`_`-prefixed payload keys are the gateway's namespace** (the B-02 /
       B-14 convention), so `_gateway_generated` is a claim upstream cannot
@@ -555,14 +555,14 @@ def _gateway_frame(
 
 
 def stream_ready_frame(connection_generation: int | None = None) -> dict[str, Any]:
-    """ "You are subscribed" -- the first frame on every socket (B-28).
+    """ "You are subscribed" -- the first frame on every socket.
 
     The app's `EventBus` only reports `.live` once a frame arrives, and on a
     quiet system the next Hermes frame may never come, so a successful
     reconnect was indistinguishable from one that never completed and B-20's
     automatic reload-on-reconnect never fired.
 
-    It also carries `_connection_generation` (B-29): that is the generation
+    It also carries `_connection_generation`: that is the generation
     every live handle the client goes on to hold belongs to, so a client can
     tell a later `stream.resync` apart from the connection it is already on.
     """
@@ -642,7 +642,7 @@ def session_identity_from_payload(
     """`(stored_id, live_id)` as a raw Hermes payload names them -- the B-29 rule.
 
     `payload.session_id` does not mean the same thing on every event
-    (`docs/PROTOCOL_VERIFIED.md`): on almost all of them it is the *live*
+: on almost all of them it is the *live*
     handle; on `session.title` it is the *stored* id; and `session.info`
     carries both, under `session_id` (live) and `stored_session_id`. This is
     the one place that reads those two keys. Shared by
@@ -672,7 +672,7 @@ def session_identity_from_payload(
 
 
 class _Subscriber:
-    """One client's private feed, with a hard bound on what it can hold (B-33).
+    """One client's private feed, with a hard bound on what it can hold.
 
     The queue used to be unbounded, for a good reason: this is a transcript
     being assembled token by token, and silently discarding a `message.delta`
@@ -800,7 +800,7 @@ class EventBroadcaster:
 
     Drains the default connection's adapter itself (`_run`); every other
     profile's connection is drained by `ProfileConnectionManager`, which
-    hands its frames in through `inject()` (B-136). Either way each frame
+    hands its frames in through `inject()`. Either way each frame
     leaves tagged `_profile`, bounded, and stamped with one shared `seq`.
 
     `HermesAdapter.events()` is backed by a **single shared `asyncio.Queue`**,
@@ -821,7 +821,7 @@ class EventBroadcaster:
     reason: it must be monotonic across the whole upstream stream, not
     restarted per client.
 
-    `seq` counts **forwarded** frames, not raw upstream ones (B-14). A client
+    `seq` counts **forwarded** frames, not raw upstream ones. A client
     uses it as a replay cursor -- "give me everything after 184" -- so a gap
     in it is indistinguishable from a lost frame, and the client is right to
     treat it as one. It used to be spent before the normalizer had even been
@@ -847,12 +847,12 @@ class EventBroadcaster:
         profile_caches: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._adapter = adapter
-        # B-136: the profile whose connection `adapter` is. Stamped as
+        # the profile whose connection `adapter` is. Stamped as
         # `_profile` on every frame this broadcaster forwards from its own
         # upstream; frames from other profiles' connections arrive through
         # `inject()` carrying their own name.
         self._profile = profile
-        # B-198: inside Hermes there are no per-profile connections -- ONE
+        # inside Hermes there are no per-profile connections -- ONE
         # connection serves every profile, because `session.resume` takes the
         # profile as a parameter. So `self._profile` no longer
         # identifies the frame: it is just the name of the connection, which
@@ -896,16 +896,16 @@ class EventBroadcaster:
         self._seq = itertools.count(1)
         self._max_queued_frames = max_queued_frames
         self._max_queued_bytes = max_queued_bytes
-        # B-29: how a live handle on an event is turned back into the STORED
+        # how a live handle on an event is turned back into the STORED
         # id the app actually holds. Optional so a test (or any caller that
         # has no cache) still gets well-formed frames -- they simply carry a
         # null `_stored_session_id`, which is the honest answer.
         self._live_handle_cache = live_handle_cache
-        # B-29: which Hermes connection the frames we are forwarding belong
+        # which Hermes connection the frames we are forwarding belong
         # to. Seeded from the adapter so construction alone never looks like a
         # reconnect; every later move emits `stream.resync`.
         self._generation_seen: int | None = self._connection_generation()
-        # B-14: raw event names we have already complained about. Per type,
+        # raw event names we have already complained about. Per type,
         # not per frame -- an unmapped `reasoning.delta` would otherwise emit
         # 945 identical warnings in a single turn, which is how a real signal
         # gets tuned out. Per broadcaster instance so the first turn after a
@@ -932,7 +932,7 @@ class EventBroadcaster:
         arrives *after* it subscribes, and the queue cannot grow without
         bound while nobody is connected.
 
-        Also starts the connection-generation watcher (B-29). That one has to
+        Also starts the connection-generation watcher. That one has to
         be a poller rather than a check inside the pump, because the case it
         exists for is precisely the one where the pump has nothing to do: the
         upstream socket is replaced and Hermes then says nothing for a while,
@@ -952,7 +952,7 @@ class EventBroadcaster:
     async def subscribe(self, *, encoded: bool = False) -> AsyncIterator[asyncio.Queue[Any]]:
         """Register a private feed, guaranteed to be unregistered on exit.
 
-        The queue handed back is bounded (B-33): a subscriber that stops
+        The queue handed back is bounded: a subscriber that stops
         reading is cut off with a `stream.desynchronized` frame rather than
         being allowed to buffer the whole event stream in the gateway's heap.
 
@@ -1042,7 +1042,7 @@ class EventBroadcaster:
             subscriber.offer(frame, size, generation, text)
 
     def _note_unnormalized(self, raw_event: dict[str, Any]) -> None:
-        """Make an event type we don't handle discoverable, exactly once (B-14).
+        """Make an event type we don't handle discoverable, exactly once.
 
         A drop listed in `DELIBERATELY_DROPPED_RAW_EVENTS` is a decision and
         stays quiet at info level. Anything else is a type nobody has looked at
@@ -1151,7 +1151,7 @@ class EventBroadcaster:
     ) -> tuple[str | None, str | None, str]:
         """Complete the id pair, and name the profile the session belongs to.
 
-        **The profile comes from the session, not from the socket (B-198).**
+        **The profile comes from the session, not from the socket.**
         With one connection serving every profile, the connection's own name
         is `default` for all of them; the cache that can resolve this
         session's handle is the one that resumed it, and it knows which
@@ -1195,7 +1195,7 @@ class EventBroadcaster:
         return None, None, self._profile
 
     def inject(self, envelope: dict[str, Any], *, profile: str) -> None:
-        """Fan out a frame that came off ANOTHER profile's connection (B-136).
+        """Fan out a frame that came off ANOTHER profile's connection.
 
         `ProfileConnectionManager` drains every non-default profile's
         dedicated adapter itself (`domain/profile_connection.py::_forward_one`)
@@ -1220,7 +1220,7 @@ class EventBroadcaster:
           every client's socket;
         * a `seq` from the same counter every other forwarded frame draws
           from, spent last, so what a subscriber sees stays contiguous
-          (B-14) regardless of how many upstreams feed it;
+ regardless of how many upstreams feed it;
         * the B-33 bounded per-subscriber offer.
 
         Deliberately NOT run here: `_on_canonical_event` (the recorder --
@@ -1247,7 +1247,7 @@ class EventBroadcaster:
 
     def _forward_one(self, raw_event: dict[str, Any]) -> None:
         """Normalize, size-check and fan out exactly one upstream event."""
-        # B-29: if the upstream socket was replaced, say so *before* the first
+        # if the upstream socket was replaced, say so *before* the first
         # frame from the new connection goes out, so a client never sees a
         # frame stamped with a handle it has not been told to re-resolve.
         generation = self._note_connection_generation()
@@ -1300,7 +1300,7 @@ class EventBroadcaster:
                 injected = self._on_background_complete(envelope)
             except Exception:  # pragma: no cover - defensive
                 logger.exception("background-complete hook failed; forwarding the frame unledgered")
-        # B-02: one frame the client cannot receive kills the whole event
+        # one frame the client cannot receive kills the whole event
         # socket (1009), not just that event. Measured once here, for all
         # subscribers, since they all get the same bytes.
         frame, size = _bounded_client_frame_with_size(envelope)
@@ -1308,7 +1308,7 @@ class EventBroadcaster:
             # Unreachable (see `_bounded_client_frame_with_size`), and already
             # logged at error level there.
             return
-        # B-14: `seq` is the client's replay cursor, so it may only be
+        # `seq` is the client's replay cursor, so it may only be
         # spent on a frame the client actually receives. Assigned here,
         # last, after every decision that could still discard this frame --
         # dropped types and unsendable frames now cost nothing, and what

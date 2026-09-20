@@ -1,10 +1,10 @@
-"""The runtime configuration overlay: the owner's own provider settings, writable.
+"""The runtime configuration overlay: the operator's own provider settings, writable.
 
-The owner's principle, verbatim: *"It shouldn't matter the logistics I use --
+The operator's principle, verbatim: *"It shouldn't matter the logistics I use --
 what should matter is having control over the configs."* Until this module
 existed, every provider choice (which endpoint answers a rewrite, which Whisper
 runs, which key is presented) was a hand edit of the repo-root `.env` on one
-specific Mac. The owner could not change their own setup without a developer,
+specific Mac. The operator could not change their own setup without a developer,
 and the machine or engine in use is theirs to decide and change at will.
 
 ## The load order, and what "overlay" means
@@ -14,7 +14,7 @@ and the machine or engine in use is theirs to decide and change at will.
 `.env` keeps doing exactly what it did: it is the **floor**, the hand-maintained
 gitignored file that a fresh checkout or a Docker deploy is configured from.
 This module adds a layer **above** it -- a small JSON file the gateway itself
-owns and writes -- so a value the owner sets from their phone wins over the one
+owns and writes -- so a value the operator sets from their phone wins over the one
 in `.env`, and dropping the overlay value (`reset`) falls straight back to it.
 
 **`.env` is never written.** It is hand-maintained, it carries comments the
@@ -115,7 +115,7 @@ class ConfigKey:
 
     `key` is the `Settings` field name and is simultaneously the API key, the
     overlay JSON key and the identifier the app sends -- deliberately one
-    vocabulary. `env_var` is the `.env` alias it shadows, reported so the owner
+    vocabulary. `env_var` is the `.env` alias it shadows, reported so the operator
     can see which line of their `.env` an overlay value is overriding.
     """
 
@@ -154,7 +154,7 @@ class ConfigKey:
 
 @dataclass(frozen=True)
 class Capability:
-    """A family of settings the owner thinks about as one thing.
+    """A family of settings the operator thinks about as one thing.
 
     `writable` is False for the two capabilities this gateway does **not**
     configure. They are listed anyway, with the reason, because "the app shows
@@ -837,7 +837,7 @@ def _validate_url(spec: ConfigKey, value: str) -> None:
     puts a secret into a value this gateway reports back over
     `GET /api/config/providers`, logs as `provider_label()`, and shows in the
     app. Refusing the shape is the only way the "no secret is ever returned"
-    promise can hold for a field the owner types freely into.
+    promise can hold for a field the operator types freely into.
     """
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https"):
@@ -1024,7 +1024,7 @@ def env_provided_vars(env_file: str | os.PathLike[str] | None) -> frozenset[str]
     """Env-var names `.env` or the process environment actually provide.
 
     Presence, not value: a `.env` line that happens to repeat the default is
-    still the owner having written it down, and reporting it as `default` would
+    still the operator having written it down, and reporting it as `default` would
     send them looking in the wrong place. Upper-cased because pydantic-settings
     matches env vars case-insensitively.
 

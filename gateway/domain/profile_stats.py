@@ -19,12 +19,12 @@ test. This module turns those rows into the §8 `stats` block:
 1. **First response** is the earliest persisted `tool.generating` /
    `tool.started` / `message.interim` / `message.completed` after the run's
    `started_at`. **Not** `message.started` and **not** `status.update`:
-   measured on the deployed DB (2026-09-06, kimi25), a run's `started_at` IS
+   measured on the deployed DB, a run's `started_at` IS
    the timestamp of its own `message.started` (seq 1) and a `status.update`
    follows within ~15 ms, so counting either yields a flat `0.0` for every
    turn. The first frame that means "the model produced something" is the
    first tool call or the first sealed segment -- measured gaps of 12.3 s,
-   13.9 s and 46.8 s on the same profile. It is "first thing the owner could
+   13.9 s and 46.8 s on the same profile. It is "first thing the operator could
    see", not a vendor time-to-first-token: `reasoning.delta` is not
    persisted, so a reasoning-first model's first response is when its
    reasoning *ends*. A run with none of those four frames contributes
@@ -40,7 +40,7 @@ test. This module turns those rows into the §8 `stats` block:
    was re-resumed into a fresh process) and the run's own last value is taken
    as-is rather than reported as negative tokens.
 3. **Spend uses each turn's own `usage.model`**, not the profile's current
-   one: the owner may have switched the profile's model mid-week, and the
+   one: the operator may have switched the profile's model mid-week, and the
    turns before the switch cost what *that* model cost. The price comes from
    the injected `price_lookup(model_id) -> (input, output) | None` (per 1M
    tokens; `domain/model_catalog.py::price_lookup_from_catalog`). `spend_usd`
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 #: The persisted event types that count as "the agent produced something the
 #: owner can see". `message.started` is deliberately absent -- it is the
 #: frame that opens the run, so its gap to `started_at` is zero by
-#: construction (measured, module docstring) -- and so is `status.update`
+#: construction -- and so is `status.update`
 #: (a "recalled 32 memories" notice ~15 ms in). `reasoning.delta` and
 #: `message.delta` are not persisted (`events/persistence.py`), so they
 #: cannot be in this set.

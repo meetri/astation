@@ -46,7 +46,7 @@ An unknown `style` is a **422**, never a silent fallback to `listen`: a new
 style means a new prompt, and quietly rewriting code with the prose prompt
 is exactly the failure the enum prevents.
 
-## Why this does not go through Hermes (2026-09-01 review, ask #4)
+## Why this does not go through Hermes
 
 Three independent measurements kill the Hermes-routed version: real turn
 latency on the live instance is 2.5-15 minutes; B-62 completion signals
@@ -73,7 +73,7 @@ Consequences of that choice, made explicit:
   a 401 from some servers and an odd log line on the rest. Only an empty
   `REWRITE_BASE_URL` (or `REWRITE_MODEL`) disables the feature, and it does
   so with a 503 naming the variable -- never a silent fallback to a provider
-  the owner did not configure (the `api/transcribe.py` rule).
+  the operator did not configure (the `api/transcribe.py` rule).
 * **Model ids are namespaced with a slash** (`anthropic/claude-3.5-haiku`,
   `qwen/qwen3-27b`). Nothing here validates the model against a slash-free
   pattern; it is an opaque string forwarded to the endpoint, which is the
@@ -87,7 +87,7 @@ Consequences of that choice, made explicit:
 **OpenRouter can answer HTTP 200 with an `error` key and no `choices`.** A
 naive `payload["choices"][0]["message"]["content"]` reader would then hand
 the app an empty string and the speak button would silently say nothing --
-indistinguishable, to the owner, from a broken feature. So
+indistinguishable, to the operator, from a broken feature. So
 `content_from_completion()` asserts a non-empty string is really there and
 raises **502 carrying the upstream detail** otherwise. Every no-content
 shape (an `error` body, an empty `choices` list, a null/blank `content`)
@@ -255,7 +255,7 @@ class RewriteRequest(BaseModel):
 def prompt_for_style(settings: Settings, style: str) -> str:
     """The configured system prompt for `style`.
 
-    Each style reads its OWN `REWRITE_*` setting, so the owner can tune any
+    Each style reads its OWN `REWRITE_*` setting, so the operator can tune any
     one of them from `.env` without a rebuild and without disturbing the other
     two. An unknown style cannot reach here -- the request schema refuses it
     with a 422 first -- but it raises rather than falling back, because a
@@ -292,7 +292,7 @@ def compose_prompt(base_prompt: str, suffix: str) -> str:
 
 
 async def resolve_system_prompt(app_state: Any, settings: Settings, style: str, depth: str) -> str:
-    """The system prompt for `style` at `depth`, files first (2026-09-07).
+    """The system prompt for `style` at `depth`, files first.
 
     Each half is independently overridable by a file the app's editor can
     save (`domain/prompt_files.py`): the style prompt by `listen.md` /
@@ -433,7 +433,7 @@ def content_from_completion(payload: Any, *, label: str = "rewrite") -> str:
             "the endpoint answered HTTP 200 with no `choices`", detail, label=label
         )
     first = choices[0]
-    # B-91: a response cut off at the token ceiling arrives as a normal 200
+    # a response cut off at the token ceiling arrives as a normal 200
     # with `finish_reason: "length"` and a half-finished final sentence. The
     # route used to hand that straight to the synthesizer, so the operator heard
     # "less than 25% of the message" and had no way to know it was truncated.
@@ -576,7 +576,7 @@ async def rewrite_via_host_llm(
     which case the caller falls back to the HTTP path below.
 
     This exists because resolving a profile to an OpenAI-compatible base URL
-    plus a key of the gateway's own cannot work for every provider (B-195): a
+    plus a key of the gateway's own cannot work for every provider: a
     profile on a local llama.cpp server, on `bedrock`, `moa` or `openai-codex`
     has no such endpoint the gateway can call, and the honest answer was a 503.
     Hermes already knows how to talk to every provider it is configured with,

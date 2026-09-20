@@ -24,9 +24,9 @@ Three properties this module is responsible for:
 **A 200 must mean the answer landed.** Hermes reports "there was nothing to
 answer" as an ordinary success -- `{"resolved": 0}` from `approval.respond`,
 `{"status": "expired"}` from the other three. Both are the *normal* outcome of
-a race the phone cannot avoid: the owner taps just after Hermes gave up
+a race the phone cannot avoid: the operator taps just after Hermes gave up
 waiting, or a second device answered first. That is a 409 here with a plain
-explanation, never a silent 200 telling the owner their tap landed when it did
+explanation, never a silent 200 telling the operator their tap landed when it did
 not, and never a 500 -- it is not an error, it is a race.
 
 **Two of these carry a credential, not a decision.** `sudo.request` is not
@@ -66,7 +66,7 @@ Beyond that:
   built from the `request_id` and fixed strings only -- the value is not in
   scope where that payload is assembled.
 
-## Recording that a prompt was answered (B-189)
+## Recording that a prompt was answered
 
 An answered prompt produces no `*.resolved` frame on the wire (Hermes emits
 one only for a sudo/secret expiry), so before this the run ledger saw a turn
@@ -198,7 +198,7 @@ def _already_resolved(request_id: str) -> HTTPException:
 def _unrecognized_upstream_answer(method: str, answer: Any) -> HTTPException:
     """502 for a reply this gateway cannot read as success *or* as expired.
 
-    The alternative is guessing, and guessing here means telling the owner
+    The alternative is guessing, and guessing here means telling the operator
     their approval landed when nothing is known about whether it did. Same
     discipline as `_normalize_submit_status()` in `api/main.py`: an
     unrecognized status is reported, never quietly promoted to success.
@@ -271,7 +271,7 @@ def _record_resolution(
     stored_id: str | None = None,
     **detail: Any,
 ) -> bool:
-    """Append `<kind>.resolved` to the open run this answer belongs to (B-189).
+    """Append `<kind>.resolved` to the open run this answer belongs to.
 
     `stored_id` is known on the session-keyed approval route; the other three
     resolve it from the recorder's request-id memory. `detail` is what the
@@ -377,7 +377,7 @@ class ClarifyResponse(BaseModel):
     like " (Recommended)"), so echoing a choice string back verbatim is the
     client's job and any other text is equally valid.
 
-    Blank is refused for the same reason `POST /turns` refuses it (B-24): a
+    Blank is refused for the same reason `POST /turns` refuses it: a
     whitespace answer resumes the agent with nothing, which looks to it like
     the user said nothing at all.
     """
@@ -385,7 +385,7 @@ class ClarifyResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answer: str | None = Field(default=None, min_length=1)
-    #: B-197: a **batch** clarify asks several questions under one request,
+    #: a **batch** clarify asks several questions under one request,
     #: each with its own `qid`, and answering it with a single string would
     #: resolve the whole set with every other question blank -- the same
     #: silent discard B-39 was. `{qid: answer}` for the whole set.
@@ -549,7 +549,7 @@ async def respond_to_approval(
     `request_id` is always sent even though Hermes would default to the oldest
     pending approval without it: the phone may be answering a card that has
     since been superseded, and resolving the wrong one would allow an action
-    the owner never saw.
+    the operator never saw.
 
     Body: `{"choice": "once"|"session"|"always"|"deny"}`, or `{"approved":
     true|false}` for a client that can only express yes/no (mapping to
@@ -628,19 +628,19 @@ async def respond_to_clarify(
     """Answer a clarify prompt: one free-text answer, or a whole batch.
 
     Body is `{"answer": "..."}` for a single question, or
-    `{"answers": {"<qid>": "..."}}` for a batch (B-197) -- a clarify that
+    `{"answers": {"<qid>": "..."}}` for a batch -- a clarify that
     asked several questions at once, each carrying its own `qid`. Exactly one
     of the two.
 
     Keyed on `request_id` alone -- no session, no live handle. Hermes looks the
-    pending request up directly. `?profile=` (B-136) says which *connection*
+    pending request up directly. `?profile=` says which *connection*
     to look it up on, since `request_id`'s namespace is per-Hermes-process,
     not global: a prompt raised on `kimi25` is unknown to `default`.
 
     The answer goes on the wire under `answer` (or `answers`). That matters
     more than it looks: sending a single answer under `response` instead was
     accepted with `{"status": "ok"}` and the clarify tool then completed with
-    `user_response: ""`, so the agent resumed having discarded what the owner
+    `user_response: ""`, so the agent resumed having discarded what the operator
     typed. That was B-39, observed live; `HermesAdapter.clarify_respond()`
     owns the correct field names and tests pin both shapes.
 
@@ -689,7 +689,7 @@ async def respond_to_sudo(
     event, not in the URL, not echoed back, and scrubbed out of a 422.
 
     **The wire field (`password`) is source-read, not measured.** Provoking a
-    real `sudo.request` means producing a real credential on the owner's
+    real `sudo.request` means producing a real credential on the operator's
     machine, so it was deliberately never captured live -- see
     `docs/PROTOCOL_VERIFIED.md`, "`sudo.request` / `secret.request` -- NOT
     captured, and why". B-39 is the standing warning about what that costs:

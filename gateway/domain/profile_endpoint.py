@@ -11,7 +11,7 @@ re-pointing the profile in the Agents screen re-points the rewrite with it.
 Two ways a provider yields a base URL, and one way it cannot:
 
 * **A provider with an `api_url`** in `model.options` -- a user-defined local
-  endpoint (`custom`, `local-3080ti`; measured on the owner's instance) -- is
+  endpoint (`custom`, `local-3080ti`; measured on the operator's instance) -- is
   used as-is. That URL is already the OpenAI-compatible base including its
   version segment; it is what Hermes itself posts to.
 * **A built-in hosted provider that also speaks `/chat/completions`** --
@@ -61,7 +61,7 @@ _CACHE_ATTR = "profile_endpoint_cache"
 
 
 class ProfileEndpointError(Exception):
-    """Why a profile could not be turned into an endpoint, in the owner's terms.
+    """Why a profile could not be turned into an endpoint, in the operator's terms.
 
     `status_code` is what the route should answer: 503 for a configuration
     the gateway cannot act on (no such profile, a provider with no endpoint),

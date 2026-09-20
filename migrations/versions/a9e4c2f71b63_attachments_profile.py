@@ -1,6 +1,6 @@
 """attachments: persist the Hermes profile used for background routing
 
-B-202: attachment orchestration outlives the upload request, but the ledger
+attachment orchestration outlives the upload request, but the ledger
 recorded only a stored session id. Stored ids are profile-scoped; resuming a
 non-default session against the default profile returns Hermes [4007] session
 not found after the bytes have already reached the sandbox.

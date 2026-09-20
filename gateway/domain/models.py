@@ -193,7 +193,7 @@ class SessionSnapshot(Base):
     Hermes owns every transcript and, until this table, the gateway kept no
     copy at all (`messages` has 0 rows by P2-2 design; `run_events` only sees
     turns made through this gateway while connected). A snapshot is the
-    durability the owner asked for on 2026-09-03 -- "keep all session data
+    durability the operator asked for on 2026-09-03 -- "keep all session data
     including AI chat and reasoning" -- taken through the ordinary
     `session.resume` path and stored **verbatim**: every row, every role,
     `reasoning`, `args`, `context`, `display_kind`, in Hermes's order, with no
@@ -288,7 +288,7 @@ class ChatMessage(Base):
 
     **Uniqueness is `(profile, stored_session_id, seq)`, never
     `stored_session_id` alone.** Profiles are separate Hermes runtimes with
-    separate id spaces (`docs/CHAT_HISTORY_DESIGN.md` §1.3/§4) -- two
+    separate id spaces -- two
     profiles could in principle mint the same stored id, and this table must
     not collide if they do.
 
@@ -298,7 +298,7 @@ class ChatMessage(Base):
     known**; most live-captured rows do not carry one, because Hermes's push
     events (`message.interim`, `tool.complete`, `message.complete`) do not
     include it on the wire -- only the transcript rows `session.resume` /
-    `session.history` return do (`docs/PROTOCOL_VERIFIED.md`). Backfill
+    `session.history` return do. Backfill
     (reading a profile's `state.db` directly) is expected to be the path that
     populates it. `source` records which path wrote the row: `submit` (the
     app's own turn-submit route, before Hermes is called), `live` (captured
@@ -570,7 +570,7 @@ class Artifact(Base):
     Hermes session it was produced in -- and filing is optional and additive
     (`api/projects.py`): most real sessions (every spike, everything unfiled)
     have no Session row at all. Unfiled spike sessions are this project's
-    standard test path (CLAUDE.md), so the very first live ingestion test
+    standard test path, so the very first live ingestion test
     would crash on a NOT NULL constraint. NULL means "unfiled", exactly the
     same answer `GET /api/sessions` and `runs.project_id` give. The rejected
     alternative -- a synthetic "unfiled" project row -- fails here for the
@@ -639,12 +639,11 @@ class Artifact(Base):
     #: from the library's default listings and from the bookmark shelf, and
     #: reachable again through "Show archived". There is deliberately no
     #: delete for an artifact anywhere in this system
-    #:.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Tag(Base):
-    """One tag in the shared vocabulary (`docs/ARTIFACT_ORGANIZATION_PLAN.md`).
+    """One tag in the shared vocabulary.
 
     **One vocabulary for projects and artifacts**, not one per owner kind:
     this workspace is one project holding 95% of everything, and a tag that
@@ -702,11 +701,11 @@ class ProjectTag(Base):
 
 
 class Collection(Base):
-    """A named, ordered, cross-project set of artifacts the owner curates.
+    """A named, ordered, cross-project set of artifacts the operator curates.
 
     **Ordered is what makes this not a tag.** "Figures for the L328 paper" has
     a figure 1 and a figure 2; a tag has no such thing. `position` is the
-    decision, not a chronology, which is why it is an integer the owner can
+    decision, not a chronology, which is why it is an integer the operator can
     rewrite rather than an `added_at` sort.
 
     **Cross-project, like the bookmark shelf.** This workspace is one project
