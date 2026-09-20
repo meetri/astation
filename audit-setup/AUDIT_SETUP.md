@@ -99,7 +99,7 @@ the off-box heartbeat alarms on.
 
 **What it does.** The queryable store. One MergeTree table per event class
 (`clickhouse/schema.sql`), all `PARTITION BY toDate(ts)` and `ORDER BY (host, ts)`, with
-`LowCardinality` on the small-vocabulary columns. Measured on the first host: **30.9 bytes per
+`LowCardinality` on the small-vocabulary columns. Measured on a working install: **30.9 bytes per
 row** on disk after compression.
 
 Tables: `host_exec`, `host_exit`, `host_file`, `host_net`, `host_auth`, `host_container`,
