@@ -35,6 +35,7 @@ from fastapi.exceptions import RequestValidationError
 
 from api.artifacts import artifacts_router
 from api.attachments import attachment_serve_router, attachments_router
+from api.audit import audit_router
 from api.auth import require_basic_auth, websocket_client_is_authorized
 from api.background import background_router
 from api.bootstrap import _profile_adapter_factory, shutdown, startup  # noqa: F401
@@ -201,6 +202,10 @@ api.include_router(background_router)
 # timeline behind the restart-surviving `after_seq` cursor. Mounted on `api`
 # so both reads are authenticated by construction.
 api.include_router(runs_router)
+
+# The audit surface: what actually happened on the host (audit/README.md).
+# Answers 503 with a reason when no store is configured, which is the default.
+api.include_router(audit_router)
 
 # Slash commands (`api/commands.py`, P2-4): cached catalog + resolve +
 # dispatch, shaped by the P2-0a verdict (dispatch is a skill-expansion

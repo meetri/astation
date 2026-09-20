@@ -277,6 +277,7 @@ class AttachmentOrchestrator:
         adapter: HermesAdapter = self._app_state.hermes_adapter
         cache = self._app_state.live_handle_cache
         stored_id = row.stored_session_id
+        profile = row.profile
         sandbox_path = row.sandbox_path
         expected_checksum = row.checksum
         expected_size = row.size_bytes
@@ -300,7 +301,7 @@ class AttachmentOrchestrator:
                 self._set_state(attachment_id, STATE_FAILED, detail)
                 return
             await self._attach_and_finish(
-                attachment_id, adapter, cache, stored_id, sandbox_path, detail
+                attachment_id, adapter, cache, stored_id, profile, sandbox_path, detail
             )
             return
 
@@ -316,6 +317,7 @@ class AttachmentOrchestrator:
                     cache,
                     stored_id,
                     lambda live: adapter.prompt_submit(live, prime_text),
+                    profile=profile,
                 ),
             )
         except HermesError as exc:
@@ -346,7 +348,7 @@ class AttachmentOrchestrator:
             return
 
         await self._attach_and_finish(
-            attachment_id, adapter, cache, stored_id, sandbox_path, verify_detail
+            attachment_id, adapter, cache, stored_id, profile, sandbox_path, verify_detail
         )
 
     async def _attach_and_finish(
@@ -355,6 +357,7 @@ class AttachmentOrchestrator:
         adapter: HermesAdapter,
         cache: Any,
         stored_id: str,
+        profile: str,
         sandbox_path: str,
         verify_detail: str,
     ) -> None:
@@ -394,6 +397,7 @@ class AttachmentOrchestrator:
                     lambda live: adapter.request(
                         "image.attach", {"session_id": live, "path": sandbox_path}
                     ),
+                    profile=profile,
                 ),
             )
         except HermesError as exc:

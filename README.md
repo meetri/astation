@@ -36,12 +36,40 @@ dashboard restart. `/api/dashboard/plugins/rescan` reloads UI bundles only.
 GET /api/plugins/astation/health
 ```
 
-A healthy instance reports `status: ok`, `routers_mounted: 23`, `services_started: true`,
+A healthy instance reports `status: ok`, `routers_mounted: 24`, `services_started: true`,
 `foreign_prompts: "hook"` and `ws_core_module: "hermes_cli.web_server_chat"` (the last is
 version-sensitive; on Hermes 0.20.5 the same helper lives in `hermes_cli.web_server`).
 
 It also reports `import_error`, `startup_error` and `migration` verbatim — read it first when
 something is wrong, because a plugin that fails to mount is otherwise only one line in a log.
+
+## The audit layer
+
+The plugin can record what each session actually did, and answer questions about it.
+
+Two independent recorders, joined only when read. The plugin captures every tool call a session
+makes -- the tool, its arguments, how long it took -- tagged with the session, turn and call ids.
+Separately, a kernel sensor records the processes, file writes and network connections on the host,
+knowing nothing about sessions. A session timeline shows both, in labelled tiers, never merged: a
+compromised agent can lie in its own channel and cannot touch the other one.
+
+**Tool output is deliberately not recorded.** A file read returns the file, and the archive is
+append-only, so a secret that reaches it cannot be removed. What is stored is the duration, the
+status and the error class.
+
+`audit-setup/` holds the other half: the sensor, the shipper and the store, as a Compose project
+with its own installer and self-test. Read `audit-setup/AUDIT_SETUP.md` first -- it explains each
+image, what it needs from the host, and what breaks without it. A local-only install needs no
+cloud account.
+
+The plugin runs fine without any of it. The forwarder logs that attribution is off, and the audit
+routes answer 503 with a reason rather than pretending nothing happened.
+
+```
+GET  /api/plugins/astation/api/audit/health
+GET  /api/plugins/astation/api/audit/sessions/{id}/timeline
+POST /api/plugins/astation/api/audit/query      # one capped, read-only SELECT
+```
 
 ## What it needs
 

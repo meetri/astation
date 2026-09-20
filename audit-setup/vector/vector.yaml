@@ -1,0 +1,629 @@
+# The shipper. One process reads every sensor on the host, normalises it, and
+# writes it to two places that fail independently.
+#
+# The two sinks are the whole tamper-evidence story and they are NOT a primary
+# and a backup:
+#
+#   clickhouse  the hot store, for querying. Deletable by anything that gets
+#               root on the collector.
+#   aws_s3      the record. Written with a credential that can PutObject and
+#               nothing else, into a bucket with Object Lock in compliance
+#               mode. Nothing on this host -- no process, no credential, no
+#               root -- can alter or remove what has already landed there.
+#
+# Both get every event. A host that is fully compromised can stop NEW records
+# from being written; it cannot touch the old ones, and the gap it leaves is
+# what the off-box heartbeat alarms on.
+#
+# The archive is OPTIONAL and the hot store is not. With AUDIT_BUCKET empty,
+# install.sh renders this file without the aws_s3 sink at all and the host runs
+# local-only: everything is still captured, normalised, redacted and queryable,
+# but the tamper-evidence property above is NOT in force, because the only copy
+# of a record lives on the machine that produced it. Set a bucket before
+# treating this stack as evidence of anything.
+#
+# Buffers are on disk, not in memory: a ClickHouse restart or a network blip
+# must not lose events, and `when_full: block` means the shipper waits rather
+# than dropping. Dropping audit data quietly is the one behaviour this file
+# must never have.
+
+# EVERY per-host value is an @@TOKEN@@, rendered by install.sh before this file
+# is mounted. There is no `${VAR}` anywhere, deliberately.
+#
+# Vector documents environment interpolation, but this image (0.58.0) does NOT
+# interpolate -- measured, not assumed. The literal text reached Vector in
+# every position tried:
+#
+#   typed fields   failed loudly: "invalid socket address syntax" for a port,
+#                  "invalid uri character" for an endpoint, "did not match any
+#                  variant of untagged enum BufferConfig" for an integer.
+#   string fields  failed SILENTLY, which is far worse: 738 rows were stored
+#                  with host = "${AUDIT_HOST_LABEL}" as their literal value,
+#                  and the S3 sink spent its time retrying against a bucket
+#                  actually named "${AUDIT_BUCKET}" ("dispatch failure").
+#
+# Rendering every token in one place makes the substitution verifiable: install
+# .sh fails if any @@TOKEN@@ survives into the rendered file, so the silent
+# variant cannot happen again.
+#
+# A new per-host value gets an @@TOKEN@@ here and a `-e` line in install.sh.
+
+data_dir: /var/lib/vector
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+sources:
+  # Tetragon's JSON export. It rotates at 10 MB x 5 backups, so Vector has to
+  # keep up or lose data -- `read_from: beginning` plus the checkpoint in
+  # data_dir means a restart resumes where it stopped rather than skipping to
+  # the end.
+  tetragon:
+    type: file
+    include:
+      - /var/log/tetragon/tetragon.log
+      - /var/log/tetragon/tetragon-*.log
+    read_from: beginning
+    # The export file is written by the tetragon container as root, mode 0600.
+    fingerprint:
+      strategy: device_and_inode
+
+  # Logins, sudo, and the docker daemon.
+  journal:
+    type: journald
+    include_units:
+      - ssh
+      - sshd
+      - sudo
+      - docker
+    # `false` is REJECTED on systemd 250-257 (this host runs 257) and the
+    # refusal is fatal to the whole shipper, not just this source. Current boot
+    # only is the right scope anyway: earlier boots are already in the archive,
+    # and the checkpoint in data_dir means a Vector restart resumes rather than
+    # re-reading.
+    current_boot_only: true
+
+  # The liveness signal. One event a minute regardless of host activity, so the
+  # absence of data is unambiguous. See audit.host_beat in schema.sql.
+  beat:
+    type: demo_logs
+    format: shuffle
+    lines: ["beat"]
+    interval: 60
+
+  # Phase 2: the astation plugin posts agent_* events here over the audit
+  # docker network. Bound to the container's own address; the port is published
+  # nowhere, so nothing on the LAN can reach it.
+  #
+  # Fixed, not a token: nothing per-host about it. Published to no interface,
+  # reachable only from the audit docker network.
+  #
+  # Phase 2's plugin must post to http://audit-vector:8686/ingest to match.
+  agent_http:
+    type: http_server
+    address: "0.0.0.0:8686"
+    # `decoding.codec`, not the older `encoding:` key -- with `encoding` this
+    # source did NOT parse the body, so every field arrived as one string in
+    # `.message`, the class defaulted to agent_tool, and 44 rows landed with
+    # every column empty. Measured against the deployed shipper, 2026-09-20.
+    # The transform parses defensively as well, so neither half alone can
+    # reintroduce that.
+    decoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    path: /ingest
+
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
+transforms:
+  # One VRL program for every Tetragon event. It fans a single input stream
+  # into the classes of schema.sql, because Tetragon reports exec, file and
+  # network through the same envelope and only the inner key distinguishes them.
+  tetragon_normalize:
+    type: remap
+    inputs: [tetragon]
+    # A parse failure must not kill the stream, and must not vanish either:
+    # dropped events go to the .dropped output, which is counted below.
+    drop_on_error: true
+    reroute_dropped: true
+    # VRL has NO user-defined functions. The redaction chain below is therefore
+    # repeated per field rather than factored out -- `redact = func(s) {...}`
+    # compiles in no VRL version and takes the whole shipper down.
+    # It also has no `for_each` over an array in this position, so Tetragon's
+    # args are read by INDEX through paths, which is safe because a tracing
+    # policy fixes each hook's argument order (see tetragon/policies/).
+    source: |
+      . = parse_json!(string!(.message))
+
+      kind = "none"
+      if exists(.process_exec) { kind = "exec" }
+      if exists(.process_exit) { kind = "exit" }
+      if exists(.process_kprobe) { kind = "kprobe" }
+      if kind == "none" { abort }
+
+      if kind == "exec" {
+        .p = .process_exec.process
+        .pp = .process_exec.parent
+      } else if kind == "exit" {
+        .p = .process_exit.process
+        .pp = .process_exit.parent
+      } else {
+        .p = .process_kprobe.process
+        .pp = .process_kprobe.parent
+      }
+
+      # --- redaction, before anything is stored ---------------------------
+      # Hermes masks secrets in ITS output; the kernel does not. A key passed
+      # on a command line is in argv, and argv is in this event. There is no
+      # path to either sink that skips this.
+      a0 = to_string(.p.arguments) ?? ""
+      a1 = replace(a0, r'(AKIA|ASIA)[0-9A-Z]{16}', "AWS_KEY_REDACTED")
+      a1 = replace(a1, r'\b(sk|rk)-[A-Za-z0-9_\-]{16,}', "API_KEY_REDACTED")
+      a1 = replace(a1, r'\bgh[pousr]_[A-Za-z0-9]{20,}', "GITHUB_TOKEN_REDACTED")
+      a1 = replace(a1, r'\bxox[baprs]-[A-Za-z0-9\-]{10,}', "SLACK_TOKEN_REDACTED")
+      a1 = replace(a1, r'(?i)(password|passwd|secret|token|api[_-]?key)=\S+', "REDACTED=REDACTED")
+      a1 = replace(a1, r'(?i)bearer [A-Za-z0-9._\-]{16,}', "Bearer REDACTED")
+      a1 = replace(a1, r'-----BEGIN [A-Z ]*PRIVATE KEY-----', "PRIVATE_KEY_REDACTED")
+
+      b0 = to_string(.pp.arguments) ?? ""
+      b1 = replace(b0, r'(AKIA|ASIA)[0-9A-Z]{16}', "AWS_KEY_REDACTED")
+      b1 = replace(b1, r'\b(sk|rk)-[A-Za-z0-9_\-]{16,}', "API_KEY_REDACTED")
+      b1 = replace(b1, r'\bgh[pousr]_[A-Za-z0-9]{20,}', "GITHUB_TOKEN_REDACTED")
+      b1 = replace(b1, r'\bxox[baprs]-[A-Za-z0-9\-]{10,}', "SLACK_TOKEN_REDACTED")
+      b1 = replace(b1, r'(?i)(password|passwd|secret|token|api[_-]?key)=\S+', "REDACTED=REDACTED")
+      b1 = replace(b1, r'(?i)bearer [A-Za-z0-9._\-]{16,}', "Bearer REDACTED")
+
+      out = {}
+      out.ts = to_string(.time) ?? ""
+      out.host = "@@HOST_LABEL@@"
+      out.exec_id = to_string(.p.exec_id) ?? ""
+      out.pid = to_int(.p.pid) ?? 0
+      out.uid = to_int(.p.uid) ?? 0
+      out.binary = to_string(.p.binary) ?? ""
+      # Tetragon truncates this to 31 characters. Left unpadded so consumers
+      # must match by PREFIX; a column that looked like a full id would invite
+      # an equality join that silently never matches.
+      out.container_id = to_string(.p.docker) ?? ""
+      out.container_name = ""
+      out.redacted = 0
+      if a1 != a0 { out.redacted = 1 }
+      if b1 != b0 { out.redacted = 1 }
+
+      if kind == "exec" {
+        out.audit_class = "host_exec"
+        out.tid = to_int(.p.tid) ?? 0
+        out.auid = to_int(.p.auid) ?? -1
+        out.arguments = a1
+        out.cwd = to_string(.p.cwd) ?? ""
+        out.flags = to_string(.p.flags) ?? ""
+        out.parent_exec_id = to_string(.p.parent_exec_id) ?? ""
+        out.parent_exec_id_2 = to_string(.pp.exec_id) ?? ""
+        out.parent_binary = to_string(.pp.binary) ?? ""
+        out.parent_arguments = b1
+        out.parent_pid = to_int(.pp.pid) ?? 0
+        out.in_init_tree = 0
+        if (.p.in_init_tree == true) { out.in_init_tree = 1 }
+      } else if kind == "exit" {
+        out.audit_class = "host_exit"
+        out.status = to_int(.process_exit.status) ?? 0
+        out.signal = to_string(.process_exit.signal) ?? ""
+      } else {
+        fn = to_string(.process_kprobe.function_name) ?? ""
+        cwd = to_string(.p.cwd) ?? ""
+
+        if exists(.process_kprobe.args[0].sock_arg) {
+          out.audit_class = "host_net"
+          if fn == "tcp_connect" {
+            out.direction = "outbound"
+          } else if fn == "tcp_close" {
+            out.direction = "close"
+          } else {
+            out.direction = "inbound"
+          }
+          out.saddr = to_string(.process_kprobe.args[0].sock_arg.saddr) ?? ""
+          out.daddr = to_string(.process_kprobe.args[0].sock_arg.daddr) ?? ""
+          out.sport = to_int(.process_kprobe.args[0].sock_arg.sport) ?? 0
+          out.dport = to_int(.process_kprobe.args[0].sock_arg.dport) ?? 0
+          out.family = to_string(.process_kprobe.args[0].sock_arg.family) ?? ""
+        } else {
+          out.audit_class = "host_file"
+          out.source_hook = fn
+          out.cwd = cwd
+          out.path_to = ""
+
+          raw = ""
+          conf = "unresolved"
+          op = "write"
+
+          if exists(.process_kprobe.args[0].file_arg.path) {
+            # LSM hook: the kernel resolved this path, so it is right by
+            # construction and needs no cwd join.
+            raw = to_string(.process_kprobe.args[0].file_arg.path) ?? ""
+            conf = "resolved"
+            op = "write"
+          } else {
+            # Syscall hook: the path the CALLER passed, relative ~30% of the
+            # time on a real host. Argument order is fixed by the policy.
+            if ends_with(fn, "renameat2") {
+              op = "rename"
+              raw = to_string(.process_kprobe.args[0].string_arg) ?? ""
+              out.path_to = to_string(.process_kprobe.args[1].string_arg) ?? ""
+            } else {
+              raw = to_string(.process_kprobe.args[1].string_arg) ?? ""
+              if ends_with(fn, "openat") { op = "open_write" }
+              if ends_with(fn, "unlinkat") { op = "unlink" }
+            }
+
+            if starts_with(raw, "/") {
+              conf = "absolute"
+            } else if raw != "" && cwd != "" {
+              # Joined against the cwd RECORDED AT EXEC. Wrong if the process
+              # changed directory since, which is why the label travels with
+              # the row rather than the join being presented as fact.
+              raw = cwd + "/" + raw
+              if out.path_to != "" && !starts_with(string!(out.path_to), "/") {
+                out.path_to = cwd + "/" + string!(out.path_to)
+              }
+              conf = "cwd_resolved"
+            }
+          }
+
+          p1 = replace(raw, r'(AKIA|ASIA)[0-9A-Z]{16}', "AWS_KEY_REDACTED")
+          p1 = replace(p1, r'\b(sk|rk)-[A-Za-z0-9_\-]{16,}', "API_KEY_REDACTED")
+          if p1 != raw { out.redacted = 1 }
+
+          out.path = p1
+          out.op = op
+          out.path_confidence = conf
+        }
+      }
+
+      . = out
+
+  auth_normalize:
+    type: remap
+    inputs: [journal]
+    drop_on_error: true
+    reroute_dropped: true
+    # Same `out` pattern as the tetragon transform: build the row explicitly
+    # rather than deleting journald's ~30 metadata fields one by one. An
+    # allowlist cannot leak a field a systemd upgrade adds.
+    source: |
+      msg = to_string(.message) ?? ""
+      unit = to_string(._SYSTEMD_UNIT) ?? ""
+      if unit == "" { unit = to_string(.SYSLOG_IDENTIFIER) ?? "" }
+
+      kind = "other"
+      if match(msg, r'^Accepted ') { kind = "accepted" }
+      if match(msg, r'^Failed password') { kind = "failed" }
+      if match(msg, r'^Invalid user') { kind = "failed" }
+      if match(msg, r'authentication failure') { kind = "failed" }
+      if match(msg, r'session opened for user') { kind = "session_open" }
+      if match(msg, r'session closed for user') { kind = "session_close" }
+      if match(msg, r'sudo:') { kind = "sudo" }
+
+      user = ""
+      um = parse_regex(msg, r'(?:for (?:invalid user )?|USER=)(?P<u>[A-Za-z0-9._-]+)') ?? {}
+      user = to_string(um.u)
+
+      ip = ""
+      im = parse_regex(msg, r'from (?P<ip>[0-9a-fA-F:.]+)') ?? {}
+      ip = to_string(im.ip)
+
+      # journald supplies a real timestamp; `to_timestamp` does not exist in
+      # VRL, so the value is type-checked rather than converted.
+      ts = now()
+      if is_timestamp(.timestamp) { ts = timestamp!(.timestamp) }
+
+      out = {}
+      out.audit_class = "host_auth"
+      out.ts = format_timestamp!(ts, format: "%Y-%m-%dT%H:%M:%S%.3fZ")
+      out.host = "@@HOST_LABEL@@"
+      out.unit = unit
+      out.kind = kind
+      out.user = user
+      out.source_ip = ip
+      out.message = msg
+      . = out
+
+  beat_normalize:
+    type: remap
+    inputs: [beat]
+    source: |
+      out = {}
+      out.audit_class = "host_beat"
+      out.ts = format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ")
+      out.host = "@@HOST_LABEL@@"
+      out.role = "@@ROLE@@"
+      out.vector_version = "@@VECTOR_VERSION@@"
+      out.note = "liveness"
+      . = out
+
+  agent_normalize:
+    type: remap
+    inputs: [agent_http]
+    drop_on_error: true
+    reroute_dropped: true
+    source: |
+      # Parse defensively. If the source already decoded the body these fields
+      # are at the root; if it did not, the whole row is a JSON string in
+      # `.message` and must be lifted out -- otherwise every column is empty
+      # and the class silently defaults, which is exactly what happened before
+      # `decoding.codec` was set above.
+      if is_string(.message) {
+        parsed = parse_json(string!(.message)) ?? null
+        if is_object(parsed) { . = object!(parsed) }
+      }
+      .host = "@@HOST_LABEL@@"
+      # No default class. A row that does not say what it is gets its own
+      # bucket rather than being filed as a tool call it is not.
+      if !exists(.audit_class) { .audit_class = "agent_unknown" }
+      if !exists(.ts) { .ts = format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ") }
+      del(.source_type)
+      del(.path)
+
+  # Anything that failed to parse. Kept, not discarded: a sensor whose output
+  # shape changed on upgrade shows up here as a rising count rather than as
+  # events that quietly stop arriving. selftest.sh fails on a non-zero count.
+  dropped:
+    type: remap
+    inputs:
+      - tetragon_normalize.dropped
+      - auth_normalize.dropped
+      - agent_normalize.dropped
+    source: |
+      reason = to_string(.message) ?? "unknown"
+      out = {}
+      out.audit_class = "host_beat"
+      out.ts = format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%S%.3fZ")
+      out.host = "@@HOST_LABEL@@"
+      out.role = "@@ROLE@@"
+      out.vector_version = "@@VECTOR_VERSION@@"
+      out.note = "PARSE FAILURE: " + slice!(reason, 0, 300)
+      . = out
+
+  # --- per-class routing ----------------------------------------------------
+  # ClickHouse needs one sink per table, so the merged stream is split back out
+  # by the class the normalisers assigned.
+  route:
+    type: route
+    inputs: [tetragon_normalize, auth_normalize, beat_normalize, agent_normalize, dropped]
+    route:
+      host_exec: '.audit_class == "host_exec"'
+      host_exit: '.audit_class == "host_exit"'
+      host_file: '.audit_class == "host_file"'
+      host_net: '.audit_class == "host_net"'
+      host_auth: '.audit_class == "host_auth"'
+      host_beat: '.audit_class == "host_beat"'
+      agent_tool: '.audit_class == "agent_tool"'
+      agent_llm: '.audit_class == "agent_llm"'
+      agent_session: '.audit_class == "agent_session"'
+      audit_query: '.audit_class == "audit_query"'
+
+# ---------------------------------------------------------------------------
+# Sinks
+# ---------------------------------------------------------------------------
+sinks:
+  # @@ARCHIVE_BEGIN@@
+  # Everything between these two markers is the S3 archive, and it is OPTIONAL.
+  # install.sh deletes this whole block when AUDIT_BUCKET is empty in .env, so a
+  # host with no AWS account gets a working local-only stack (sensor + shipper +
+  # hot store) instead of a shipper that cannot start. With a bucket set, both
+  # markers are simply dropped and the rendered file is byte-for-byte what it
+  # always was. The markers are comments, so the "no @@TOKEN@@ survived" check
+  # in install.sh (which skips comment lines) is unaffected either way.
+  #
+  # --- the record -----------------------------------------------------------
+  # One object per class per hour per host. CLASS COMES FIRST in the key so a
+  # single S3 lifecycle policy covers every host in the network without being
+  # edited when a host is added (scripts/audit_retention.py relies on this).
+  archive:
+    type: aws_s3
+    inputs: [route.host_exec, route.host_exit, route.host_file, route.host_net,
+             route.host_auth, route.host_beat, route.agent_tool, route.agent_llm,
+             route.agent_session, route.audit_query, route._unmatched]
+    bucket: "@@BUCKET@@"
+    region: "@@AWS_REGION@@"
+    key_prefix: 'raw/{{ audit_class }}/host=@@HOST_LABEL@@/%Y/%m/%d/%H/'
+    compression: gzip
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    batch:
+      # 60s bounds how much a destroyed host can erase: anything older than
+      # this is already beyond its reach.
+      timeout_secs: 60
+      max_bytes: 10000000
+    buffer:
+      type: disk
+      # 1 GiB. Fixed rather than tokenised: the amount of store-or-network
+      # outage a host can ride out without dropping anything. Edit here.
+      max_size: 1073741824
+      when_full: block
+    request:
+      retry_attempts: 100
+  # @@ARCHIVE_END@@
+
+  # --- the hot store --------------------------------------------------------
+  clickhouse_host_exec:
+    type: clickhouse
+    inputs: [route.host_exec]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_exec
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_host_exit:
+    type: clickhouse
+    inputs: [route.host_exit]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_exit
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_host_file:
+    type: clickhouse
+    inputs: [route.host_file]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_file
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_host_net:
+    type: clickhouse
+    inputs: [route.host_net]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_net
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_host_auth:
+    type: clickhouse
+    inputs: [route.host_auth]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_auth
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_host_beat:
+    type: clickhouse
+    inputs: [route.host_beat]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: host_beat
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_agent_tool:
+    type: clickhouse
+    inputs: [route.agent_tool]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: agent_tool
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_agent_llm:
+    type: clickhouse
+    inputs: [route.agent_llm]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: agent_llm
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_audit_query:
+    type: clickhouse
+    inputs: [route.audit_query]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: audit_query
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block
+
+  clickhouse_agent_session:
+    type: clickhouse
+    inputs: [route.agent_session]
+    endpoint: "@@CLICKHOUSE_ENDPOINT@@"
+    database: audit
+    table: agent_session
+    auth:
+      strategy: basic
+      user: ingest
+      password: "@@CLICKHOUSE_INGEST_PASSWORD@@"
+    skip_unknown_fields: true
+    batch:
+      timeout_secs: 5
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block

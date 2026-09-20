@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ from domain.artifact_ingest import (
 )
 from domain.artifact_store import ArtifactStore
 from domain.attachment_orchestrator import AttachmentOrchestrator
+from domain.audit_store import AuditRecorder, AuditStore
 from domain.background_ledger import BackgroundLedger
 from domain.chat_store import ChatStore
 from domain.db import make_engine, make_sessionmaker
@@ -43,6 +45,7 @@ from domain.event_stream import EventBroadcaster
 from domain.foreign_prompt_capture import ForeignPromptCapture
 from domain.live_handles import LiveHandleCache
 from domain.profile_connection import ProfileConnectionManager, SubprocessProfileLauncher
+from domain.project_workspace import workspace_subdir
 from domain.prompt_files import PromptFileStore, hermes_prompt_reader, prompt_dir
 from domain.run_recorder import RunRecorder
 from domain.sandbox_fs import SandboxFS
@@ -344,11 +347,22 @@ def start_artifact_ingestors(
     # pulls the produced files into the durable library; the promote route
     # reuses the same object (`app.state.artifact_ingestor`).
     artifact_store = ArtifactStore(Path(settings.research_gateway_artifact_root))
+    # A5: ONE set of ignore rules, honoured by both producers. The diff walk
+    # has checked them since B-61; the `tool.completed` path did not, which is
+    # how `.npm/_logs`, `.curator_backups/blobs` and `profiles/<name>` rows
+    # reached the owner's library.
+    sandbox_denylist = SandboxDiffDenylist.from_settings(settings)
     artifact_ingestor = ArtifactIngestor(
         adapter,
         app_state.db_sessions,
         artifact_store,
         sandbox_root=settings.hermes_sandbox_root,
+        denylist=sandbox_denylist,
+        # C3: where a path is allowed to file itself. Only project workspaces
+        # -- nothing else in the sandbox auto-tags.
+        workspace_root=posixpath.join(
+            settings.hermes_sandbox_root.rstrip("/"), workspace_subdir(settings)
+        ),
     )
     app_state.artifact_store = artifact_store
     app_state.artifact_ingestor = artifact_ingestor
@@ -363,7 +377,6 @@ def start_artifact_ingestors(
     # (logs/, cron/, state/, cache/, SQLite WALs, heartbeats, ...) -- built
     # from the module defaults in api/artifacts.py unless the
     # HERMES_SANDBOX_DENYLIST_* env overrides are set.
-    sandbox_denylist = SandboxDiffDenylist.from_settings(settings)
     sandbox_diff_ingestor = SandboxDiffIngestor(
         adapter,
         artifact_ingestor,
@@ -425,6 +438,27 @@ def start_snapshot_sweeper(app_state: Any, settings: Settings) -> SnapshotSweepe
     return snapshot_sweeper
 
 
+def build_audit_store(app_state: Any, settings: Settings) -> None:
+    """`app.state.audit_store` / `audit_recorder` -- the read-only audit surface.
+
+    Always constructed, even with no endpoint configured. An unconfigured store
+    answers every route with a 503 naming the reason, which is a better failure
+    than a missing attribute raising somewhere deeper -- and it lets
+    `GET /api/audit/health` explain what to set.
+    """
+    app_state.audit_store = AuditStore(
+        endpoint=settings.audit_clickhouse_url,
+        user=settings.audit_clickhouse_user,
+        password=settings.audit_clickhouse_password.get_secret_value(),
+        max_rows=settings.audit_query_max_rows,
+        timeout_s=settings.audit_query_timeout_s,
+    )
+    app_state.audit_recorder = AuditRecorder(
+        ingest_url=settings.audit_ingest_url,
+        host=settings.audit_host_label or "gateway",
+    )
+
+
 def startup(
     app_state: Any,
     settings: Settings,
@@ -469,6 +503,7 @@ def startup(
     ingest_tasks = start_artifact_ingestors(app_state, settings, adapter, broadcaster)
     attachment_orchestrator = build_attachment_orchestrator(app_state)
     snapshot_sweeper = start_snapshot_sweeper(app_state, settings)
+    build_audit_store(app_state, settings)
     return GatewayRuntime(
         adapter=adapter,
         broadcaster=broadcaster,
@@ -480,6 +515,14 @@ def startup(
 
 async def shutdown(app_state: Any, runtime: GatewayRuntime) -> None:
     """Tear down in the order the lifespan's `finally` always did."""
+    # The audit clients first: both are plain HTTP clients with no background
+    # work, so closing them early cannot strand anything, and leaving them open
+    # leaks a connection pool per restart in the plugin's long-lived process.
+    for name in ("audit_store", "audit_recorder"):
+        client = getattr(app_state, name, None)
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.aclose()
     # The profile connection manager first: it may hold its own separate
     # per-profile adapters/processes (when the reconciliation timer is
     # enabled), independent of everything below. A no-op when the timer

@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     # not a code edit. Dirs are top-level names under the sandbox root
     # (trailing slash tolerated: "logs/" == "logs"); globs are fnmatch
     # patterns applied to basenames.
+    #: Extra folder names and filename patterns kept OUT of the artifact
+    #: library, added to the built-in rules rather than replacing them (unlike
+    #: the two HERMES_SANDBOX_DENYLIST_* overrides below, which say "this
+    #: deployment's Hermes has a different layout"). Editable from the app.
+    artifact_ignore_dirs: str = Field(alias="ARTIFACT_IGNORE_DIRS", default="")
+    artifact_ignore_globs: str = Field(alias="ARTIFACT_IGNORE_GLOBS", default="")
     hermes_sandbox_denylist_dirs: str = Field(alias="HERMES_SANDBOX_DENYLIST_DIRS", default="")
     hermes_sandbox_denylist_globs: str = Field(alias="HERMES_SANDBOX_DENYLIST_GLOBS", default="")
 
@@ -138,6 +144,35 @@ class Settings(BaseSettings):
     # the Hermes host both reach the gateway at the same address.
     # Set it explicitly if the gateway ever sits behind a proxy whose Host
     # the sandbox cannot resolve.
+    # ---------------------------------------------------------------------
+    # Audit store (api/audit.py) -- optional, OFF until an endpoint is set
+    # ---------------------------------------------------------------------
+    # The read-only ClickHouse the `audit-setup/` stack writes to. Empty DISABLES
+    # every /api/audit/* route, which then answers 503 saying so -- it never
+    # degrades to an empty result, because "nothing happened" and "we could
+    # not look" are opposite answers to a security question.
+    audit_clickhouse_url: str = Field(alias="AUDIT_CLICKHOUSE_URL", default="")
+    # The `reader` user from audit/clickhouse/users.d/audit.xml: SELECT on the
+    # audit database only, with row and time caps declared as constraints a
+    # query cannot raise. Never the admin user.
+    audit_clickhouse_user: str = Field(alias="AUDIT_CLICKHOUSE_USER", default="reader")
+    audit_clickhouse_password: SecretStr = Field(
+        alias="AUDIT_CLICKHOUSE_PASSWORD", default=SecretStr("")
+    )
+    # Where this gateway posts its own `audit.audit_query` rows -- the shipper's
+    # ingest endpoint, because the store credential is read-only and cannot
+    # write them. Empty means audit reads are NOT recorded, which /health
+    # reports rather than hides.
+    audit_ingest_url: str = Field(alias="AUDIT_INGEST_URL", default="")
+    # This host's label in the audit store, matching AUDIT_HOST_LABEL in the
+    # sensor's own .env so the gateway's query rows sit beside that host's
+    # events instead of under a second name for the same machine.
+    audit_host_label: str = Field(alias="AUDIT_HOST_LABEL", default="")
+    # Matches the `reader` profile's own ceiling. Raising it here alone
+    # achieves nothing: the database constraint is the real limit.
+    audit_query_max_rows: int = Field(alias="AUDIT_QUERY_MAX_ROWS", default=10_000)
+    audit_query_timeout_s: float = Field(alias="AUDIT_QUERY_TIMEOUT_S", default=30.0)
+
     research_gateway_public_base_url: str = Field(
         alias="RESEARCH_GATEWAY_PUBLIC_BASE_URL", default=""
     )
@@ -633,6 +668,8 @@ class Settings(BaseSettings):
             f"research_gateway_username={self.research_gateway_username!r}, "
             f"research_gateway_password=SecretStr('**********'), "
             f"hermes_sandbox_root={self.hermes_sandbox_root!r}, "
+            f"artifact_ignore_dirs={self.artifact_ignore_dirs!r}, "
+            f"artifact_ignore_globs={self.artifact_ignore_globs!r}, "
             f"hermes_sandbox_denylist_dirs={self.hermes_sandbox_denylist_dirs!r}, "
             f"hermes_sandbox_denylist_globs={self.hermes_sandbox_denylist_globs!r}, "
             f"hermes_attachment_dir={self.hermes_attachment_dir!r}, "
@@ -692,6 +729,15 @@ class Settings(BaseSettings):
             f"{self.research_gateway_profile_docker_exec_target!r}, "
             f"research_gateway_profile_dashboard_host="
             f"{self.research_gateway_profile_dashboard_host!r}, "
+            f"audit_clickhouse_url={self.audit_clickhouse_url!r}, "
+            f"audit_clickhouse_user={self.audit_clickhouse_user!r}, "
+            # Literal mask, like every other secret here: the repr cannot
+            # leak a value it never reads.
+            f"audit_clickhouse_password=SecretStr('**********'), "
+            f"audit_ingest_url={self.audit_ingest_url!r}, "
+            f"audit_host_label={self.audit_host_label!r}, "
+            f"audit_query_max_rows={self.audit_query_max_rows!r}, "
+            f"audit_query_timeout_s={self.audit_query_timeout_s!r}, "
             f"research_gateway_public_base_url={self.research_gateway_public_base_url!r}, "
             f"research_gateway_db_path={self.research_gateway_db_path!r}, "
             f"research_gateway_artifact_root={self.research_gateway_artifact_root!r}, "

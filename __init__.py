@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -44,11 +45,22 @@ log = logging.getLogger("astation.plugin")
 CAPTURE_HOOKS = (
     "on_session_start",  # opens a run
     "pre_llm_call",  # the user's message, including one typed in the TUI (B-190)
-    "post_tool_call",  # carries the tool RESULT Hermes's transcript drops (B-156)
+    # Carries the tool RESULT Hermes's transcript drops (B-156), and also the
+    # `duration_ms`, `status` and `error_type` the audit surface reports. Only
+    # those three reach the audit store; the result does not.
+    "post_tool_call",
     "post_api_request",  # per-request token usage, not a cumulative total
     "post_llm_call",  # the assistant's reply
     "on_session_end",  # completed / interrupted, at the moment the turn ends (B-62)
     "on_session_reset",  # compaction and reset boundaries (B-175/176)
+    # The audit join (docs/AUDIT_PLAN.md phase 2). `pre_tool_call` is the ONLY
+    # place Hermes hands out the session, turn and tool-call ids TOGETHER with
+    # the command about to run -- read off the deployed
+    # `agent_runtime_helpers._pre_tool_block_message`, which passes
+    # session_id, turn_id, tool_call_id and api_request_id alongside the args.
+    # Without it a kernel event can only be tied to a session by the time
+    # window it happened in.
+    "pre_tool_call",
 )
 
 # Bounded: if the drain task dies, hooks must not grow the queue without limit
@@ -78,8 +90,67 @@ def _record(hook_name: str, kwargs: dict) -> None:
             stats["errors"] += 1
 
 
+#: Ships session-attributed tool calls straight to the audit store.
+#:
+#: Built HERE, in `register()`, and not in the route module -- that is the
+#: whole point. `register()` runs in EVERY process that loads the plugin (the
+#: dashboard plus one `gateway run` per profile, 14 of them on this host);
+#: the route module's startup handler runs only where HTTP routes mount, which
+#: is the dashboard alone. The hook queue below is drained there and nowhere
+#: else, so for ten months' worth of profiles every hook event was enqueued
+#: and silently discarded. Attribution worked for `default` and no other
+#: profile, which is exactly what the owner saw.
+audit_forwarder: Any = None
+
+
+def _start_audit_forwarder(ctx=None) -> None:
+    """Build the forwarder for THIS process. Never raises.
+
+    `ctx` carries the profile this process serves, which becomes the fallback
+    label on every row it sends -- Hermes does not put one in the hook payload.
+    """
+    global audit_forwarder
+    if audit_forwarder is not None:
+        return
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "trg_audit_forwarder", Path(__file__).resolve().parent / "audit_forwarder.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("trg_audit_forwarder", module)
+        spec.loader.exec_module(module)
+        audit_forwarder = module.AuditForwarder(
+            ingest_url=os.environ.get("AUDIT_INGEST_URL", ""),
+            host_label=os.environ.get("AUDIT_HOST_LABEL", ""),
+            profile=str(getattr(ctx, "profile_name", "") or "default"),
+        )
+        audit_forwarder.start()
+        module.INSTANCE = audit_forwarder
+    except Exception as exc:  # a broken forwarder must never break a turn
+        audit_forwarder = None
+        log.warning("astation: audit forwarder not started: %s", exc)
+
+
 def _make(hook_name: str):
     def callback(**kwargs: Any):
+        # The audit row goes DIRECTLY to the forwarder rather than through the
+        # queue below. The forwarder is non-blocking by construction (its own
+        # bounded queue plus a background sender), and routing it through a
+        # queue that only one process drains is the bug this avoids.
+        if audit_forwarder is not None and hook_name in ("pre_tool_call", "post_tool_call"):
+            try:
+                if hook_name == "pre_tool_call":
+                    audit_forwarder.record_tool_call(kwargs)
+                else:
+                    # Only the OUTCOME: how long, and whether it worked. The
+                    # result itself is handed to this hook and deliberately
+                    # never forwarded -- see `record_tool_result`.
+                    audit_forwarder.record_tool_result(kwargs)
+            except Exception:
+                with _stats_lock:
+                    stats["errors"] += 1
         _record(hook_name, kwargs)
         return None  # never block a turn, never rewrite a payload
 
@@ -100,6 +171,7 @@ plugin_ctx = None
 def register(ctx) -> None:
     global plugin_ctx
     plugin_ctx = ctx
+    _start_audit_forwarder(ctx)
     registered_hooks.clear()
     failed_hooks.clear()
     for hook_name in CAPTURE_HOOKS:

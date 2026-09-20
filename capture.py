@@ -146,8 +146,14 @@ class HookDrain:
     write can never sit inside the agent's turn under Hermes's 30 s hook budget.
     """
 
-    def __init__(self, events, app_state: Any, profile: str = "default"):
+    def __init__(self, events, app_state: Any, profile: str = "default", audit=None):
         self._events = events
+        #: Accepted and ignored. Audit forwarding moved to `plugin/__init__.py`
+        #: `register()`, which runs in EVERY process that loads the plugin --
+        #: this drain runs only in the one that mounts HTTP routes, so
+        #: forwarding from here captured the default profile and nothing else.
+        #: The parameter stays so existing callers and tests keep working.
+        self._audit = audit
         self._app_state = app_state
         self._profile = profile
         self.turns = TurnMap()

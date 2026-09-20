@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+<!-- Three users, each holding the least it can do its job with.
+
+     ingest   INSERT only. This credential sits in the shipper's environment on
+              every monitored host, so treat it as public: it cannot read one
+              row back, cannot drop a table, and cannot see what is already
+              stored.
+
+     reader   SELECT only, on the audit database only, with a row cap and a
+              time limit. This is what the astation gateway and the AI analyst
+              get in Phase 3. `readonly=2` still permits settings changes per
+              query, which is what lets a caller raise its own limits, so the
+              caps below are set as `max_*` constraints, which a query cannot
+              relax.
+
+     admin    Everything, from the host's loopback only. Used by install.sh to
+              apply the schema and the TTLs. Never leaves the collector.
+
+     Passwords come from the environment, never from this file: it is tracked
+     in git and the host's .env is not. -->
+<clickhouse>
+    <users>
+        <!-- The image ships a passwordless `default` with full rights. Left
+             enabled it is an unauthenticated writer on the network the sensors
+             share. Disabled explicitly rather than trusted to be harmless. -->
+        <default remove="remove"/>
+
+        <ingest>
+            <password from_env="AUDIT_CLICKHOUSE_INGEST_PASSWORD"/>
+            <networks><ip>::/0</ip></networks>
+            <profile>ingest_profile</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT INSERT ON audit.*</query>
+            </grants>
+        </ingest>
+
+        <reader>
+            <password from_env="AUDIT_CLICKHOUSE_READER_PASSWORD"/>
+            <networks><ip>::/0</ip></networks>
+            <profile>reader_profile</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT SELECT ON audit.*</query>
+            </grants>
+        </reader>
+
+        <admin>
+            <password from_env="AUDIT_CLICKHOUSE_ADMIN_PASSWORD"/>
+            <!-- Loopback only. The one credential that can drop data never
+                 accepts a connection from another machine. -->
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <!-- `access_management` is deliberately absent. ClickHouse refuses
+                 a user that has both it and <grants> ("Any other access
+                 control settings can't be specified with `grants`") and the
+                 refusal is a restart loop whose reason is only in
+                 clickhouse-server.err.log. GRANT OPTION below already carries
+                 the ability this user needs. -->
+            <grants>
+                <query>GRANT ALL ON *.* WITH GRANT OPTION</query>
+            </grants>
+        </admin>
+    </users>
+
+    <profiles>
+        <ingest_profile>
+            <readonly>0</readonly>
+            <allow_ddl>0</allow_ddl>
+        </ingest_profile>
+
+        <reader_profile>
+            <readonly>1</readonly>
+            <allow_ddl>0</allow_ddl>
+            <max_result_rows>10000</max_result_rows>
+            <result_overflow_mode>break</result_overflow_mode>
+            <max_execution_time>30</max_execution_time>
+            <max_memory_usage>2000000000</max_memory_usage>
+            <constraints>
+                <!-- Without these a caller simply raises its own ceiling in the
+                     query it sends, and the caps above become decoration. -->
+                <max_result_rows><max>10000</max></max_result_rows>
+                <max_execution_time><max>30</max></max_execution_time>
+                <max_memory_usage><max>2000000000</max></max_memory_usage>
+                <readonly><readonly/></readonly>
+            </constraints>
+        </reader_profile>
+    </profiles>
+</clickhouse>

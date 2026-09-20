@@ -62,6 +62,18 @@ class Project(Base):
     #: the browser reads it -- deliberately NOT the project's instructions,
     #: which are a `HERMES.md` file (`domain/project_workspace.py`).
     folder_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The one artifact this project is currently ABOUT -- the report, the
+    #: figure, the thing someone would open first.
+    #:
+    #: **Deliberately NOT a foreign key.** `artifacts.project_id` already
+    #: points here, so a second key pointing back makes the two tables
+    #: circular, and SQLAlchemy cannot order a cycle for `create_all` /
+    #: `drop_all` (caught by `test_an_unmigrated_database_says_so`, which
+    #: tears the schema down). The constraint would buy little anyway: there
+    #: is no delete for an artifact anywhere in this system, and the read path
+    #: already renders `null` for a row it cannot find
+    #: (`api/projects.py::_pinned_artifact_json`).
+    pinned_artifact_id: Mapped[str | None] = mapped_column(String, nullable=True)
     default_profile_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("agent_profiles.id"), nullable=True
     )
@@ -596,9 +608,7 @@ class Artifact(Base):
         # The P3-1 dedup/refresh lookup: "is this sandbox path already
         # ingested?" runs on every structured file signal.
         Index("ix_artifacts_source_path", "source_path"),
-        # The bookmark shelf is read on every project open, so it gets its
-        # own index rather than scanning the whole table each time.
-        Index("ix_artifacts_bookmarked_at", "bookmarked_at"),
+        Index("ix_artifacts_archived_at", "archived_at"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("art"))
@@ -620,16 +630,163 @@ class Artifact(Base):
     source_path: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    #: When this artifact was bookmarked, or NULL when it is not.
+    #: When the owner archived this artifact; NULL means visible. A timestamp
+    #: rather than a boolean: it orders "recently archived", and un-archiving
+    #: is a null write rather than a state machine.
     #:
-    #: A timestamp rather than a boolean, for two reasons: it orders the
-    #: bookmark shelf by when the user actually starred something (which is
-    #: not the same as when the artifact was produced), and "un-bookmark then
-    #: re-bookmark" reads as a fresh entry rather than silently keeping its
-    #: old position.
-    bookmarked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    #: **Archive is not delete.** The bytes, the provenance and every
+    #: transcript chip that opens this artifact keep working; it is hidden
+    #: from the library's default listings and from the bookmark shelf, and
+    #: reachable again through "Show archived". There is deliberately no
+    #: delete for an artifact anywhere in this system
+    #: (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §10).
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Tag(Base):
+    """One tag in the shared vocabulary (`docs/ARTIFACT_ORGANIZATION_PLAN.md`).
+
+    **One vocabulary for projects and artifacts**, not one per owner kind:
+    this workspace is one project holding 95% of everything, and a tag that
+    meant different things on a project and on a file would be two
+    vocabularies wearing one name.
+
+    `name` is unique and stored already-normalized
+    (`domain/tags.py::normalize_tag_name`) -- lowercased, whitespace
+    collapsed, a small alphabet. That uniqueness is what makes creating a tag
+    idempotent, and what stops the library growing `Results` beside `results`:
+    two rows that render identically in a chip and filter to different sets.
+    """
+
+    __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_tags_name"),
+        Index("ix_tags_name", "name"),
     )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("tag"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ArtifactTag(Base):
+    """An artifact carries a tag. Cascades from both sides: deleting a tag
+    detaches it everywhere and never deletes the artifact."""
+
+    __tablename__ = "artifact_tags"
+    __table_args__ = (Index("ix_artifact_tags_tag_id", "tag_id"),)
+
+    artifact_id: Mapped[str] = mapped_column(
+        String, ForeignKey("artifacts.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[str] = mapped_column(
+        String, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProjectTag(Base):
+    """A project carries a tag. Same table shape and same cascade rule as
+    `ArtifactTag`, deliberately: one vocabulary, two owners."""
+
+    __tablename__ = "project_tags"
+    __table_args__ = (Index("ix_project_tags_tag_id", "tag_id"),)
+
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[str] = mapped_column(
+        String, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Collection(Base):
+    """A named, ordered, cross-project set of artifacts the owner curates.
+
+    **Ordered is what makes this not a tag.** "Figures for the L328 paper" has
+    a figure 1 and a figure 2; a tag has no such thing. `position` is the
+    decision, not a chronology, which is why it is an integer the owner can
+    rewrite rather than an `added_at` sort.
+
+    **Cross-project, like the bookmark shelf.** This workspace is one project
+    holding 95% of everything, so "which project" answers nothing about where
+    a curated set belongs.
+    """
+
+    __tablename__ = "collections"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_collections_name"),
+        Index("ix_collections_updated_at", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("col"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class CollectionArtifact(Base):
+    """One artifact's membership of one collection, at one position.
+
+    Cascades from both sides: deleting a collection never deletes an artifact,
+    and an artifact that goes away leaves no dangling membership.
+    """
+
+    __tablename__ = "collection_artifacts"
+    __table_args__ = (Index("ix_collection_artifacts_order", "collection_id", "position"),)
+
+    collection_id: Mapped[str] = mapped_column(
+        String, ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True
+    )
+    artifact_id: Mapped[str] = mapped_column(
+        String, ForeignKey("artifacts.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ArtifactBookmark(Base):
+    """One star, on one artifact, **in one project**.
+
+    Owner ask 2026-09-19: *"I just created a new project and I see bookmarked
+    artifacts from other projects."* A star used to live on the artifact row
+    itself (`artifacts.bookmarked_at`), which made it one global shelf shown
+    in every scope; it is now a decision taken inside a scope, so the same
+    file can be starred in the project that produced it and not in the one
+    that is merely reading it.
+
+    **`scope` is a project id, or `""` for the unfiled scope.** Empty string
+    rather than NULL because SQLite treats NULLs as distinct in a unique
+    index: `(artifact, NULL)` could be inserted twice and the shelf would
+    show the same row twice. A non-null sentinel makes the uniqueness real,
+    and the composite primary key is what enforces "starred once per scope".
+
+    Cascades from the artifact: there is no delete for an artifact in this
+    system, but if one ever goes it leaves no dangling star behind. The scope
+    is deliberately NOT a foreign key to `projects` -- deleting a project is
+    contractually one DELETE of our own rows (`api/projects.py`), and a
+    cascade here would make it two.
+    """
+
+    __tablename__ = "artifact_bookmarks"
+    __table_args__ = (
+        # The shelf query: one scope's stars, newest first. Read on every
+        # project open, so it gets its own index rather than a table scan.
+        Index("ix_artifact_bookmarks_scope", "scope", "bookmarked_at"),
+    )
+
+    artifact_id: Mapped[str] = mapped_column(
+        String, ForeignKey("artifacts.id", ondelete="CASCADE"), primary_key=True
+    )
+    #: The project this star was made in, or `""` for the unfiled scope.
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    #: When the owner last said this matters -- the shelf's order. Re-starring
+    #: refreshes it, so "un-star then star again" reads as a fresh entry.
+    bookmarked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ArtifactLink(Base):
@@ -702,6 +859,9 @@ class Attachment(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("attach"))
     #: Hermes STORED session id the attachment is destined for.
     stored_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    #: Hermes profile that owns the stored id. Background work may run long
+    #: after the upload request, so routing must travel with the ledger row.
+    profile: Mapped[str] = mapped_column(String, nullable=False, default="default")
     #: Sanitized original filename (display + sandbox target naming).
     filename: Mapped[str] = mapped_column(String, nullable=False)
     mime_type: Mapped[str] = mapped_column(String, nullable=False)

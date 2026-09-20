@@ -70,6 +70,7 @@ live-capture idempotency has to substitute something else:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -620,6 +621,76 @@ class ChatStore:
             )
             rows = list(db.execute(query).scalars().all())
         return [_row_dict(row) for row in rows]
+
+    def tool_result(
+        self, *, stored_session_id: str, tool_call_id: str, max_chars: int
+    ) -> dict[str, Any] | None:
+        """One captured tool result, by the call id the audit trail carries.
+
+        The audit store deliberately does NOT hold tool output: a file read
+        returns the file, and the audit archive cannot be edited or deleted for
+        the retention window (owner, 2026-09-20). This store does hold it, as
+        part of the conversation, and it is what the audit detail screen offers
+        behind an explicit tap.
+
+        The two are NOT the same kind of evidence and the caller is expected to
+        say so. This row lives in a database the gateway writes freely, so it
+        can be rewritten; the audit trail cannot. Returned unredacted, because
+        it was never passed through the audit path's masking.
+
+        `profile` is not a parameter: the audit trail's tool call id is
+        unique on its own, and requiring a profile here would make the lookup
+        fail for exactly the sessions whose profile the run ledger records
+        wrongly (B-206).
+
+        Bounded by `max_chars`, and says whether it truncated. Results run past
+        200,000 characters on the owner's host; a screen must not be handed the
+        whole thing by default.
+        """
+        with self._session_factory() as db:
+            row = db.execute(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.stored_session_id == stored_session_id,
+                    ChatMessage.tool_call_id == tool_call_id,
+                    ChatMessage.role == "tool",
+                )
+                .order_by(ChatMessage.seq.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+        if row is None:
+            return None
+        # `tool_result_json` is a JSON column, so SQLAlchemy hands back the
+        # DECODED value -- usually a dict, sometimes a list, occasionally a
+        # bare string. Treating it as text made `len()` count keys: a 1,763
+        # character result reported itself as 4 and the dict went out under a
+        # field the client decodes as a string, so the screen rendered empty
+        # with no error anywhere. Caught live, 2026-09-20.
+        #
+        # Re-serialised with indentation rather than compactly: this is going
+        # into a source viewer, and pretty-printed JSON is both what a person
+        # wants to read and what the highlighter can colour.
+        raw = row.tool_result_json
+        if raw is None:
+            text = ""
+        elif isinstance(raw, str):
+            text = raw
+        else:
+            try:
+                text = json.dumps(raw, indent=2, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(raw)
+        total = len(text)
+        truncated = total > max_chars
+        return {
+            "tool_call_id": row.tool_call_id,
+            "tool_name": row.tool_name,
+            "stored_session_id": row.stored_session_id,
+            "profile": row.profile,
+            "text": text[:max_chars] if truncated else text,
+            "total_chars": total,
+            "truncated": truncated,
+        }
 
     def page(
         self,

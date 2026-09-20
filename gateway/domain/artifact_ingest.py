@@ -181,6 +181,7 @@ from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
 from adapters.hermes import HermesAdapter, HermesError
+from domain.artifact_filing import filing_tags
 from domain.artifact_store import (
     STATUS_AVAILABLE,
     STATUS_UNAVAILABLE,
@@ -193,6 +194,7 @@ from domain.event_stream import STREAM_DESYNCHRONIZED_EVENT_TYPE
 from domain.models import Artifact, utcnow
 from domain.sandbox_fs import HermesHttpSandboxFS, SandboxFS
 from domain.sandbox_paths import validate_sandbox_path
+from domain.tag_store import attach as tag_attach
 from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
@@ -252,11 +254,27 @@ class ArtifactIngestor:
         store: ArtifactStore,
         *,
         sandbox_root: str,
+        denylist: SandboxDiffDenylist | None = None,
+        workspace_root: str | None = None,
     ) -> None:
         self._adapter = adapter
         self._session_factory = session_factory
         self._store = store
         self._sandbox_root = sandbox_root
+        # C3: `<sandbox_root>/astation/projects`, the one place a path
+        # is allowed to file itself (`domain/artifact_filing.py`). `None`
+        # turns the convention off entirely, which is what every test that
+        # does not care about it gets.
+        self._workspace_root = workspace_root
+        # A5: the SAME rules the diff walk honours. Until this existed only
+        # one of the two producers checked them, and the owner's library had
+        # filed `.npm/_logs`, `.curator_backups/blobs` and `profiles/<name>`
+        # rows through the other one -- a rule half the writers ignore is not
+        # a rule.
+        self._denylist = denylist or SandboxDiffDenylist(sandbox_root)
+        #: How many paths these rules kept out, reported on `/health` so
+        #: "why did my file not show up" is answerable without a log dive.
+        self.ignored_paths = 0
         self._lock = asyncio.Lock()
         # In-flight ingest tasks, held so they are not garbage-collected
         # mid-fetch; each removes itself on completion (held-task-set pattern).
@@ -301,6 +319,13 @@ class ArtifactIngestor:
         if signal is None:
             return
         source_path, producing_run_id, project_id = signal
+        if self._denylist.denies_file(source_path):
+            self.ignored_paths += 1
+            logger.info(
+                "artifact auto-ingest: ignoring %r (operational path, not user output)",
+                source_path,
+            )
+            return
         try:
             task = asyncio.create_task(
                 self._ingest_from_event(source_path, producing_run_id, project_id)
@@ -553,6 +578,7 @@ class ArtifactIngestor:
             )
             deduplicated = existing is not None
             artifact = existing or pending
+            is_new = artifact is None
             if artifact is None:
                 artifact = Artifact(
                     project_id=project_id,
@@ -584,8 +610,29 @@ class ArtifactIngestor:
                 artifact.producing_run_id = producing_run_id
             if artifact.project_id is None:
                 artifact.project_id = project_id
+            if is_new:
+                # C3: the path files itself, ONCE. Re-tagging on every later
+                # save would put back a tag the owner had deliberately taken
+                # off, and the owner's edit has to win over a convention.
+                db.flush()
+                self._apply_filing_tags(db, artifact)
             db.commit()
             return _artifact_json(artifact), deduplicated
+
+    def _apply_filing_tags(self, db: OrmSession, artifact: Artifact) -> None:
+        """Tag a newly-filed artifact from where it was written.
+
+        Best-effort on purpose: a filing convention is a convenience, and a
+        failure in it must never lose the artifact row that is the actual
+        point of this method's caller.
+        """
+        if not self._workspace_root:
+            return
+        try:
+            for name in filing_tags(artifact.source_path, self._workspace_root):
+                tag_attach(db, "artifact", artifact.id, name)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("could not apply filing tags to %s", artifact.source_path)
 
     def _record_failure_row(
         self,
@@ -766,6 +813,36 @@ MAX_PENDING_DIFF_RUNS = 64
 #: Top-level directory names under the sandbox root the diff never enters.
 SANDBOX_DIFF_DENYLIST_DIRS: frozenset[str] = frozenset({"logs", "cron", "state", "cache"})
 
+#: Directory names denied WHEREVER they appear in a path, not only at the top
+#: level. The top-level rule above cannot see these: measured on the owner's
+#: library 2026-09-19, `.npm/_logs`, `.curator_backups/blobs` and
+#: `profiles/<name>` had filed real rows, and a repository checkout puts
+#: `.git`, `__pycache__`, `node_modules` and `.venv` several levels down where
+#: a top-level match will never reach them.
+#:
+#: These are OPERATIONAL trees. Nothing here is output a person asked for, and
+#: an artifact library that files them is one nobody can find anything in.
+ARTIFACT_IGNORE_COMPONENTS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".npm",
+        ".cache",
+        ".curator_backups",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+)
+
+#: Filename patterns ignored wherever they live, on TOP of the diff's own
+#: operational globs below. Separate so the diff's list keeps its meaning
+#: (Hermes's own state) and this one carries build and log noise.
+ARTIFACT_IGNORE_GLOBS: tuple[str, ...] = ("*.log", "*.pyc", "*.tmp", "*.swp", ".DS_Store")
+
+
 #: Filename patterns (fnmatch, against the basename, case-sensitive) the diff
 #: never promotes, wherever they live under the root.
 SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS: tuple[str, ...] = (
@@ -777,6 +854,30 @@ SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS: tuple[str, ...] = (
     "*_last_success",  # cron success markers (ticker_last_success)
     "channel_directory.json",  # Hermes's live channel directory
 )
+#: What a plainly-constructed denylist ignores. Both lists, because the two
+#: producers must agree: `ArtifactIngestor` builds one of these when it is
+#: handed none, and a default that dropped the build/log noise would leave the
+#: `tool.completed` path filing exactly what the diff path refuses.
+DEFAULT_IGNORE_GLOBS: tuple[str, ...] = SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS + ARTIFACT_IGNORE_GLOBS
+
+
+def _runtime_ignore(settings: Any, key: str) -> str:
+    """One extra ignore list: the editable overlay, else the env value.
+
+    Read at construction, not per path: these are edited from the app's
+    Gateway settings a few times a year, and reading the overlay for every
+    ingested file would put a file read in the event pump.
+    """
+    try:
+        from config.runtime_config import read_overlay
+
+        overlay = read_overlay(settings.research_gateway_runtime_config_path)
+        value = (overlay.values or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    except Exception:  # pragma: no cover - a missing overlay is not an error
+        pass
+    return getattr(settings, key, "") or ""
 
 
 def _denylist_csv(raw: str) -> tuple[str, ...]:
@@ -799,11 +900,13 @@ class SandboxDiffDenylist:
         self,
         root: str,
         dirs: frozenset[str] | set[str] | tuple[str, ...] = SANDBOX_DIFF_DENYLIST_DIRS,
-        filename_globs: tuple[str, ...] = SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS,
+        filename_globs: tuple[str, ...] = DEFAULT_IGNORE_GLOBS,
+        components: frozenset[str] | set[str] | tuple[str, ...] = ARTIFACT_IGNORE_COMPONENTS,
     ) -> None:
         self._root = posixpath.normpath(root)
         self._dirs = frozenset(dirs)
         self._globs = tuple(filename_globs)
+        self._components = frozenset(components)
 
     @classmethod
     def from_settings(cls, settings: Any) -> SandboxDiffDenylist:
@@ -815,7 +918,19 @@ class SandboxDiffDenylist:
             _denylist_csv(settings.hermes_sandbox_denylist_globs)
             or SANDBOX_DIFF_DENYLIST_FILENAME_GLOBS
         )
-        return cls(settings.hermes_sandbox_root, frozenset(dirs), tuple(globs))
+        # Runtime-config additions are UNIONED, never a replacement: the env
+        # override above says "this deployment's Hermes has a different
+        # layout", while these say "also ignore this" and must not silently
+        # drop the operational entries that keep `state.db` out of the
+        # library. Editable from the app (`config/runtime_config.py`).
+        extra_dirs = _denylist_csv(_runtime_ignore(settings, "artifact_ignore_dirs"))
+        extra_globs = _denylist_csv(_runtime_ignore(settings, "artifact_ignore_globs"))
+        return cls(
+            settings.hermes_sandbox_root,
+            frozenset(dirs),
+            tuple(globs) + tuple(ARTIFACT_IGNORE_GLOBS) + tuple(extra_globs),
+            frozenset(ARTIFACT_IGNORE_COMPONENTS) | frozenset(extra_dirs),
+        )
 
     def _top_level_component(self, path: str) -> str | None:
         """The first path component below the root, or None (the root itself,
@@ -827,11 +942,23 @@ class SandboxDiffDenylist:
         return rel.split("/", 1)[0]
 
     def denies_dir(self, path: str) -> bool:
-        """True for a denylisted top-level directory or anything inside one."""
-        return self._top_level_component(path) in self._dirs
+        """True for a denied top-level directory, a denied component anywhere
+        in the path, or anything inside either."""
+        if self._top_level_component(path) in self._dirs:
+            return True
+        rel = posixpath.relpath(posixpath.normpath(path), self._root)
+        if rel == "." or rel.startswith(".."):
+            return False
+        return any(part in self._components for part in rel.split("/"))
 
     def denies_file(self, path: str) -> bool:
-        """True when this file path must not be auto-promoted by the diff."""
+        """True when this path must not be auto-ingested, by EITHER path.
+
+        Named for the diff that first needed it; it now gates the
+        `tool.completed` ingest too (`ArtifactIngestor.observe`), because a
+        rule that only one of the two producers honours is not a rule -- the
+        owner's `.npm/_logs` rows arrived through the other one.
+        """
         if self.denies_dir(path):
             return True
         name = posixpath.basename(path)

@@ -1,0 +1,102 @@
+# Audit retention — the ONE place retention is decided.
+#
+# `scripts/audit_retention.py` renders this into:
+#   * ClickHouse `ALTER TABLE ... MODIFY TTL` statements (the hot window), and
+#   * an S3 lifecycle policy for the raw NDJSON archive (the warm/cold windows).
+#
+# Changing how long anything is kept is an edit here plus one command:
+#   uv run python scripts/audit_retention.py apply --host <label>
+#
+# Three windows per event class:
+#   hot_days   rows live in ClickHouse on the collector's local disk, fast SQL.
+#   warm_days  the raw NDJSON archive stays in S3 Standard-IA, queryable by
+#              reload, cheap. Counted from the object's creation, not from the
+#              end of hot.
+#   cold_days  the archive is in Glacier Deep Archive until this age, then it
+#              expires. This is the outer bound on the whole system's memory.
+#
+# cold_days must be >= the bucket's Object Lock window (30 days): a lifecycle
+# rule cannot expire an object the lock still protects, and the renderer
+# refuses a value below `object_lock_days`.
+
+object_lock_days: 30
+
+# The S3 key layout the renderer's lifecycle rules assume. CLASS COMES FIRST so
+# one lifecycle policy covers every host in the network without editing:
+#     raw/<class>/host=<label>/<YYYY>/<MM>/<DD>/<HH>/<ts>-<uuid>.ndjson.zst
+key_layout: "raw/{class}/host={host}/%Y/%m/%d/%H/"
+
+defaults:
+  hot_days: 14
+  warm_days: 365
+  cold_days: 2555   # 7 years
+
+classes:
+  # Highest volume by far: a build or a training run writes millions of files.
+  # Short hot window, and the archive carries the long tail.
+  host_file:
+    hot_days: 14
+    warm_days: 180
+    cold_days: 2555
+
+  # The spine of every investigation: what ran. Cheap, so keep it hot longer.
+  host_exec:
+    hot_days: 30
+    warm_days: 365
+    cold_days: 2555
+
+  host_exit:
+    hot_days: 30
+    warm_days: 365
+    cold_days: 2555
+
+  # Egress questions ("did anything talk to a host it shouldn't") are asked
+  # about the recent past, but the archive answers the old ones.
+  host_net:
+    hot_days: 30
+    warm_days: 365
+    cold_days: 2555
+
+  # One synthetic event a minute from every host's shipper. It is the liveness
+  # proof for the WHOLE pipeline -- a quiet host produces no exec events, so
+  # absence of data is otherwise indistinguishable from a dead sensor. The
+  # off-box heartbeat watches exactly this prefix.
+  host_beat:
+    hot_days: 7
+    warm_days: 30
+    cold_days: 30
+
+  # Low volume, high value: logins and privilege changes.
+  host_auth:
+    hot_days: 90
+    warm_days: 730
+    cold_days: 2555
+
+  host_container:
+    hot_days: 30
+    warm_days: 365
+    cold_days: 2555
+
+  # Phase 2+ (the astation session layer). Declared now so the schema and the
+  # renderer do not change shape when those classes start arriving.
+  agent_tool:
+    hot_days: 90
+    warm_days: 730
+    cold_days: 2555
+
+  agent_llm:
+    hot_days: 90
+    warm_days: 730
+    cold_days: 2555
+
+  agent_session:
+    hot_days: 90
+    warm_days: 730
+    cold_days: 2555
+
+  # Who asked the audit store what. Never short: the analyst must stay audited
+  # for at least as long as the data it can read.
+  audit_query:
+    hot_days: 365
+    warm_days: 730
+    cold_days: 2555

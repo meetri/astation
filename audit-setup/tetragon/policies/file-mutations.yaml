@@ -1,0 +1,144 @@
+# What changed on this filesystem, and who changed it.
+#
+# EVERY LINE HERE IS A MEASURED DECISION. The numbers come from the deploy host
+# on 2026-09-19 (12 vCPU, kernel 6.8, Tetragon v1.7.1) and are recorded in
+# docs/AUDIT_PLAN.md §8. Re-measure before changing any of it.
+#
+# The obvious policy -- `security_file_permission` with MAY_WRITE over the whole
+# filesystem -- is a trap. It fires once per write() SYSCALL, not once per file:
+#
+#     50,000 x 4 KiB writes to ONE file  ->  50,400 events
+#     idle host, no user activity        ->  75 events/second (6.5M/day)
+#
+# A 300 MB `dd` produced 38 MB/s of export log, which rotates through Tetragon's
+# five 10 MB backups in seconds and drops events the shipper never saw. An audit
+# sensor that loses data precisely when something is writing hard is worthless.
+#
+# So writes are captured at OPEN time instead, which is once per file per
+# process, and is burst-proof by construction:
+#
+#     50,000 writes to one file  ->  1 event
+#     idle host                  ->  26/s, and 5.9/s once the database
+#                                    journal sidecars below are excluded
+#
+# Three hooks, each earning its place:
+#
+#   sys_openat      -- intent to write. Complete coverage of WHICH files.
+#   sys_unlinkat    -- deletes. A delete never opens the file, so openat
+#                      cannot see it.
+#   sys_renameat2   -- renames and moves, including the atomic
+#                      write-to-temp-then-rename pattern, where the temp file
+#                      is what openat saw and the real name only appears here.
+#
+# KNOWN LIMIT, stated because it is invisible otherwise: a syscall hook records
+# the path the caller PASSED, which is relative 29.5% of the time on this host
+# (PostgreSQL writing inside its data directory, measured). Vector resolves
+# those against the process's recorded cwd and stamps `path_confidence`:
+# `absolute` when the caller gave a full path, `cwd_resolved` when we joined it.
+# A cwd_resolved path is wrong when a shell `cd`s AFTER exec, because the
+# recorded cwd is the one the process had when it was exec'd -- confirmed live,
+# a `sh -c "cd /opt/data/scratch && echo x > f.txt"` reports cwd=/opt/hermes.
+# `security_file_permission` below exists to corroborate exactly this case: it
+# is an LSM hook, so the kernel hands it a fully resolved path.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "file-mutations"
+spec:
+  kprobes:
+  # --- intent to write: one event per file per process ---------------------
+  - call: "sys_openat"
+    syscall: true
+    args:
+    - index: 0
+      type: "int"          # dirfd (AT_FDCWD = -100)
+    - index: 1
+      type: "string"       # pathname AS PASSED -- may be relative
+    - index: 2
+      type: "int"          # flags
+    selectors:
+    - matchArgs:
+      # 1603 = O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND. Mask matches when any
+      # bit is set, so a read-only open (flags 0, or O_RDONLY|O_CLOEXEC) does
+      # not match. Verified live: two `cat`s produced no events.
+      #
+      # It is ONE combined value on purpose. Tetragon refuses a selector with
+      # more than four values, and five separate flags took the whole DAEMON
+      # down at startup, not just the policy -- the one failure mode this
+      # directory can cause. install.sh checks the daemon after loading.
+      - index: 2
+        operator: "Mask"
+        values: ["1603"]
+      - index: 1
+        operator: "NotPrefix"
+        values: ["/proc", "/sys", "/dev", "/run"]
+      # SQLite write-ahead and shared-memory sidecars. NOT arbitrary noise
+      # filtering: they are internal journals of a database file this policy
+      # still captures, they carry no information the .db write does not, and
+      # on this host they alone were 78% of all events (26/s -> 5.9/s).
+      - index: 1
+        operator: "NotPostfix"
+        values: ["-wal", "-shm", "-journal"]
+
+  # --- deletes -------------------------------------------------------------
+  - call: "sys_unlinkat"
+    syscall: true
+    args:
+    - index: 0
+      type: "int"
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    selectors:
+    - matchArgs:
+      - index: 1
+        operator: "NotPrefix"
+        values: ["/proc", "/sys", "/dev", "/run"]
+
+  # --- renames and moves ---------------------------------------------------
+  - call: "sys_renameat2"
+    syscall: true
+    args:
+    - index: 1
+      type: "string"       # old name
+    - index: 3
+      type: "string"       # new name
+
+  # --- resolved-path corroboration ----------------------------------------
+  # An LSM hook, so the path is resolved by the kernel and never relative.
+  # Rate limited because unlimited it is the 6.5M/day firehose above; at one
+  # event per process per 10s it costs ~2 events/second on an idle host.
+  #
+  # It is deliberately NOT the primary signal: the rate limit is scoped to the
+  # PROCESS, not the path (measured -- five files written by five processes
+  # gave 14 events, not 5), so a single process touching many files reports
+  # only some of them. Complete coverage comes from sys_openat above; this
+  # supplies ground truth for paths, and disagreement between the two is
+  # itself worth looking at.
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file"         # fully resolved path, from the kernel
+    - index: 1
+      type: "int"          # 0x04 MAY_READ, 0x02 MAY_WRITE
+    returnArg:
+      index: 0
+      type: "int"
+    selectors:
+    - matchArgs:
+      - index: 1
+        operator: "Equal"
+        values: ["2"]
+      - index: 0
+        operator: "NotPrefix"
+        values: ["/proc", "/sys", "/dev", "/run"]
+      - index: 0
+        operator: "NotPostfix"
+        values: ["-wal", "-shm", "-journal"]
+      matchActions:
+      - action: Post
+        rateLimit: "10s"
+        rateLimitScope: "process"

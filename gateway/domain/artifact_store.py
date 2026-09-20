@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from domain.artifact_kinds import extension_of, kind_for
+from domain.artifact_kinds import extension_of, kind_for, source_dir_of
 from domain.models import Artifact
 from domain.timeutil import iso_z
 
@@ -158,7 +158,21 @@ def _artifact_json(artifact: Artifact) -> dict[str, Any]:
         # migration (`domain/artifact_kinds.py`).
         "kind": kind_for(artifact.mime_type, artifact.source_path),
         "extension": extension_of(artifact.source_path),
-        #: NULL when not bookmarked; the shelf orders by this.
-        "bookmarked_at": iso_z(artifact.bookmarked_at) if artifact.bookmarked_at else None,
-        "bookmarked": artifact.bookmarked_at is not None,
+        #: A star is per PROJECT since 2026-09-19 (`domain/bookmark_store.py`),
+        #: so it cannot be read off the artifact row: `bookmarked` /
+        #: `bookmarked_at` are filled in by `_with_bookmarks` for the scope the
+        #: request named. Defaulted here so every row carries the keys and a
+        #: client never treats absence as a special case (B-34).
+        "bookmarked_at": None,
+        "bookmarked": False,
+        #: Hidden from the library's default listings, not deleted: the bytes,
+        #: the provenance and every transcript chip that opens this row keep
+        #: working. There is no delete for an artifact anywhere in this system.
+        "archived_at": iso_z(artifact.archived_at) if artifact.archived_at else None,
+        "archived": artifact.archived_at is not None,
+        #: The directory this was fetched from, derived rather than stored so
+        #: it cannot drift from the path it came from
+        #: (`domain/artifact_kinds.py`). NULL for a row with no path and for a
+        #: bare root-level name -- neither has a folder.
+        "source_dir": source_dir_of(artifact.source_path),
     }

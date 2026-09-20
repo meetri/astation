@@ -157,6 +157,7 @@ def _attachment_json(attachment: Attachment) -> dict[str, Any]:
     return {
         "id": attachment.id,
         "stored_session_id": attachment.stored_session_id,
+        "profile": attachment.profile,
         "filename": attachment.filename,
         "mime_type": attachment.mime_type,
         "size_bytes": attachment.size_bytes,
@@ -219,6 +220,7 @@ async def upload_attachment(
     stored_session_id: str,
     file: UploadFile,
     request: Request,
+    profile: str = "default",
     db: OrmSession = Depends(_attachments_db),
 ) -> dict:
     """Accept one composer attachment and start the asynchronous attach.
@@ -231,6 +233,7 @@ async def upload_attachment(
     sit in a synchronous UI path -- measured, PV "Phase 3 build probes").
     """
     stored_id = _validate_stored_session_id(stored_session_id)
+    profile = profile.strip() or "default"
     settings = get_settings()
     # The attachment dir must itself be inside the sandbox root -- validated
     # here, before anything is stored, so a misconfiguration fails loudly on
@@ -265,6 +268,7 @@ async def upload_attachment(
     attachment = Attachment(
         id=new_id("attach"),
         stored_session_id=stored_id,
+        profile=profile,
         filename=filename,
         mime_type=mime_type,
         size_bytes=size,
@@ -298,18 +302,25 @@ async def get_attachment(attachment_id: str, db: OrmSession = Depends(_attachmen
 
 @attachments_router.get("/sessions/{stored_session_id}/attachments")
 async def list_session_attachments(
-    stored_session_id: str, db: OrmSession = Depends(_attachments_db)
+    stored_session_id: str,
+    profile: str = "default",
+    db: OrmSession = Depends(_attachments_db),
 ) -> dict:
     """This session's attachments, newest first (app resume/restore)."""
     stored_id = _validate_stored_session_id(stored_session_id)
+    profile = profile.strip() or "default"
     rows = db.execute(
         select(Attachment)
-        .where(Attachment.stored_session_id == stored_id)
+        .where(
+            Attachment.stored_session_id == stored_id,
+            Attachment.profile == profile,
+        )
         .order_by(Attachment.created_at.desc(), Attachment.id)
         .limit(100)
     ).scalars()
     return {
         "stored_session_id": stored_id,
+        "profile": profile,
         "attachments": [_attachment_json(a) for a in rows],
     }
 

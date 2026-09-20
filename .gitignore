@@ -4,3 +4,12 @@ __pycache__/
 ._*
 .venv/
 *.db
+
+# Audit stack, per-installation secrets. These are YOURS: the host registry
+# carries LAN addresses and ssh logins, and the env file carries the shipper's
+# cloud key and the store passwords. None of it belongs in a clone of this
+# repo, public or not.
+audit-setup/.env
+audit-setup/hosts.yaml
+audit-setup/retention.ttl.sql
+audit-setup/vector/vector.rendered.yaml

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!-- Store-level settings. Everything here is about keeping a log store from
+     becoming the biggest thing on a disk it shares with the work it audits. -->
+<clickhouse>
+    <!-- The image defaults to a 1 GB server log that nothing reads. -->
+    <logger>
+        <level>warning</level>
+        <size>100M</size>
+        <count>3</count>
+    </logger>
+
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- ClickHouse's own query log is useful for a week, not forever, and it
+         is written on every query including the analyst's. -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
+    <metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <trace_log remove="remove"/>
+    <session_log remove="remove"/>
+    <part_log remove="remove"/>
+
+    <!-- A 23 GB box running an agent, nine gateways and this. The store is a
+         guest here and is capped accordingly. -->
+    <max_server_memory_usage_to_ram_ratio>0.25</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>536870912</mark_cache_size>
+</clickhouse>

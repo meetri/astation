@@ -51,6 +51,38 @@ DEFAULT_WORKSPACE_SUBDIR = "astation/projects"
 INSTRUCTIONS_FILENAME = "HERMES.md"
 
 
+#: What a new `HERMES.md` starts as: the filing convention, and nothing else.
+#:
+#: C3 (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §5.3). The agent has no credential
+#: for the gateway's API and no tool that speaks it, so the only filing it can
+#: do is the one it already controls -- the path it writes to. Every session
+#: created under a project runs with its `cwd` here, so a relative write lands
+#: in this folder, and `domain/artifact_filing.py` turns those folder names
+#: into tags as the file is ingested.
+#:
+#: This is a SEED, not a policy: it is written once, on first open, and the
+#: owner's editor owns the file from then on. Deleting the paragraph turns the
+#: convention off for that project, which is the right amount of ceremony for
+#: something that only ever meant to save someone classifying 2,000 files by
+#: hand later.
+INSTRUCTIONS_SEED = """## Filing what you produce
+
+Files you write in this folder are kept automatically. Put anything worth
+keeping in a folder that says what it is, and it files itself:
+
+- `figures/` — plots, diagrams, images
+- `results/` — measurements, metrics, tables
+- `reports/` — write-ups meant to be read
+- `data/` — datasets and derived data
+- `notes/` — working notes
+
+Name the experiment with a folder above those — `l328-sweep/figures/roc.png`
+files that image under both `figure` and `l328-sweep`, so every figure from
+that run is one tap away later. Scratch files need no folder; leave them at
+the top and nothing is claimed about them.
+"""
+
+
 def _sandbox_root(settings: Any) -> str:
     return (getattr(settings, "hermes_sandbox_root", "") or "/opt/data").rstrip("/")
 
@@ -100,10 +132,13 @@ async def ensure_instructions_file(fs: SandboxFS, settings: Any, project_id: str
     written when it does not already exist, so re-opening never clobbers what
     the owner wrote.
 
-    The seed is deliberately EMPTY. Hermes's `_load_hermes_md` returns nothing
-    for an empty file, so a project whose instructions were opened but never
-    written adds nothing to any session's system prompt -- the same as having
-    no instructions at all.
+    The seed is `INSTRUCTIONS_SEED`: the filing convention, and nothing else.
+    It was empty until C3, on the reasoning that "opened but never written"
+    should add nothing to a system prompt. The convention earns the exception
+    -- it is the one instruction that pays for itself the first time the agent
+    writes a figure, and it is the only way the agent can file at all. It is
+    written once and never re-applied, so an owner who deletes it has deleted
+    it.
     """
     if not is_within_sandbox(settings, project_id):
         raise ValueError(
@@ -120,7 +155,7 @@ async def ensure_instructions_file(fs: SandboxFS, settings: Any, project_id: str
         )
 
     if not await instructions_file_exists(fs, settings, project_id):
-        write_response = await fs.fs_write_text(path, "")
+        write_response = await fs.fs_write_text(path, INSTRUCTIONS_SEED)
         if write_response.status_code not in (200, 201):
             raise HermesError(f"could not seed {path!r}: HTTP {write_response.status_code}")
     return path

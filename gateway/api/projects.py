@@ -61,7 +61,7 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -69,6 +69,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from adapters.hermes import HermesAdapter, HermesError
 from config.settings import get_settings
+from domain.artifact_store import _artifact_json
 from domain.db import schema_checked_db, schema_is_present
 from domain.filing import find_filing
 from domain.hermes_runtime import (
@@ -88,6 +89,12 @@ from domain.snapshot_builder import (
     snapshot_counts_by_stored_id,
     snapshot_only_stored_ids,
 )
+from domain.tag_store import attach as tag_attach
+from domain.tag_store import detach as tag_detach
+from domain.tag_store import names_for as tag_names_for
+from domain.tag_store import names_of as tag_names_of
+from domain.tag_store import owner_ids_with_all as tag_owner_ids_with_all
+from domain.tags import TagNameError, normalize_tag_names
 from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
@@ -273,8 +280,21 @@ _find_filing = find_filing
 workspace_db = schema_checked_db("db_schema_verified", schema_is_present)
 
 
-def _project_row(project: Project, session_count: int) -> dict[str, Any]:
+def _project_row(
+    project: Project,
+    session_count: int,
+    tags: list[str] | None = None,
+    *,
+    pinned: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
+        # Always present, `[]` when there are none, so a client never has to
+        # treat absence as a special case (B-34). Sorted by name.
+        "tags": tags or [],
+        # The one artifact this project is currently ABOUT, rendered rather
+        # than a bare id so the project card does not need a second request.
+        # Always present, `null` when nothing is pinned -- same rule as tags.
+        "pinned_artifact": pinned,
         "id": project.id,
         "title": project.title,
         "description": project.description,
@@ -360,8 +380,8 @@ def filed_project_index(
 
 async def _hermes_session_index(
     request: Request, profiles: Iterable[str] | None = None
-) -> tuple[dict[str, Any] | None, str | None]:
-    """`({stored_id: hermes metadata}, error)` -- read-only `session.list` calls.
+) -> tuple[dict[str, Any] | None, set[str], str | None]:
+    """`({stored_id: metadata}, profiles actually checked, error)` -- read-only.
 
     Returns `(None, "why")` rather than raising when Hermes cannot be reached.
     A project's session list is *workspace* state and must survive the runtime
@@ -394,19 +414,56 @@ async def _hermes_session_index(
     if not wanted:
         wanted = [DEFAULT_PROFILE]
 
+    known = await _known_profile_names(request)
     index: dict[str, Any] = {}
-    reached_any = False
+    checked: set[str] = set()
     last_error: str | None = None
     for profile in wanted:
+        if known is not None and profile not in known:
+            # B-200, second half: this row names a profile Hermes does not
+            # have -- renamed, removed, or misspelled at filing time. Asking
+            # for it returns an empty list, and reading that as "the session
+            # is gone" is a false claim about a session we never checked.
+            # Leaving it out of `checked` makes the row answer `null`.
+            logger.info(
+                "session listing: profile %r is not one Hermes knows; "
+                "its rows report missing=null rather than a loss",
+                profile,
+            )
+            continue
         listed, error = await _hermes_sessions_for_profile(request, profile)
         if listed is None:
             last_error = error
             continue
-        reached_any = True
+        checked.add(profile)
         index.update(listed)
-    if not reached_any:
-        return None, last_error
-    return index, None
+    if not checked:
+        return None, checked, last_error
+    return index, checked, None
+
+
+async def _known_profile_names(request: Request) -> set[str] | None:
+    """Every profile Hermes currently has, or `None` when it cannot be asked.
+
+    `None` means "do not filter": a failed `profiles.list` must not turn every
+    row into an unchecked one, which would hide a real loss just as surely as
+    the bug this guards against claimed a false one.
+    """
+    adapter: HermesAdapter = request.app.state.hermes_adapter
+    try:
+        result = await _with_reconnect(request.app.state, adapter, adapter.profiles_list)
+    except Exception as exc:
+        logger.info("could not list Hermes profiles while enriching sessions: %s", exc)
+        return None
+    rows = result.get("profiles") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return None
+    names = {
+        row["name"]
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
+    }
+    return names or None
 
 
 async def _hermes_sessions_for_profile(
@@ -589,19 +646,162 @@ def _snapshot_only_row(
 # ---------------------------------------------------------------------------
 
 
+def _normalized_tag_list(names: list[str]) -> list[str]:
+    """Normalize a `?tag=` filter, turning a bad name into a 422 that says
+    which rule it broke."""
+    try:
+        return normalize_tag_names(names)
+    except TagNameError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class PinnedArtifactRequest(BaseModel):
+    """Body for `PUT /api/projects/{id}/pinned-artifact`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(min_length=1)
+
+
+@projects_router.put("/projects/{project_id}/pinned-artifact")
+async def pin_artifact(
+    project_id: str, body: PinnedArtifactRequest, db: OrmSession = Depends(workspace_db)
+) -> dict:
+    """Pin the one artifact this project is currently ABOUT.
+
+    One, not a list: a project with five deliverables has none. Pinning a
+    second replaces the first rather than erroring, because "this is the
+    important one now" is the whole gesture.
+
+    The artifact does not have to belong to this project. A report that lives
+    in a shared folder is still the thing this project produced, and refusing
+    would push the owner to file a copy just to pin it.
+    """
+    project = _load_project(db, project_id)
+    artifact = db.get(Artifact, body.artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail=f"no artifact with id {body.artifact_id!r}")
+    project.pinned_artifact_id = artifact.id
+    project.updated_at = utcnow()
+    db.commit()
+    return _project_row_with_pin(db, project)
+
+
+@projects_router.delete("/projects/{project_id}/pinned-artifact")
+async def unpin_artifact(project_id: str, db: OrmSession = Depends(workspace_db)) -> dict:
+    """Un-pin. Idempotent: a project with nothing pinned is already where the
+    caller wants it."""
+    project = _load_project(db, project_id)
+    project.pinned_artifact_id = None
+    project.updated_at = utcnow()
+    db.commit()
+    return _project_row_with_pin(db, project)
+
+
+def _project_row_with_pin(db: OrmSession, project: Project) -> dict[str, Any]:
+    return _project_row(
+        project,
+        _session_counts(db, [project.id])[project.id],
+        tag_names_of(db, "project", project.id),
+        pinned=_pinned_artifact_json(db, project),
+    )
+
+
+def _pinned_artifact_json(db: OrmSession, project: Project) -> dict[str, Any] | None:
+    """The pinned row, or `null`.
+
+    Rendered rather than returned as a bare id: the project home shows the
+    card, and a client that had to fetch it separately would render the
+    project before knowing what it is about.
+    """
+    if not project.pinned_artifact_id:
+        return None
+    artifact = db.get(Artifact, project.pinned_artifact_id)
+    return _artifact_json(artifact) if artifact is not None else None
+
+
+def _pinned_artifacts_for(db: OrmSession, projects: list[Project]) -> dict[str, dict[str, Any]]:
+    """Every project's pinned row, by project id, in ONE query.
+
+    The library screen shows a dozen projects; a per-row `db.get` would be a
+    dozen round trips for the same cards `list_projects` already promises to
+    deliver in a single request.
+    """
+    wanted = {p.pinned_artifact_id for p in projects if p.pinned_artifact_id}
+    if not wanted:
+        return {}
+    rows = {
+        artifact.id: _artifact_json(artifact)
+        for artifact in db.execute(select(Artifact).where(Artifact.id.in_(wanted))).scalars()
+    }
+    return {
+        project.id: rows[project.pinned_artifact_id]
+        for project in projects
+        # A pin whose artifact is gone reads as unpinned rather than as a
+        # broken card: the id is not a foreign key (the circular
+        # projects<->artifacts reference SQLite cannot create), so a dangling
+        # one is a state this has to answer for.
+        if project.pinned_artifact_id in rows
+    }
+
+
+@projects_router.put("/projects/{project_id}/tags/{name}")
+async def tag_project(project_id: str, name: str, db: OrmSession = Depends(workspace_db)) -> dict:
+    """Give a project a tag, from the SAME vocabulary artifacts use.
+
+    One vocabulary on purpose: this workspace is one project holding 95% of
+    everything, and a tag meaning different things on a project and on a file
+    would be two vocabularies wearing one name.
+    """
+    project = _load_project(db, project_id)
+    tag_attach(db, "project", project.id, _normalized_tag_list([name])[0])
+    db.commit()
+    return _project_row_with_pin(db, project)
+
+
+@projects_router.delete("/projects/{project_id}/tags/{name}")
+async def untag_project(project_id: str, name: str, db: OrmSession = Depends(workspace_db)) -> dict:
+    """Take a tag off a project. Idempotent; the tag itself survives."""
+    project = _load_project(db, project_id)
+    tag_detach(db, "project", project.id, _normalized_tag_list([name])[0])
+    db.commit()
+    return _project_row_with_pin(db, project)
+
+
 @projects_router.get("/projects")
-async def list_projects(db: OrmSession = Depends(workspace_db)) -> dict:
+async def list_projects(
+    tag: list[str] = Query(default_factory=list), db: OrmSession = Depends(workspace_db)
+) -> dict:
     """Every project, newest first, each with how many sessions are filed in it.
 
     The count comes from one grouped query rather than a per-project lookup, so
     the Project Library screen is a single round trip regardless of how many
     projects exist.
     """
+    wanted = _normalized_tag_list(tag)
     projects = list(
         db.execute(select(Project).order_by(Project.created_at.desc(), Project.id)).scalars()
     )
+    if wanted:
+        # AND, like the artifact listing: tags narrow, and OR would hand back
+        # more projects the more precisely the owner asked.
+        matching = set(tag_owner_ids_with_all(db, "project", wanted))
+        projects = [project for project in projects if project.id in matching]
     counts = _session_counts(db, [project.id for project in projects])
-    return {"projects": [_project_row(project, counts.get(project.id, 0)) for project in projects]}
+    tags_by_project = tag_names_for(db, "project", [project.id for project in projects])
+    pins = _pinned_artifacts_for(db, projects)
+    return {
+        "tags": wanted,
+        "projects": [
+            _project_row(
+                project,
+                counts.get(project.id, 0),
+                tags_by_project.get(project.id, []),
+                pinned=pins.get(project.id),
+            )
+            for project in projects
+        ],
+    }
 
 
 @projects_router.post("/projects", status_code=201)
@@ -635,8 +835,7 @@ def _validated_folder_path(raw: str | None) -> str | None:
 
 @projects_router.get("/projects/{project_id}")
 async def get_project(project_id: str, db: OrmSession = Depends(workspace_db)) -> dict:
-    project = _load_project(db, project_id)
-    return _project_row(project, _session_counts(db, [project.id])[project.id])
+    return _project_row_with_pin(db, _load_project(db, project_id))
 
 
 @projects_router.post("/projects/{project_id}/instructions/ensure")
@@ -702,7 +901,7 @@ async def update_project(
     # sets a field to the value it already held should still count as a touch.
     project.updated_at = utcnow()
     db.commit()
-    return _project_row(project, _session_counts(db, [project.id])[project.id])
+    return _project_row_with_pin(db, project)
 
 
 @projects_router.delete("/projects/{project_id}")
@@ -838,16 +1037,27 @@ async def list_project_sessions(
 
     # B-200: one `session.list` per profile these rows actually live on --
     # listing only `default` reported every other profile's session as gone.
-    index, runtime_error = await _hermes_session_index(request, {row.profile for row in rows})
+    index, checked_profiles, runtime_error = await _hermes_session_index(
+        request, {row.profile for row in rows}
+    )
     runtime_available = index is not None
     lookup = index or {}
+
+    def _checked(profile: str | None) -> bool:
+        """Whether THIS row's profile was actually listed (B-200).
+
+        Global availability is not enough: one project can hold rows on a
+        profile Hermes has and rows on one it does not, and only the first
+        kind can honestly be called missing.
+        """
+        return runtime_available and (profile or DEFAULT_PROFILE) in checked_profiles
 
     sessions = [
         _filed_session_row(
             row,
             project,
             lookup.get(row.runtime_session_id) if row.runtime_session_id else None,
-            runtime_available=runtime_available,
+            runtime_available=_checked(row.profile),
             latest_snapshot=latest.get(row.runtime_session_id) if row.runtime_session_id else None,
             snapshot_count=counts.get(row.runtime_session_id, 0) if row.runtime_session_id else 0,
         )
@@ -890,7 +1100,14 @@ async def list_project_sessions(
     sessions.extend(orphans)
     active_filed = sum(1 for row in rows if row.archived_at is None)
     return {
-        "project": _project_row(project, active_filed),
+        "project": _project_row(
+            project,
+            active_filed,
+            tag_names_of(db, "project", project.id),
+            # The project home renders the pinned card above the sessions, so
+            # this row has to carry it too -- see `_pinned_artifact_json`.
+            pinned=_pinned_artifact_json(db, project),
+        ),
         "sessions": sessions,
         "archived_count": sum(1 for row in sessions if row["archived"] is True),
         "runtime_available": runtime_available,

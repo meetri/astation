@@ -1,0 +1,151 @@
+# The audit stack. ONE file for every host in the network; which services run
+# is decided by AUDIT_ROLE in .env, not by editing this.
+#
+#   AUDIT_ROLE=collector   tetragon + vector + clickhouse. The host that holds
+#                          the queryable store. Exactly one per network.
+#   AUDIT_ROLE=sensor      tetragon + vector. Ships rows to the collector, and
+#                          its own archive straight to S3 -- so losing the
+#                          collector costs queryability, never the record.
+#
+# It is deliberately its OWN compose project, never merged into the Hermes one.
+# Restarting the thing being audited must never be a side effect of touching
+# the auditor, and vice versa.
+#
+# Images are pinned by digest. A tag can be moved; a digest cannot, and a
+# sensor that silently changed version after a pull is a sensor whose output
+# shape you no longer know.
+
+name: audit
+
+services:
+  # --- the sensor -----------------------------------------------------------
+  # Privileged, host PID namespace, host cgroup namespace. All three are
+  # required and none is incidental: eBPF programs attach to kernel functions,
+  # the process tree must be the HOST's tree rather than the container's, and
+  # cgroup identity is how an event is attributed to the container that caused
+  # it.
+  #
+  # This is the most powerful container on the box. That is the cost of seeing
+  # what every other container does, and the reason the archive credential it
+  # never holds is the one that matters.
+  tetragon:
+    image: quay.io/cilium/tetragon:v1.7.1@sha256:afc9458ba4bc3f2795da3df6b03d88ce50e175ac3903027de8036e2046b84a02
+    container_name: audit-tetragon
+    restart: unless-stopped
+    pid: host
+    cgroup: host
+    privileged: true
+    command:
+      - --export-filename=/var/log/tetragon/tetragon.log
+      # Five 10 MB backups. Vector has to keep up with this; if it falls
+      # further behind than 50 MB, the oldest events are gone before they ship.
+      # selftest.sh checks the shipper's lag for exactly this reason.
+      - --export-file-max-size-mb=10
+      - --export-file-max-backups=5
+      - --export-file-perm=644
+    volumes:
+      # BTF is what lets the probes load without kernel headers or a build.
+      - /sys/kernel/btf/vmlinux:/var/lib/tetragon/btf:ro
+      - ${AUDIT_DATA_DIR:-/opt/audit/data}/tetragon-log:/var/log/tetragon
+      - ./tetragon/policies:/etc/tetragon/tetragon.tp.d:ro
+    healthcheck:
+      test: ["CMD", "tetra", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # --- the shipper ----------------------------------------------------------
+  vector:
+    image: timberio/vector:0.58.0-debian@sha256:1c1ea358c617ea0b23003d5af87f7a678b30f8f7096437e680380c47fc13d2d9
+    container_name: audit-vector
+    restart: unless-stopped
+    depends_on:
+      - tetragon
+    environment:
+      AUDIT_HOST_LABEL: ${AUDIT_HOST_LABEL}
+      AUDIT_ROLE: ${AUDIT_ROLE:-collector}
+      AUDIT_BUCKET: ${AUDIT_BUCKET:-}
+      AUDIT_CLICKHOUSE_INGEST_PASSWORD: ${AUDIT_CLICKHOUSE_INGEST_PASSWORD}
+      VECTOR_VERSION: "0.58.0"
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AUDIT_SHIPPER_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AUDIT_SHIPPER_SECRET_ACCESS_KEY:-}
+      # Vector's own logs. `warn` because at `info` it narrates every batch and
+      # becomes the noisiest thing in the journal it is reading.
+      VECTOR_LOG: warn
+    volumes:
+      # The RENDERED config (install.sh), not the template.
+      - ./vector/vector.rendered.yaml:/etc/vector/vector.yaml:ro
+      - ${AUDIT_DATA_DIR:-/opt/audit/data}/tetragon-log:/var/log/tetragon:ro
+      # The checkpoint and the disk buffers. On a host volume so a container
+      # replacement resumes instead of re-reading or skipping.
+      - ${AUDIT_DATA_DIR:-/opt/audit/data}/vector:/var/lib/vector
+      # journald's own storage, for the auth source.
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    # Tetragon writes the export as root. Vector reads it.
+    user: "0:0"
+    healthcheck:
+      test: ["CMD", "vector", "top", "--help"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # --- the hot store (collector only) --------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.8.8@sha256:cc7f5901580ec744d75c62817a226c61e67403c3b268d417193d212c843c0277
+    container_name: audit-clickhouse
+    restart: unless-stopped
+    profiles: [collector]
+    # The image runs as root and drops privileges in its entrypoint. Naming the
+    # user explicitly keeps the process and the data volume's owner in
+    # agreement -- a mismatch aborts startup with MISMATCHING_USERS_FOR_PROCESS_AND_DATA
+    # and the reason is only in a logfile inside the container.
+    user: "101:101"
+    environment:
+      # Without this the entrypoint creates a PASSWORDLESS `default` superuser.
+      # users.d removes that account; this stops it being created at all.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+      # users.d/audit.xml reads all three with `from_env`, so they have to
+      # reach THIS container. Without them the users exist with an empty
+      # password and every login fails -- including the installer's.
+      AUDIT_CLICKHOUSE_INGEST_PASSWORD: ${AUDIT_CLICKHOUSE_INGEST_PASSWORD}
+      AUDIT_CLICKHOUSE_READER_PASSWORD: ${AUDIT_CLICKHOUSE_READER_PASSWORD}
+      AUDIT_CLICKHOUSE_ADMIN_PASSWORD: ${AUDIT_CLICKHOUSE_ADMIN_PASSWORD}
+    volumes:
+      - ${AUDIT_DATA_DIR:-/opt/audit/data}/clickhouse:/var/lib/clickhouse
+      # Mounted out on purpose: a container in a restart loop takes its own
+      # logs with it, and the startup error is written HERE and nowhere else.
+      - ${AUDIT_DATA_DIR:-/opt/audit/data}/clickhouse-log:/var/log/clickhouse-server
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+    ports:
+      # Bound to loopback. The store is reachable from other containers on the
+      # audit network by name, and from this host's own shell. It is NOT on the
+      # LAN: a sensor host reaches it over WireGuard/SSH tunnel in a later
+      # phase, deliberately rather than by default.
+      - "127.0.0.1:${AUDIT_CLICKHOUSE_HTTP_PORT:-8124}:8123"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  default:
+    name: audit

@@ -13,6 +13,7 @@ production, which is the only reason they exist:
 
 from __future__ import annotations
 
+import pytest
 import ast
 import importlib.util
 import json
@@ -99,6 +100,66 @@ def test_plugin_api_exposes_a_module_level_router():
         if isinstance(t, ast.Name)
     }
     assert "router" in names
+
+
+#: The two scripts that publish the plugin, and where each one sends it.
+#:
+#: BOTH must ship the same modules. They drifted once and it was invisible:
+#: the deploy script carried `audit_forwarder.py` to the owner's host, so
+#: session attribution worked there, while the generator that builds the
+#: PUBLIC repo did not, so the published plugin had the audit routes and not
+#: the thing that feeds them. Testing only one script is what let that happen.
+_PUBLISH_SCRIPTS = {
+    "deploy_plugin.sh": "the owner's host",
+    "build_plugin_repo.sh": "the public repo",
+}
+
+
+def _publish_script(name: str) -> str:
+    return (PLUGIN_DIR.parent / "scripts" / name).read_text()
+
+
+@pytest.mark.parametrize("script", sorted(_PUBLISH_SCRIPTS))
+def test_every_publish_path_ships_every_module(script):
+    """B-202's failure class, generalised to every way the plugin leaves this
+    repo. A module that exists in source but not in a published bundle fails
+    only at the destination, and only when it is first needed.
+
+    A glob satisfies this and a hand-written list must name every file. The
+    glob is preferred -- it cannot forget a module that exists -- but either
+    is accepted, so the assertion is about the OUTCOME rather than the style.
+    """
+    text = _publish_script(script)
+    ships_all = "plugin/*.py" in text
+    missing = [
+        path.name
+        for path in sorted(PLUGIN_DIR.glob("*.py"))
+        if not ships_all and f"plugin/{path.name}" not in text
+    ]
+    assert not missing, (
+        f"{script} does not ship {missing} to {_PUBLISH_SCRIPTS[script]}; "
+        "add them, or use plugin/*.py so the list cannot go stale"
+    )
+
+
+def test_the_public_repo_ships_the_audit_stack():
+    """Half the audit feature is plugin code and the other half is the sensor,
+    shipper and store it talks to. Someone installing the published plugin and
+    turning on its audit surface cannot stand up that half any other way."""
+    assert "audit-setup" in _publish_script("build_plugin_repo.sh")
+
+
+def test_the_publish_paths_are_both_still_known_here():
+    """If a third way to publish the plugin appears, it has to be added above,
+    or it inherits the drift this file exists to prevent."""
+    scripts = {
+        path.name
+        for path in (PLUGIN_DIR.parent / "scripts").glob("*.sh")
+        if "plugin" in path.name and ("deploy" in path.name or "build" in path.name)
+    }
+    assert scripts == set(_PUBLISH_SCRIPTS), (
+        f"publish scripts changed: {scripts ^ set(_PUBLISH_SCRIPTS)}"
+    )
 
 
 def test_plugin_api_has_no_import_time_side_effects_that_can_raise():

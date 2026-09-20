@@ -1,0 +1,87 @@
+# Every TCP connection this host makes or accepts, with the process that owns it.
+#
+# Two directions, two different kernel facts:
+#
+#   tcp_connect     -- this host dialled OUT. Fires on the SYN, so it records
+#                      the attempt whether or not anything answered, which is
+#                      what you want when the question is "did it try to reach
+#                      that address".
+#   tcp_set_state   -- this host ACCEPTED a connection. There is no single
+#                      "accept" kprobe that carries the socket usefully; the
+#                      transition into TCP_SYN_RECV is the moment an inbound
+#                      handshake is being completed, and the sock argument
+#                      carries both addresses and both ports.
+#
+# Deliberately NOT here:
+#
+#   tcp_sendmsg  -- fires per message. It is the network equivalent of the
+#                   per-write() trap documented in file-mutations.yaml: a bulk
+#                   transfer would bury the connection record that matters.
+#                   Byte counts are not worth losing events for.
+#   udp_*        -- DNS would dominate the volume, and the connection record
+#                   plus the destination address already answers "who did it
+#                   talk to". A later phase can add DNS on its own terms.
+#
+# Loopback is excluded. It is a large fraction of all connections on a host
+# running several containers, it never leaves the machine, and keeping it
+# would drown the egress question this policy exists to answer. Container to
+# container traffic does NOT go over loopback -- it crosses the docker bridge
+# with real addresses -- so it is still captured.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "network"
+spec:
+  kprobes:
+  # --- outbound ------------------------------------------------------------
+  - call: "tcp_connect"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "NotDAddr"
+        values:
+        - "127.0.0.1/32"
+
+  # --- inbound -------------------------------------------------------------
+  - call: "tcp_set_state"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    - index: 1
+      type: "int"
+    selectors:
+    - matchArgs:
+      # The moment an inbound handshake completes: a socket whose CURRENT
+      # state is TCP_SYN_RECV moving to TCP_ESTABLISHED (1).
+      #
+      # Matching only the new state does not work -- tried first, the hook
+      # never fired once. The socket's own state is the left half of the
+      # condition and it needs the `State` operator on the sock argument,
+      # not an integer compare on the transition.
+      - index: 0
+        operator: "State"
+        values:
+        - "TCP_SYN_RECV"
+      - index: 1
+        operator: "Equal"
+        values: ["1"]
+
+  # --- close, for duration -------------------------------------------------
+  # One event per connection, not per message, so it is cheap. It is what
+  # turns a pile of connect records into sessions with a lifetime.
+  - call: "tcp_close"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "NotDAddr"
+        values:
+        - "127.0.0.1/32"

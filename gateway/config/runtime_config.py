@@ -210,6 +210,21 @@ CAPABILITIES: tuple[Capability, ...] = (
         ),
     ),
     Capability(
+        name="artifacts",
+        label="Artifact ingest",
+        summary=(
+            "Which files the agent writes get filed into the artifact "
+            "library, and which are skipped as operational noise."
+        ),
+        note=(
+            "These ADD to the built-in rules, they never replace them, so "
+            "Hermes's own state files stay out whatever is set here. They "
+            "gate NEW ingests only -- use Archive ignored files to clear what "
+            "is already filed. Promotion from the sandbox browser is never "
+            "blocked: an explicit ask to keep a file wins over a rule."
+        ),
+    ),
+    Capability(
         name="conversation",
         label="Conversation model",
         summary="The model that answers in a session.",
@@ -235,6 +250,33 @@ CAPABILITIES_BY_NAME: dict[str, Capability] = {c.name: c for c in CAPABILITIES}
 PROFILE_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,39}$"
 
 CONFIG_KEYS: tuple[ConfigKey, ...] = (
+    # --- artifact ingest (domain/artifact_ingest.py) -----------------------
+    ConfigKey(
+        key="artifact_ignore_dirs",
+        env_var="ARTIFACT_IGNORE_DIRS",
+        capability="artifacts",
+        label="Ignore folders",
+        kind="text",
+        help=(
+            "Comma-separated folder names to keep out of the library, matched "
+            "wherever they appear in a path -- node_modules, .git, build. "
+            "Added to the built-in list, which already covers .npm, .cache, "
+            "__pycache__, .venv and the rest."
+        ),
+        max_chars=400,
+    ),
+    ConfigKey(
+        key="artifact_ignore_globs",
+        env_var="ARTIFACT_IGNORE_GLOBS",
+        capability="artifacts",
+        label="Ignore filenames",
+        kind="text",
+        help=(
+            "Comma-separated filename patterns to keep out of the library, "
+            "such as *.log or *.tmp. Added to the built-in list."
+        ),
+        max_chars=400,
+    ),
     # --- rewrite (api/rewrite.py) ------------------------------------------
     ConfigKey(
         key="rewrite_profile",

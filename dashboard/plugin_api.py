@@ -116,6 +116,22 @@ for candidate in _CANDIDATES:
 
 _import_error: str | None = None
 _routers: list[tuple[Any, str]] = []
+def _audit_forwarder_stats() -> Any:
+    """This PROCESS's audit-forwarder counters, for `GET /health`.
+
+    Read from the forwarder module's singleton rather than rebuilt here: one
+    forwarder per process is started by `register()`, which runs everywhere the
+    plugin loads, while this route answers only from the dashboard. A profile
+    gateway has its own forwarder and its own counters, not visible from here.
+    """
+    module = sys.modules.get("trg_audit_forwarder")
+    forwarder = getattr(module, "INSTANCE", None) if module else None
+    if forwarder is None:
+        return "not started"
+    return forwarder.stats if forwarder.configured else "not configured"
+
+
+_routers: list[tuple[Any, str]] = []
 _startup_error: str | None = None
 _migration_status: str | None = None
 _drain: Any = None
@@ -132,6 +148,7 @@ else:
         # module names its router <module>_router, not `router`.
         from api.artifacts import artifacts_router
         from api.attachments import attachment_serve_router, attachments_router
+        from api.audit import audit_router
         from api.background import background_router
         from api.chat import chat_router
         from api.commands import commands_router
@@ -176,6 +193,7 @@ else:
             (config_router, "config"),
             (snapshot_sweep_router, "snapshot_sweep"),
             (chat_router, "chat"),
+            (audit_router, "audit"),
             # api/main.py mounts this one on `app` OUTSIDE the /api prefix: it
             # serves an attachment to the Hermes sandbox host by capability
             # URL. Under the plugin it lives beside everything else. §4.4
@@ -466,8 +484,10 @@ async def _start_gateway_services() -> None:
             # all stop being used (§4.4).
             orchestrator = getattr(app.state, "attachment_orchestrator", None)
             store = getattr(app.state, "artifact_store", None)
-            if orchestrator is not None and store is not None and hasattr(
-                orchestrator, "set_direct_delivery"
+            if (
+                orchestrator is not None
+                and store is not None
+                and hasattr(orchestrator, "set_direct_delivery")
             ):
                 from config.settings import get_settings as _settings
 
@@ -589,7 +609,28 @@ async def health() -> dict[str, Any]:
         # silent, and the two backends differ in confinement and in whether an
         # editor save can be clobbered.
         "sandbox_fs": _sandbox_fs_mode(),
+        # A5: how many paths the ingest ignore rules kept out of the library
+        # this process. Reported so "why did my file not show up" is
+        # answerable from here rather than from a log dive.
+        "artifacts": _artifact_ingest_stats(),
+        # Session attribution for the audit store. `not started` means kernel
+        # events can only be tied to a session by the time window they
+        # happened in; a rising `dropped` means attribution is being lost and
+        # the timeline will be quietly incomplete.
+        # Reported from the PLUGIN module, which starts one forwarder per
+        # process. This route answers from the dashboard, so these are the
+        # dashboard's own counters; a profile gateway's forwarder has its own
+        # and is not visible here.
+        "audit_attribution": _audit_forwarder_stats(),
     }
+
+
+def _artifact_ingest_stats() -> Any:
+    app = _hermes_app()
+    ingestor = getattr(getattr(app, "state", None), "artifact_ingestor", None)
+    if ingestor is None:
+        return "not started"
+    return {"ignored": getattr(ingestor, "ignored_paths", 0)}
 
 
 def _sandbox_fs_mode() -> Any:
