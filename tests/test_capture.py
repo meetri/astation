@@ -273,9 +273,12 @@ def test_missing_recorder_is_tolerated():
 def test_prompt_source_returns_the_text_pre_llm_call_carried():
     """This is what replaces a whole session.resume per foreign turn."""
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1",
-                         "user_message": "typed in the TUI"}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "typed in the TUI"},
+        }
+    )
     assert d.prompt_source("default", "S1") == ("typed in the TUI", "t1")
 
 
@@ -284,8 +287,12 @@ def test_prompt_source_is_consumed_on_read():
     turn on the same session would be written with the previous turn's text --
     and the store dedups per run, so the wrong text would be committed."""
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "first"}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "first"},
+        }
+    )
     assert d.prompt_source("default", "S1") == ("first", "t1")
     assert d.prompt_source("default", "S1") is None
 
@@ -297,17 +304,29 @@ def test_prompt_source_returns_none_for_an_unknown_session():
 
 def test_prompt_source_ignores_an_empty_prompt():
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "   "}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "   "},
+        }
+    )
     assert d.prompt_source("default", "S1") is None
 
 
 def test_prompt_source_keeps_only_the_newest_prompt_per_session():
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "old"}})
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t2", "session_id": "S1", "user_message": "new"}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "old"},
+        }
+    )
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t2", "session_id": "S1", "user_message": "new"},
+        }
+    )
     assert d.prompt_source("default", "S1") == ("new", "t2")
 
 
@@ -315,17 +334,29 @@ def test_prompt_source_expires_a_stale_prompt():
     """A prompt older than the turn window is not evidence about the run
     opening now; the resume path should run instead."""
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "ancient"}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "ancient"},
+        }
+    )
     d._latest_prompt["S1"] = ("ancient", "t1", time.time() - capture.TURN_TTL_S - 1)
     assert d.prompt_source("default", "S1") is None
 
 
 def test_prompt_source_separates_sessions():
     d = drain_for(FakeRecorder())
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "one"}})
-    d.handle({"hook": "pre_llm_call",
-              "kwargs": {"turn_id": "t2", "session_id": "S2", "user_message": "two"}})
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t1", "session_id": "S1", "user_message": "one"},
+        }
+    )
+    d.handle(
+        {
+            "hook": "pre_llm_call",
+            "kwargs": {"turn_id": "t2", "session_id": "S2", "user_message": "two"},
+        }
+    )
     assert d.prompt_source("default", "S2") == ("two", "t2")
     assert d.prompt_source("default", "S1") == ("one", "t1")

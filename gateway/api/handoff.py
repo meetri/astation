@@ -56,7 +56,9 @@ async def _session_messages(app_state: Any, profile: str, stored_id: str) -> Any
         _live_id, history = await _with_reconnect(
             app_state,
             adapter,
-            lambda: _with_live_handle(adapter, cache, stored_id, adapter.session_history, profile=profile),
+            lambda: _with_live_handle(
+                adapter, cache, stored_id, adapter.session_history, profile=profile
+            ),
         )
     except HermesError as exc:
         raise _http_error_from_hermes(exc, stored_id) from exc

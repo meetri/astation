@@ -46,6 +46,7 @@ REWRITE_DEPTH_SUFFIXES: dict[str, str] = {
     ),
 }
 
+# Fractions of the base ceiling; reasoning models spend it before content, so short depths cap low.
 REWRITE_DEPTH_MAX_TOKENS_FRACTION: dict[str, float] = {
     "brief": 0.35,
     "medium": 0.65,
@@ -63,6 +64,7 @@ REWRITE_STYLE_PROMPT_SETTINGS: dict[str, str] = {
 
 REWRITE_STYLES = tuple(REWRITE_STYLE_PROMPT_SETTINGS)
 
+# Spelled out rather than derived from the tuple: Literal needs literal members at type-check time.
 RewriteStyle = Literal["listen", "explain", "document"]
 
 
@@ -163,7 +165,9 @@ def build_payload(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ],
+        # Sent explicitly: unset, a reasoning model can spend the whole budget and return empty content.
         "max_tokens": max_tokens,
+        # Omitted entirely when off, so a provider that rejects unknown body fields never sees the key.
         **({"chat_template_kwargs": {"enable_thinking": False}} if disable_thinking else {}),
     }
 
@@ -179,6 +183,7 @@ def content_from_completion(payload: Any, *, label: str = "rewrite") -> str:
             "the endpoint answered HTTP 200 with no `choices`", detail, label=label
         )
     first = choices[0]
+    # finish_reason "length" is a truncated 200; refusing it lets the caller use the full original.
     finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
     if finish_reason == "length":
         raise _no_content_error(
@@ -347,6 +352,7 @@ async def rewrite_prose(body: RewriteRequest, request: Request) -> dict[str, Any
             ),
         )
 
+    # Stays ahead of the config checks: the raw escape hatch must not depend on the provider.
     if body.depth == "raw":
         logger.info("rewrite raw passthrough: %d chars, style %s", len(text), body.style)
         return {
@@ -364,9 +370,7 @@ async def rewrite_prose(body: RewriteRequest, request: Request) -> dict[str, Any
 
     api_key = settings.rewrite_api_key.get_secret_value().strip()
     profile = settings.rewrite_profile.strip()
-    system_prompt = await resolve_system_prompt(
-        request.app.state, settings, body.style, body.depth
-    )
+    system_prompt = await resolve_system_prompt(request.app.state, settings, body.style, body.depth)
     max_tokens = max_tokens_for_depth(settings.rewrite_max_tokens, body.depth)
 
     if profile:
@@ -380,7 +384,11 @@ async def rewrite_prose(body: RewriteRequest, request: Request) -> dict[str, Any
         if hosted is not None:
             logger.info(
                 "rewrote %d chars -> %d chars in style %s depth %s via the host LLM (profile %s)",
-                len(text), len(hosted), body.style, body.depth, profile,
+                len(text),
+                len(hosted),
+                body.style,
+                body.depth,
+                profile,
             )
             return {
                 "rewrite": {

@@ -116,9 +116,7 @@ class AttachmentOrchestrator:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def set_direct_delivery(
-        self, deliver: Callable[[str, str], tuple[bool, str]] | None
-    ) -> None:
+    def set_direct_delivery(self, deliver: Callable[[str, str], tuple[bool, str]] | None) -> None:
         """Install an in-process way to put the bytes in the sandbox."""
         self._direct_delivery = deliver
 
@@ -289,8 +287,7 @@ class AttachmentOrchestrator:
             self._set_state(
                 attachment_id,
                 STATE_FAILED,
-                f"the file is in the sandbox at {sandbox_path!r} but "
-                f"image.attach failed: {exc}",
+                f"the file is in the sandbox at {sandbox_path!r} but image.attach failed: {exc}",
             )
             return
         if not (isinstance(result, dict) and result.get("attached") is True):

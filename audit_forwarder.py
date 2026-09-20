@@ -13,12 +13,14 @@ from typing import Any
 
 log = logging.getLogger("astation.audit")
 
+# Singleton under a fixed sys.modules key: two importers would otherwise hold two modules.
 INSTANCE: AuditForwarder | None = None
 
 MAX_QUEUED = 5_000
 
 MAX_ARG_CHARS = 4_000
 
+# Duplicates the shipper's own masking on purpose, so a secret is never in flight.
 _SECRET_PATTERNS = (
     (r"(AKIA|ASIA)[0-9A-Z]{16}", "AWS_KEY_REDACTED"),
     (r"\b(sk|rk)-[A-Za-z0-9_\-]{16,}", "API_KEY_REDACTED"),
@@ -76,6 +78,7 @@ class AuditForwarder:
         self._url = (ingest_url or "").strip().rstrip("/")
         self._host = host_label or "gateway"
         self._timeout_s = timeout_s
+        # pre_tool_call carries no profile; each process serves exactly one, so it is the fallback.
         self._profile = (profile or "").strip()
         self._queue: deque[dict[str, Any]] = deque(maxlen=MAX_QUEUED)
         self._lock = threading.Lock()
@@ -147,6 +150,7 @@ class AuditForwarder:
 
     def record_tool_result(self, kw: dict[str, Any]) -> None:
         """One `post_tool_call`: how long it took and whether it worked."""
+        # error_message is available on this hook and deliberately not sent: it can quote content.
         try:
             session_id = str(kw.get("session_id") or "")
             tool_call_id = str(kw.get("tool_call_id") or "")
@@ -205,6 +209,7 @@ class AuditForwarder:
     def _enqueue(self, row: dict[str, Any]) -> None:
         row.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z")
         with self._lock:
+            # deque(maxlen=) discards silently, so a drop is detected by length before appending.
             was_full = len(self._queue) == MAX_QUEUED
             self._queue.append(row)
             if was_full:
@@ -236,6 +241,7 @@ class AuditForwarder:
                         self.stats["errors"] += 1
                     else:
                         self.stats["sent"] += len(batch)
+            # Failed rows are dropped, not retried; a retry queue would grow through an outage.
             except (urllib.error.URLError, OSError, ValueError):
                 self.stats["errors"] += 1
                 self.stats["dropped"] += len(batch)

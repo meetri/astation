@@ -33,6 +33,7 @@ prompts_router = APIRouter(tags=["prompts"])
 PROMPTS_PATH_PREFIX = "/api/prompts"
 
 _STATUS_OK = "ok"
+# True` -- because a prompt can time out server-side while its card is still
 _STATUS_EXPIRED = "expired"
 
 _RESOLVED_KEY = "resolved"

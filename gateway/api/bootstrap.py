@@ -85,11 +85,13 @@ def open_chat_store(app_state: Any) -> None:
 def build_profile_connection_manager(app_state: Any, settings: Settings) -> None:
     """`app.state.profile_connection_manager` -- one adapter per Hermes profile."""
     _docker_exec_target = settings.research_gateway_profile_docker_exec_target
+    # No broadcaster= here: event_broadcaster is built later, so the manager resolves it lazily.
     app_state.profile_connection_manager = ProfileConnectionManager(
         app_state=app_state,
         launcher=SubprocessProfileLauncher(
             command_prefix=("docker", "exec", _docker_exec_target) if _docker_exec_target else (),
             dashboard_host="0.0.0.0" if _docker_exec_target else "127.0.0.1",
+            # Reaping needs /proc, which is only there in the container reached by docker exec.
             reap_orphans=bool(_docker_exec_target),
         ),
         adapter_factory=_profile_adapter_factory(settings),
@@ -102,6 +104,7 @@ def build_background_ledger(
 ) -> BackgroundLedger:
     """`app.state.background_ledger` -- built, and its startup orphan sweep run."""
     background_ledger = BackgroundLedger(app_state.db_sessions, adapter, live_handle_cache)
+    # Rows left `running` by a dead process have genuinely unknown outcomes; none are rescued.
     background_ledger.orphan_on_startup()
     app_state.background_ledger = background_ledger
     return background_ledger
@@ -137,6 +140,7 @@ def wire_event_stream(
     `hermes_connect_lock`, and the pump started."""
 
     def _on_generation_change(generation: int | None, previous: int | None) -> None:
+        # Cheap synchronous sweep first; the ledger additionally schedules an async re-resume.
         run_recorder.handle_generation_change(generation, previous)
         background_ledger.handle_generation_change(generation, previous)
 
@@ -146,11 +150,13 @@ def wire_event_stream(
         on_background_complete=background_ledger.handle_completed,
         on_generation_change=_on_generation_change,
         on_canonical_event=run_recorder.handle_event,
+        # A callable, not the dict: the per-profile caches are built lazily, after this point.
         profile_caches=lambda: getattr(app_state, "shared_profile_handle_caches", {}) or {},
     )
     app_state.hermes_adapter = adapter
     app_state.event_broadcaster = broadcaster
     app_state.live_handle_cache = live_handle_cache
+    # Serializes connect(): a second concurrent connect tears down the first one's socket.
     app_state.hermes_connect_lock = asyncio.Lock()
     broadcaster.start()
     return broadcaster
@@ -288,6 +294,7 @@ async def shutdown(app_state: Any, runtime: GatewayRuntime) -> None:
             with contextlib.suppress(Exception):
                 await client.aclose()
     await app_state.profile_connection_manager.close()
+    # Everything that can hold a resume closes before the adapter and broadcaster below.
     await runtime.snapshot_sweeper.close()
     await runtime.attachment_orchestrator.close()
     capture = getattr(app_state, "foreign_prompt_capture", None)

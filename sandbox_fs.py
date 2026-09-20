@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+# Above this a read returns a prefix with `truncated` set, as the upstream route does.
 MAX_TEXT_BYTES = 2_000_000
 
 
@@ -31,6 +32,7 @@ def _json_response(payload: dict[str, Any], status: int = 200) -> httpx.Response
         status_code=status,
         headers={"content-type": "application/json"},
         content=json.dumps(payload).encode("utf-8"),
+        # httpx.Response requires a bound request; this URL is never dialled.
         request=httpx.Request("GET", "http://plugin.local/"),
     )
 
@@ -57,26 +59,30 @@ def list_directory(raw_path: str, root: str) -> httpx.Response:
                 stat = child.stat()
             except OSError:
                 continue
-            entries.append({
-                "name": child.name,
-                "path": str(child),
-                "is_directory": child.is_dir(),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "mime_type": mimetypes.guess_type(child.name)[0],
-            })
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "is_directory": child.is_dir(),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "mime_type": mimetypes.guess_type(child.name)[0],
+                }
+            )
     except OSError as exc:
         return _error(500, f"could not read the directory: {exc}")
 
     root_real = str(Path(os.path.realpath(root)))
-    return _json_response({
-        "path": str(target),
-        "parent": str(target.parent) if str(target) != root_real else None,
-        "entries": entries,
-        "root": root_real,
-        "locked_root": root_real,
-        "can_change_path": False,
-    })
+    return _json_response(
+        {
+            "path": str(target),
+            "parent": str(target.parent) if str(target) != root_real else None,
+            "entries": entries,
+            "root": root_real,
+            "locked_root": root_real,
+            "can_change_path": False,
+        }
+    )
 
 
 def read_text(raw_path: str, root: str) -> httpx.Response:
@@ -101,15 +107,18 @@ def read_text(raw_path: str, root: str) -> httpx.Response:
         text = ""
         binary = True
 
-    return _json_response({
-        "binary": binary,
-        "byteSize": len(data),
-        "language": target.suffix.lstrip(".") or "",
-        "mimeType": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
-        "path": str(target),
-        "text": text,
-        "truncated": truncated,
-    })
+    return _json_response(
+        {
+            "binary": binary,
+            # The file's full size, not the returned text's: the shape callers parse reports it so.
+            "byteSize": len(data),
+            "language": target.suffix.lstrip(".") or "",
+            "mimeType": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            "path": str(target),
+            "text": text,
+            "truncated": truncated,
+        }
+    )
 
 
 def write_text(raw_path: str, content: str, root: str) -> httpx.Response:

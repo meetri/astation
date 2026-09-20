@@ -125,6 +125,7 @@ def validate_select(sql: str) -> str:
     return sql.strip().rstrip(";")
 
 
+# Must match a parameterised LIMIT ({limit:UInt32}) too, not just digits, or a second is appended.
 def _has_own_limit(statement: str) -> bool:
     """Does the statement already end in a LIMIT of its own?"""
     tail = strip_sql_noise(statement).lower().strip()
@@ -178,6 +179,8 @@ class AuditStore:
 
     async def execute(self, sql: str, *, params: dict[str, Any] | None = None) -> QueryResult:
         """Run one validated read. Raises `AuditQueryRejected` / `AuditUnavailable`."""
+
+        # Validated first: a write or a chained statement is refused even with no store configured.
         statement = validate_select(sql)
         if not self.configured:
             raise AuditUnavailable(
@@ -185,12 +188,16 @@ class AuditStore:
                 "See audit/README.md to deploy it."
             )
 
+
+        # One row over the cap, so a full page is distinguishable from an exactly-full one.
         query = (
             f"{statement}\nFORMAT JSON"
             if _has_own_limit(statement)
             else f"{statement}\nLIMIT {self._max_rows + 1}\nFORMAT JSON"
         )
 
+
+        # A read-only role rejects ANY setting change, including lowering a cap: send none.
         request_params: dict[str, Any] = {"database": self._database}
         for key, value in (params or {}).items():
             request_params[f"param_{key}"] = value
@@ -248,6 +255,7 @@ class AuditStore:
         )
 
 
+# The read-only store credential cannot write here, so rows go to the shipper's ingest endpoint.
 class AuditRecorder:
     """Writes `audit.audit_query` rows: who asked this store what."""
 

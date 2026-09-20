@@ -13,6 +13,8 @@ from config import runtime_config
 
 logger = logging.getLogger(__name__)
 
+
+# Four levels up is the repo root: the `.env` is never read from inside services/research-gateway.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENV_FILE = _REPO_ROOT / ".env"
 
@@ -32,6 +34,8 @@ class Settings(BaseSettings):
     hermes_username: str = Field(alias="HERMES_USERNAME", default="")
     hermes_password: SecretStr = Field(alias="HERMES_PASSWORD", default=SecretStr(""))
 
+
+    # Empty by default so a misconfigured deployment fails closed instead of serving the LAN.
     research_gateway_username: str = Field(alias="RESEARCH_GATEWAY_USERNAME", default="")
     research_gateway_password: SecretStr = Field(
         alias="RESEARCH_GATEWAY_PASSWORD", default=SecretStr("")
@@ -41,6 +45,7 @@ class Settings(BaseSettings):
 
     artifact_ignore_dirs: str = Field(alias="ARTIFACT_IGNORE_DIRS", default="")
     artifact_ignore_globs: str = Field(alias="ARTIFACT_IGNORE_GLOBS", default="")
+    # A non-empty value REPLACES the built-in denylist wholesale; ARTIFACT_IGNORE_* only adds to it.
     hermes_sandbox_denylist_dirs: str = Field(alias="HERMES_SANDBOX_DENYLIST_DIRS", default="")
     hermes_sandbox_denylist_globs: str = Field(alias="HERMES_SANDBOX_DENYLIST_GLOBS", default="")
 
@@ -48,6 +53,8 @@ class Settings(BaseSettings):
         alias="HERMES_ATTACHMENT_DIR", default="/opt/data/attachments"
     )
 
+
+    # Read only by the text viewer; widening the sandbox root would redirect the ingest walk too.
     research_gateway_view_roots: str = Field(alias="RESEARCH_GATEWAY_VIEW_ROOTS", default="")
 
     audit_clickhouse_url: str = Field(alias="AUDIT_CLICKHOUSE_URL", default="")
@@ -57,6 +64,8 @@ class Settings(BaseSettings):
     )
     audit_ingest_url: str = Field(alias="AUDIT_INGEST_URL", default="")
     audit_host_label: str = Field(alias="AUDIT_HOST_LABEL", default="")
+
+    # The reader role enforces the same cap in the database; raising it here alone changes nothing.
     audit_query_max_rows: int = Field(alias="AUDIT_QUERY_MAX_ROWS", default=10_000)
     audit_query_timeout_s: float = Field(alias="AUDIT_QUERY_TIMEOUT_S", default=30.0)
 
@@ -152,6 +161,8 @@ class Settings(BaseSettings):
     )
     rewrite_max_input_chars: int = Field(alias="REWRITE_MAX_INPUT_CHARS", default=24000)
     rewrite_timeout_s: float = Field(alias="REWRITE_TIMEOUT_S", default=90.0)
+
+    # Large on purpose: a reasoning model spends this budget thinking before it writes any content.
     rewrite_max_tokens: int = Field(alias="REWRITE_MAX_TOKENS", default=2400)
     rewrite_disable_thinking: bool = Field(alias="REWRITE_DISABLE_THINKING", default=False)
 
@@ -221,6 +232,8 @@ class Settings(BaseSettings):
         ),
     )
     converse_max_question_chars: int = Field(alias="CONVERSE_MAX_QUESTION_CHARS", default=600)
+
+    # Deliberately small: a 3B model confabulates over a window stuffed toward its nominal limit.
     converse_max_context_chars: int = Field(alias="CONVERSE_MAX_CONTEXT_CHARS", default=6000)
     converse_anchor_units: int = Field(alias="CONVERSE_ANCHOR_UNITS", default=3)
     converse_timeout_s: float = Field(alias="CONVERSE_TIMEOUT_S", default=60.0)
@@ -258,6 +271,7 @@ class Settings(BaseSettings):
     research_gateway_snapshot_sweep_scope: Literal["filed", "all"] = Field(
         alias="RESEARCH_GATEWAY_SNAPSHOT_SWEEP_SCOPE", default="filed"
     )
+
 
     research_gateway_profile_reconcile_interval_s: int = Field(
         alias="RESEARCH_GATEWAY_PROFILE_RECONCILE_INTERVAL_S", default=0, ge=0
@@ -373,6 +387,7 @@ class Settings(BaseSettings):
 
 def get_settings() -> Settings:
     """Return a freshly-loaded Settings instance, overlay applied."""
+    # Never cache this: every request calls it so a config change applies without a restart.
     base = Settings()
     overlay = runtime_config.read_overlay(base.research_gateway_runtime_config_path)
     if not overlay.values:
@@ -380,6 +395,8 @@ def get_settings() -> Settings:
     try:
         return Settings(**overlay.values)
     except Exception as exc:
+
+        # Class and keys only: a validation message can quote an API key value.
         logger.error(
             "the runtime config overlay at %s could not be applied (%s); "
             "falling back to .env for every value. Keys in the overlay: %s",

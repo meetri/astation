@@ -26,37 +26,86 @@ __all__ = [
 
 _TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
+
+# Must equal Hermes's own preview cut: raising it here alone lets the editor save a truncated read.
 _TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 _TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
 
+
+# Copied verbatim from Hermes: re-deriving it would change highlighting when the backend switches.
 _LANGUAGE_BY_EXT = {
-    ".c": "c", ".conf": "ini", ".cpp": "cpp", ".css": "css", ".csv": "csv",
-    ".go": "go", ".graphql": "graphql", ".h": "c", ".hpp": "cpp",
-    ".html": "html", ".java": "java", ".js": "javascript", ".json": "json",
-    ".jsx": "jsx", ".kt": "kotlin", ".lua": "lua", ".md": "markdown",
-    ".mjs": "javascript", ".py": "python", ".rb": "ruby", ".rs": "rust",
-    ".sh": "shell", ".sql": "sql", ".svg": "xml", ".toml": "toml",
-    ".ts": "typescript", ".tsx": "tsx", ".txt": "text", ".xml": "xml",
-    ".yaml": "yaml", ".yml": "yaml", ".zsh": "shell",
+    ".c": "c",
+    ".conf": "ini",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".csv": "csv",
+    ".go": "go",
+    ".graphql": "graphql",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "jsx",
+    ".kt": "kotlin",
+    ".lua": "lua",
+    ".md": "markdown",
+    ".mjs": "javascript",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".svg": "xml",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".txt": "text",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".zsh": "shell",
 }
 
 _MIME_OVERRIDES = {
-    ".avi": "video/x-msvideo", ".bmp": "image/bmp", ".flac": "audio/flac",
-    ".gif": "image/gif", ".jpeg": "image/jpeg", ".jpg": "image/jpeg",
-    ".m4a": "audio/mp4", ".mkv": "video/x-matroska", ".mov": "video/quicktime",
-    ".mp3": "audio/mpeg", ".mp4": "video/mp4", ".ogg": "audio/ogg",
-    ".opus": "audio/ogg; codecs=opus", ".png": "image/png",
-    ".svg": "image/svg+xml", ".wav": "audio/wav", ".webm": "video/webm",
+    ".avi": "video/x-msvideo",
+    ".bmp": "image/bmp",
+    ".flac": "audio/flac",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".m4a": "audio/mp4",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg; codecs=opus",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".wav": "audio/wav",
+    ".webm": "video/webm",
     ".webp": "image/webp",
 }
 
-_SENSITIVE_BASENAMES = frozenset({
-    "auth.json", "auth.lock", "credentials", "config.yaml",
-    ".anthropic_oauth.json", "google_token.json", "google_oauth_pending.json",
-    "google_oauth.json", "webhook_subscriptions.json", "bws_cache.json",
-    "bws_cache.enc.json", ".git-credentials",
-})
+_SENSITIVE_BASENAMES = frozenset(
+    {
+        "auth.json",
+        "auth.lock",
+        "credentials",
+        "config.yaml",
+        ".anthropic_oauth.json",
+        "google_token.json",
+        "google_oauth_pending.json",
+        "google_oauth.json",
+        "webhook_subscriptions.json",
+        "bws_cache.json",
+        "bws_cache.enc.json",
+        ".git-credentials",
+    }
+)
 
 _SENSITIVE_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
 
@@ -147,9 +196,7 @@ class HermesHttpSandboxFS:
     async def files_list(self, path: str) -> httpx.Response:
         return await self._adapter.files_list(path)
 
-    async def files_download(
-        self, path: str, *, range_header: str | None = None
-    ) -> httpx.Response:
+    async def files_download(self, path: str, *, range_header: str | None = None) -> httpx.Response:
         return await self._adapter.files_download(path, range_header=range_header)
 
     async def fs_read_text(self, path: str) -> httpx.Response:
@@ -190,6 +237,7 @@ class DirectSandboxFS:
             return _err(400, "Path must be absolute")
         if ".." in candidate.parts:
             return _err(400, "Path cannot contain '..'")
+        # Symlinks are resolved before containment is tested; the caller's lexical check cannot.
         try:
             resolved = candidate.resolve(strict=False)
         except (OSError, RuntimeError):
@@ -204,6 +252,8 @@ class DirectSandboxFS:
         try:
             st = target.stat()
         except OSError:
+
+            # A dangling symlink or a mid-walk delete degrades one entry, not the whole listing.
             st = None
         is_dir = bool(st is not None and stat.S_ISDIR(st.st_mode))
         return {
@@ -212,9 +262,9 @@ class DirectSandboxFS:
             "is_directory": is_dir,
             "size": None if (is_dir or st is None) else st.st_size,
             "mtime": None if st is None else st.st_mtime,
-            "mime_type": None if is_dir else (
-                mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-            ),
+            "mime_type": None
+            if is_dir
+            else (mimetypes.guess_type(target.name)[0] or "application/octet-stream"),
         }
 
     def _list_sync(self, target: Path) -> httpx.Response:
@@ -238,14 +288,16 @@ class DirectSandboxFS:
         parent = None
         if target.parent != target and target != self._root:
             parent = str(target.parent)
-        return _ok({
-            "path": str(target),
-            "parent": parent,
-            "entries": entries,
-            "root": root,
-            "locked_root": root,
-            "can_change_path": False,
-        })
+        return _ok(
+            {
+                "path": str(target),
+                "parent": parent,
+                "entries": entries,
+                "root": root,
+                "locked_root": root,
+                "can_change_path": False,
+            }
+        )
 
     async def files_list(self, path: str) -> httpx.Response:
         resolved = self._resolve(path)
@@ -254,9 +306,7 @@ class DirectSandboxFS:
         return await anyio.to_thread.run_sync(self._list_sync, resolved)
 
 
-    async def files_download(
-        self, path: str, *, range_header: str | None = None
-    ) -> httpx.Response:
+    async def files_download(self, path: str, *, range_header: str | None = None) -> httpx.Response:
         """Not implemented here on purpose -- download stays on HTTP."""
         raise SandboxFSUnsupported(
             "downloads stay on Hermes's HTTP route, which streams and enforces "
@@ -288,16 +338,18 @@ class DirectSandboxFS:
             return _err(403, "File is not readable")
         except OSError as exc:
             return _err(400, str(exc) or "File read failed")
-        return _ok({
-            "binary": _looks_binary(data[:4096]),
-            "byteSize": st.st_size,
-            "language": _LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
-            "mimeType": _mime_type(target),
-            "path": str(target),
-            "text": data.decode("utf-8", errors="replace"),
-            "truncated": st.st_size > _TEXT_PREVIEW_MAX_BYTES,
-            "mtime": st.st_mtime,
-        })
+        return _ok(
+            {
+                "binary": _looks_binary(data[:4096]),
+                "byteSize": st.st_size,
+                "language": _LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
+                "mimeType": _mime_type(target),
+                "path": str(target),
+                "text": data.decode("utf-8", errors="replace"),
+                "truncated": st.st_size > _TEXT_PREVIEW_MAX_BYTES,
+                "mtime": st.st_mtime,
+            }
+        )
 
     async def fs_read_text(self, path: str) -> httpx.Response:
         resolved = self._resolve(path)
@@ -363,6 +415,8 @@ class DirectSandboxFS:
         if isinstance(resolved, httpx.Response):
             return resolved
         if _is_sensitive_path(resolved):
+
+            # Upstream applies this denylist to reads only; extending it to writes is deliberate.
             return _err(403, "Access to sensitive files is not allowed")
         return await anyio.to_thread.run_sync(
             self._write_text_sync, resolved, content, if_match_sha256
@@ -381,13 +435,15 @@ class DirectSandboxFS:
         except OSError as exc:
             return _err(500, f"Could not create directory: {exc}")
         root = str(self._root)
-        return _ok({
-            "ok": True,
-            "path": str(target),
-            "root": root,
-            "locked_root": root,
-            "can_change_path": False,
-        })
+        return _ok(
+            {
+                "ok": True,
+                "path": str(target),
+                "root": root,
+                "locked_root": root,
+                "can_change_path": False,
+            }
+        )
 
     async def files_mkdir(self, path: str) -> httpx.Response:
         resolved = self._resolve(path)
@@ -398,6 +454,7 @@ class DirectSandboxFS:
 
 def _decoded_preview(target: Path, st: os.stat_result) -> str | None:
     """The text a `fs_read_text` would have returned, for the compare."""
+    # Same cut and replace-decode as the read: the caller's hash was computed over exactly that.
     try:
         with target.open("rb") as handle:
             data = handle.read(min(st.st_size, _TEXT_PREVIEW_MAX_BYTES))

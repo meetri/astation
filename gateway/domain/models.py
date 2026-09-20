@@ -43,6 +43,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     memory_namespace: Mapped[str | None] = mapped_column(String, nullable=True)
     folder_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Not a ForeignKey on purpose: artifacts.project_id points back, and the cycle breaks create_all.
     pinned_artifact_id: Mapped[str | None] = mapped_column(String, nullable=True)
     default_profile_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("agent_profiles.id"), nullable=True
@@ -71,10 +72,12 @@ class Session(Base):
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
     runtime: Mapped[str] = mapped_column(String, nullable=False)
 
+    # server_default only; a client-side default would name this column in every generated INSERT.
     profile: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
 
     runtime_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # A hint, not a fact: invalid after any reconnect, and never usable as a key or join column.
     runtime_live_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -158,6 +161,7 @@ class ContextSnapshot(Base):
     __tablename__ = "context_snapshots"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("ctxsnap"))
+    # Deliberately not a ForeignKey: the mutual turn<->snapshot reference would be a creation cycle.
     turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
     policy_id: Mapped[str | None] = mapped_column(String, nullable=True)
     token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -196,6 +200,7 @@ class Run(Base):
     session_id: Mapped[str | None] = mapped_column(String, ForeignKey("sessions.id"), nullable=True)
     runtime_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     profile: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
+    # Never written by any code path; kept only so old rows still read back.
     turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
     parent_run_id: Mapped[str | None] = mapped_column(String, ForeignKey("runs.id"), nullable=True)
     kind: Mapped[str] = mapped_column(String, nullable=False)

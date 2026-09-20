@@ -152,6 +152,7 @@ async def audit_health(request: Request) -> dict[str, Any]:
         for row in result.rows
     ]
     beats = [c for c in classes if c["class"] == "host_beat"]
+
     stale = [c for c in beats if c["newest_age_s"] > 900]
     if not beats:
         status = "no_data"
@@ -178,6 +179,7 @@ def _windows_for_session(db: OrmSession, stored_session_id: str) -> list[dict[st
     runs = (
         db.execute(
             select(Run)
+            # `runtime_session_id`, not `session_id`: the latter is a filing FK, never a stored id.
             .where(Run.runtime_session_id == stored_session_id)
             .order_by(Run.started_at.desc())
             .limit(50)
@@ -204,6 +206,7 @@ def _windows_for_session(db: OrmSession, stored_session_id: str) -> list[dict[st
 
 def _profile_of_session(db: OrmSession, stored_session_id: str, rows: list[dict[str, Any]]) -> str:
     """Which profile this session runs on."""
+    # The audit rows' own profile is authoritative; the run ledger's profile column can be wrong.
     for row in rows:
         profile = str(row.get("row_profile") or "").strip()
         if profile:
@@ -240,6 +243,8 @@ def _unambiguous_windows(
     for window in windows:
         start, end = window["started_at"], window["ended_at"]
         if end is None:
+
+            # An open run has no end; bounding it at now() would sweep in anything started since.
             ambiguous.add(window["run_id"])
             continue
         overlap = any(
@@ -284,6 +289,8 @@ async def session_timeline(
         if windows[0]["ended_at"] is not None:
             params["end"] = windows[0]["ended_at"]
 
+
+    # Qualified: the tool branch self-joins, so a bare `ts` is ambiguous and the query fails.
     tool_window = window_clause("t.ts")
     host_window = window_clause()
     sql = f"""
@@ -383,6 +390,8 @@ async def session_timeline(
                     params=inferred_params,
                 )
             except HTTPException:
+
+                # An enhancement tier: a failure here must not fail the tiers above.
                 break
             inferred_rows.extend(extra.rows)
 
@@ -483,6 +492,7 @@ def _run_for(timestamp: Any, windows: list[dict[str, Any]]) -> str:
 
 def _comparable(value: Any) -> str:
     """One string shape for the two timestamp formats that meet here."""
+    # One side separates date and time with `T`, the other a space, and "T" sorts above " ".
     text = str(value or "").strip().replace("T", " ")
     for suffix in ("Z", "+00:00"):
         if text.endswith(suffix):

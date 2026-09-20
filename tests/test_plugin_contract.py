@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 import ast
 import importlib.util
 import json
@@ -11,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 import yaml
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
@@ -50,8 +50,7 @@ def test_plugin_yaml_is_valid_and_declares_no_capabilities():
     assert data["api_version"] == 1
     assert "version" in data and "description" in data
     assert data.get("capabilities") == ["llm.profile_override"], (
-        "the plugin should declare exactly llm.profile_override; "
-        f"got {data.get('capabilities')!r}"
+        f"the plugin should declare exactly llm.profile_override; got {data.get('capabilities')!r}"
     )
 
 

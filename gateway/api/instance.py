@@ -55,16 +55,20 @@ HERMES_NOTHING_TO_BRANCH_CODE = 4008
 
 SESSION_BRANCH_HONOURS_TITLE = True
 
+# session.branch reads "name"; a "title" param is accepted and silently ignored.
 SESSION_BRANCH_TITLE_PARAM = "name"
 
 HERMES_SESSIONS_DELETE_ARGV: tuple[str, ...] = ("sessions", "delete")
 
+# Pin only, never unpin: the same flag drives a UI sidebar and who set it is unknowable here.
 HERMES_SESSIONS_PIN_ARGV: tuple[str, ...] = ("sessions", "pin")
 
+# cli.exec gives the process no stdin, so an interactive confirmation would hang the delete.
 HERMES_ASSUME_YES = "--yes"
 
 MAX_STORED_ID_CHARS = 128
 
+# Blocks option injection: the id becomes an argv token, so a leading '-' would read as an option.
 _ARGV_SAFE_STORED_ID = re.compile(rf"[A-Za-z0-9][A-Za-z0-9_.-]{{0,{MAX_STORED_ID_CHARS - 1}}}")
 
 
@@ -456,6 +460,7 @@ async def delete_session(
     output = payload.get("output")
     output_text = output if isinstance(output, str) else ""
     blocked = payload.get("blocked") is True
+    # bool is an int subclass, so an explicit isinstance check is needed to reject code: true.
     succeeded = not blocked and isinstance(code, int) and not isinstance(code, bool) and code == 0
     if not succeeded:
         hint = payload.get("hint")

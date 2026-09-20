@@ -73,6 +73,7 @@ from domain.event_stream import (  # noqa: F401
     stream_ready_frame,
 )
 
+# Re-exported, not used here: other modules and tests import these names from this one.
 from domain.hermes_runtime import (  # noqa: F401
     _HERMES_LIVE_SESSION_NOT_FOUND_CODE,
     _HERMES_SESSION_NOT_FOUND_CODES,
@@ -97,6 +98,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Build every `app.state` service on startup, tear them down on shutdown."""
+    # No login()/connect() here: only a request that needs Hermes opens the connection, lazily.
     runtime = startup(app.state, get_settings())
     try:
         yield
@@ -106,8 +108,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Research Gateway", version="0.1.0", lifespan=lifespan)
 
+
+# The default 422 body echoes the rejected value, which on /api/prompts/* can be a secret.
 app.add_exception_handler(RequestValidationError, scrub_prompt_validation_errors)
 
+
+# One dependency declared here is why a route added later cannot ship unauthenticated.
 api = APIRouter(prefix="/api", dependencies=[Depends(require_basic_auth)])
 
 
@@ -117,6 +123,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Included first: route precedence depends on this order.
 api.include_router(sessions_router)
 
 api.include_router(projects_router)
@@ -169,6 +176,8 @@ api.include_router(chat_router)
 
 app.include_router(api)
 
+
+# On `app`, not `api`: this caller has no Basic credential and authenticates by token instead.
 app.include_router(attachment_serve_router)
 
 
@@ -176,6 +185,8 @@ app.include_router(attachment_serve_router)
 async def ws_events(websocket: WebSocket) -> None:
     """Proxy normalized events from one active Hermes session to this client."""
     if not websocket_client_is_authorized(websocket):
+
+        # Accept before closing: closing first makes the server send a bare 403 with no close code.
         await websocket.accept()
         await websocket.close(code=1008, reason="Invalid or missing credentials")
         return

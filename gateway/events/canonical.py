@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+# clear it), 11 frames per turn against 945 real reasoning tokens. Folding
 RAW_TO_CANONICAL_TYPE: dict[str, str] = {
     "background.complete": "background.completed",
     "message.start": "message.started",

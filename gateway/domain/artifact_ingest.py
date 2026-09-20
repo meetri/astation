@@ -37,6 +37,8 @@ from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
 
+
+# `terminal` is absent deliberately: its completion carries no path field to ingest from.
 AUTO_INGEST_TOOL_NAMES: frozenset[str] = frozenset({"write_file", "patch"})
 
 _TOOL_COMPLETED_TYPE = "tool.completed"
@@ -362,6 +364,8 @@ class ArtifactIngestor:
             if artifact.project_id is None:
                 artifact.project_id = project_id
             if is_new:
+
+                # Tag on create only: re-tagging on a later touch would restore a removed tag.
                 db.flush()
                 self._apply_filing_tags(db, artifact)
             db.commit()
@@ -479,12 +483,17 @@ class ArtifactIngestor:
 _MESSAGE_STARTED_TYPE = "message.started"
 _MESSAGE_COMPLETED_TYPE = "message.completed"
 
+
+# Bounds one turn's walk so a deep or wide tree cannot cost unbounded upstream listing calls.
 DIFF_SCAN_MAX_DIRS = 64
 DIFF_SCAN_MAX_DEPTH = 4
 
+
+# Bounds before-snapshots whose turn never completes; the oldest pairing is evicted.
 MAX_PENDING_DIFF_RUNS = 64
 
 
+# The sandbox root is Hermes's whole data root; these trees churn every turn and are never output.
 SANDBOX_DIFF_DENYLIST_DIRS: frozenset[str] = frozenset({"logs", "cron", "state", "cache"})
 
 ARTIFACT_IGNORE_COMPONENTS: frozenset[str] = frozenset(
@@ -556,6 +565,7 @@ class SandboxDiffDenylist:
         """The deployed construction (api.main): built-in defaults unless the
         corresponding env override is non-empty, in which case the override
         REPLACES that default wholesale (a layout change is a config edit)."""
+        # An env override replaces a built-in list; the runtime additions below only add to it.
         dirs = _denylist_csv(settings.hermes_sandbox_denylist_dirs) or SANDBOX_DIFF_DENYLIST_DIRS
         globs = (
             _denylist_csv(settings.hermes_sandbox_denylist_globs)
@@ -695,6 +705,7 @@ class SandboxDiffIngestor:
     async def _handle_completed(self, run_id: str, project_id: str | None) -> None:
         """Take the after-snapshot, diff against the paired before, ingest."""
         start_task = self._start_tasks.pop(run_id, None)
+        # Both handlers are independent tasks: the before-snapshot must land before it is read.
         if start_task is not None and not start_task.done():
             with contextlib.suppress(Exception):
                 await start_task
@@ -833,8 +844,11 @@ class SandboxDiffIngestor:
         return entries
 
 
+# Both whole-segment frames are scanned: a tool-using turn's completion carries only the last one.
 _MESSAGE_INTERIM_TYPE = "message.interim"
 
+
+# Line-anchored so prose cannot match; the app's own tag parser mirrors these rules exactly.
 _MEDIA_TAG_RE = re.compile(r"^(?:\*\*|__)?\s*media:\s*(?:\*\*|__)?\s*(.*)$", re.IGNORECASE)
 
 _LIST_MARKER_RE = re.compile(r"^(?:[-*+•]|\d+[.)])\s+")
@@ -845,6 +859,8 @@ _WRAPPERS = ("`", "**", "__")
 
 _TRAILING_PUNCTUATION = ".,;:!?"
 
+
+# A bare path line counts as a delivery only with one of these, matching the app's viewer.
 MEDIA_PATH_EXTENSIONS: frozenset[str] = frozenset({
     "wav", "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus",
     "pdf", "md", "markdown", "html", "htm", "txt", "log", "csv", "json",

@@ -86,10 +86,12 @@ class HookDrain:
 
     def __init__(self, events, app_state: Any, profile: str = "default", audit=None):
         self._events = events
+        # Accepted and ignored: forwarding lives in register(), which runs in every process.
         self._audit = audit
         self._app_state = app_state
         self._profile = profile
         self.turns = TurnMap()
+        # Keyed by session as well as turn: the foreign-prompt caller knows only the session.
         self._latest_prompt: OrderedDict[str, tuple[str, str, float]] = OrderedDict()
         self._closed_turns: OrderedDict[tuple[str, str], float] = OrderedDict()
         self.stats: dict[str, int] = {
@@ -117,6 +119,7 @@ class HookDrain:
             self._task = None
 
     async def _run(self) -> None:
+        # A thread queue fed by synchronous hooks: it is polled because it cannot be awaited.
         while not self._stop:
             try:
                 item = self._events.get_nowait()
@@ -195,6 +198,7 @@ class HookDrain:
         recorder = getattr(self._app_state, "run_recorder", None)
         if recorder is None or not getattr(recorder, "has_open_run", None):
             return
+        # The retry without `profile` is a signature shim for recorders that take one argument.
         try:
             if not recorder.has_open_run(stored_id, self._profile):
                 return

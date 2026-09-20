@@ -37,6 +37,7 @@ _UPSTREAM_LOST_MESSAGE = (
 )
 
 STREAM_READY_EVENT_TYPE = "stream.ready"
+# Gateway-made frames carry seq 0: the counter is the client's replay cursor over Hermes's stream.
 _SEQ_GATEWAY_SYNTHETIC = 0
 
 STORED_SESSION_ID_FIELD = "_stored_session_id"
@@ -54,6 +55,8 @@ _SESSION_IDENTITY_FIELDS: tuple[str, ...] = (
 
 STREAM_RESYNC_EVENT_TYPE = "stream.resync"
 
+
+# Both caps are enforced; a subscriber past either is cut off rather than having frames dropped.
 _MAX_SUBSCRIBER_QUEUED_FRAMES = 2048
 _MAX_SUBSCRIBER_QUEUED_BYTES = 8 * 1024 * 1024
 
@@ -78,6 +81,8 @@ KNOWN_SUBMIT_STATUSES: frozenset[str] = frozenset(
     }
 )
 
+
+# A frame past a client's own limit closes the whole socket, so this stays under the 1 MiB default.
 _MAX_CLIENT_FRAME_BYTES = 900_000
 
 
@@ -93,6 +98,7 @@ _TRUNCATION_REASON = (
 
 def _frame_size(payload: dict[str, Any]) -> int:
     """Serialized size of one canonical event, in the bytes the WS will carry."""
+    # json.dumps defaults over-estimate what Starlette writes, which keeps this check conservative.
     return len(json.dumps(payload).encode("utf-8"))
 
 
@@ -290,6 +296,8 @@ def session_identity_from_payload(
         if isinstance(raw_session, str) and raw_session:
             live_id = raw_session
     elif raw_type == "session.title":
+
+        # This event alone carries the STORED id; every other one carries the live handle.
         if isinstance(raw_session, str) and raw_session:
             stored_id = raw_session
     elif isinstance(raw_session, str) and raw_session:
@@ -321,6 +329,7 @@ class _Subscriber:
         self.max_frames = max_frames
         self.max_bytes = max_bytes
         self.encoded = encoded
+        # One slot above the frame cap, reserved for the desynchronized frame the cap triggers.
         self.queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=max_frames + 1)
         self.desynchronized = False
         self.queued_bytes = 0
@@ -429,6 +438,7 @@ class EventBroadcaster:
 
     def start(self) -> None:
         """Begin draining the upstream stream now, subscribers or not."""
+        # Only one task may drain the adapter; two consumers would split the stream between them.
         if self._pump is None or self._pump.done():
             self._pump = asyncio.create_task(self._run())
         if self._generation_watch is None or self._generation_watch.done():
@@ -592,6 +602,7 @@ class EventBroadcaster:
 
     def inject(self, envelope: dict[str, Any], *, profile: str) -> None:
         """Fan out a frame that came off ANOTHER profile's connection."""
+        # The recorder hook is the caller's job here; running it again double-records the turn.
         payload = envelope.get("payload")
         if not isinstance(payload, dict):
             payload = {}
@@ -635,6 +646,8 @@ class EventBroadcaster:
         frame, size = _bounded_client_frame_with_size(envelope)
         if frame is None:
             return
+
+        # Spent last, after every branch that could discard the frame, so a client sees no gap.
         frame["seq"] = next(self._seq)
         del size
         self._fan_out(frame, generation)

@@ -108,6 +108,7 @@ async def _with_reconnect(
     try:
         return await operation()
     except HermesConnectionError as exc:
+        # Retry only what Hermes never received; replaying a sent submit resends the message.
         if getattr(exc, "request_was_sent", False):
             raise
         await _ensure_connected(app_state, adapter)
@@ -143,6 +144,8 @@ def resolve_profile_adapter(app_state: Any, profile: str | None) -> HermesAdapte
     connection = manager.get_connection(profile) if manager is not None else None
     if connection is not None:
         return connection.adapter
+
+    # Not a wrong-agent fallback: create/resume take a profile, so one connection reaches all.
     return app_state.hermes_adapter
 
 
@@ -162,6 +165,7 @@ def profile_is_observable(app_state: Any, profile: str | None) -> bool:
     turns (B-136, and the reason `Run.profile` exists). Anything that infers
     liveness must call this first and SKIP a profile it cannot observe.
     """
+    # active_list answers only for the connection's own profile; others look absent, not idle.
     if not profile or profile == "default":
         return True
     manager = getattr(app_state, "profile_connection_manager", None)
@@ -200,6 +204,8 @@ def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
             connection.live_handle_cache = LiveHandleCache(connection.adapter)
         return connection.live_handle_cache
 
+
+    # One cache per profile: a stored id is unique only within a profile and would otherwise alias.
     adapter = app_state.hermes_adapter
     caches = getattr(app_state, "shared_profile_handle_caches", None)
     if caches is None:
@@ -229,6 +235,8 @@ _HERMES_SESSION_NOT_FOUND_CODES: frozenset[int] = frozenset(
     {_HERMES_LIVE_SESSION_NOT_FOUND_CODE, _HERMES_STORED_SESSION_NOT_FOUND_CODE}
 )
 
+
+# The whole phrase, not the bare words "not found", which also match unrelated upstream failures.
 _HERMES_SESSION_NOT_FOUND_TEXT = "session not found"
 
 
@@ -331,6 +339,8 @@ async def _resume_for_live_id(
     whole point of B-01 (the 1.6 MB transcript was being re-downloaded on
     every message fetch and every prompt submit).
     """
+
+    # A bare resume searches only the connection's own profile store; another's is "not found".
     extra = {"profile": profile} if profile and profile != "default" else {}
     result = await adapter.resume_session(stored_session_id, **extra)
     live_id = HermesAdapter.live_id_from_resume(result)
@@ -369,6 +379,7 @@ async def _with_live_handle(
     delivered but whose reply was lost surfaces as a timeout instead, which
     is deliberately never retried -- see `_with_reconnect`.)
     """
+    # Retrying is safe even for prompt.submit: a rejected handle means Hermes applied nothing.
     cached = cache.get(stored_session_id) if cache is not None else None
     if cached is not None:
         try:
@@ -382,7 +393,5 @@ async def _with_live_handle(
             )
             cache.discard(stored_session_id)  # type: ignore[union-attr]
 
-    live_id, _result = await _resume_for_live_id(
-        adapter, stored_session_id, cache, profile=profile
-    )
+    live_id, _result = await _resume_for_live_id(adapter, stored_session_id, cache, profile=profile)
     return live_id, await operation(live_id)

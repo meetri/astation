@@ -22,9 +22,11 @@ CAPTURE_HOOKS = (
     "post_llm_call",
     "on_session_end",
     "on_session_reset",
+    # The only hook with session, turn and tool-call ids alongside the command about to run.
     "pre_tool_call",
 )
 
+# Bounded: if the drain dies, hooks must still return at once and must not grow memory.
 MAX_QUEUED_EVENTS = 10_000
 
 events: queue.Queue = queue.Queue(maxsize=MAX_QUEUED_EVENTS)
@@ -50,6 +52,7 @@ def _record(hook_name: str, kwargs: dict) -> None:
             stats["errors"] += 1
 
 
+# Built by register(), which runs in every plugin process; the route module starts in only one.
 audit_forwarder: Any = None
 
 
@@ -81,6 +84,7 @@ def _start_audit_forwarder(ctx=None) -> None:
 
 def _make(hook_name: str):
     def callback(**kwargs: Any):
+        # Audit rows skip the queue below: only one process drains it, hooks fire in all of them.
         if audit_forwarder is not None and hook_name in ("pre_tool_call", "post_tool_call"):
             try:
                 if hook_name == "pre_tool_call":
@@ -91,6 +95,7 @@ def _make(hook_name: str):
                 with _stats_lock:
                     stats["errors"] += 1
         _record(hook_name, kwargs)
+        # A non-None return would rewrite the hook's payload; capture must stay transparent.
         return None
 
     callback.__name__ = f"trg_{hook_name}"

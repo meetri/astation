@@ -44,8 +44,10 @@ def _apply_loopback_defaults() -> dict[str, str]:
     root = home / "astation"
     default("RESEARCH_GATEWAY_DB_PATH", str(root / "research.db"))
     default("RESEARCH_GATEWAY_ARTIFACT_ROOT", str(root / "artifacts"))
+    # Absolute: the defaults are relative and resolve against the dashboard's working directory.
     default("TTS_PIPER_VOICE_DIR", str(root / "piper-voices"))
     default("HF_HOME", str(root / "hf-cache"))
+    # auth.py fails closed when these are unset; the random password can never be presented.
     default("RESEARCH_GATEWAY_USERNAME", "plugin")
     default("RESEARCH_GATEWAY_PASSWORD", os.urandom(24).hex())
     return applied
@@ -61,6 +63,8 @@ for candidate in _CANDIDATES:
 
 _import_error: str | None = None
 _routers: list[tuple[Any, str]] = []
+
+
 def _audit_forwarder_stats() -> Any:
     """This PROCESS's audit-forwarder counters, for `GET /health`."""
     module = sys.modules.get("trg_audit_forwarder")
@@ -107,6 +111,7 @@ else:
         from api.speak import speak_router
         from api.transcribe import transcribe_router
 
+        # Mount order sets route precedence; it matches api/main.py and must not be re-sorted.
         _routers = [
             (sessions_router, "sessions"),
             (projects_router, "projects"),
@@ -134,6 +139,7 @@ else:
             (attachment_serve_router, "attachment_serve"),
         ]
         for sub, _name in _routers:
+            # The second /api segment is what keeps the app's existing route strings valid.
             router.include_router(sub, prefix="/api")
         log.info("astation: mounted %d gateway routers from %s", len(_routers), _gateway_src)
     except Exception as exc:
@@ -176,6 +182,7 @@ def _migrate() -> str:
 
     cfg = Config()
     cfg.set_main_option("script_location", str(script_location))
+    # Empty on purpose: migrations/env.py derives the URL from settings.
     cfg.set_main_option("sqlalchemy.url", "")
 
     if db_path.exists() and db_path.stat().st_size > 0:
@@ -286,6 +293,7 @@ async def _start_gateway_services() -> None:
         return
     try:
         global _migration_status
+        # Migrate before startup(): it opens the database and every route assumes the schema.
         _migration_status = _migrate()
         log.info("astation: %s", _migration_status)
 
@@ -362,6 +370,7 @@ async def _start_gateway_services() -> None:
                         max_tokens=max_tokens,
                         purpose="rewrite-for-listening",
                     )
+                # Returning None here would fall back to the HTTP path and repeat its 503.
                 except Exception as exc:
                     raise RuntimeError(f"the host LLM refused the request: {exc}") from exc
                 content = getattr(result, "content", None) or getattr(result, "text", None)

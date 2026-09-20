@@ -23,6 +23,8 @@ CAPTURED_EVENT_TYPES: frozenset[str] = frozenset(
 
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
 _LIFECYCLE_STATUS_KIND = "lifecycle"
+
+# Matched on the product name alone: the glyph and the dash vary across Hermes builds.
 MEMORY_RECALL_MARKER = "Hindsight"
 
 NOTICE_KIND_COMPACTED = "compacted"
@@ -101,6 +103,7 @@ class ChatStore:
         turn_id: str | None = None,
     ) -> str:
         """Write the user's own row, BEFORE Hermes is asked to act on it."""
+        # Always inserts: a submit is a fresh action, and the route discards it if Hermes fails.
         with self._session_factory() as db:
             return self._insert(
                 db,
@@ -224,6 +227,8 @@ class ChatStore:
         if not isinstance(stored_id, str) or not stored_id:
             return None
 
+
+        # The run recorder stamps this id onto the envelope and must run before this capture.
         turn_id = _turn_id(envelope)
 
         if event_type == "message.interim":
@@ -313,6 +318,7 @@ class ChatStore:
                 if duplicate is not None:
                     return None
             else:
+                # No live event carries a row id: a redelivery is caught by the newest row's text.
                 last = db.execute(
                     select(ChatMessage)
                     .where(
@@ -394,6 +400,7 @@ class ChatStore:
             compacted=compacted,
             created_at=utcnow(),
         )
+        # A seq collision is two writers racing, not duplicate content: recompute, never drop.
         for _attempt in range(_MAX_SEQ_RETRIES):
             db.add(row)
             try:
@@ -428,6 +435,7 @@ class ChatStore:
         self, *, stored_session_id: str, tool_call_id: str, max_chars: int
     ) -> dict[str, Any] | None:
         """One captured tool result, by the call id the audit trail carries."""
+        # Not keyed on profile: the call id is unique and a ledger profile can be wrong.
         with self._session_factory() as db:
             row = db.execute(
                 select(ChatMessage)
@@ -441,6 +449,8 @@ class ChatStore:
             ).scalar_one_or_none()
         if row is None:
             return None
+
+        # A JSON column returns a decoded dict, not text: len() would count keys, not characters.
         raw = row.tool_result_json
         if raw is None:
             text = ""

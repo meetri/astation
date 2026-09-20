@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 REFUSAL_TOKEN = "NOANSWER"
 ANSWER_TOKEN = "ANSWER"
 
+# NOANSWER precedes ANSWER in the alternation; reversed it would match the ANSWER inside it.
 _LEAD_RE = re.compile(r"^[\s*#>_`-]*(?P<token>NOANSWER|ANSWER)\b[\s*_`]*:?[\s*_`]*", re.IGNORECASE)
 
+# Line-anchored, and it never changes the refusal decision the opening tokens already made.
 _STRAY_LEAD_RE = re.compile(
     r"^[ \t*#>_`-]*(?:NOANSWER|ANSWER)[ \t*_`]*:[ \t*_`]*",
     re.IGNORECASE | re.MULTILINE,
@@ -47,6 +49,7 @@ MAX_RUN_CANDIDATES = 60
 MAX_EVENT_CANDIDATES = 400
 MAX_ARTIFACT_CANDIDATES = 60
 
+# Excludes tool.*, session.usage and message.interim on purpose: they swamp or duplicate the pool.
 NARRATIVE_EVENT_TYPES = (
     "message.completed",
     "status.update",
@@ -157,6 +160,7 @@ def event_units(db: OrmSession, run_ids: list[str], *, limit: int) -> list[Conte
                 RunEvent.run_id.in_(run_ids),
                 RunEvent.event_type.in_(NARRATIVE_EVENT_TYPES),
             )
+            # DESC plus limit takes the NEWEST rows; ordering ascending in SQL would take the oldest.
             .order_by(RunEvent.timestamp.desc(), RunEvent.seq.desc())
             .limit(limit)
         )
@@ -459,6 +463,7 @@ def parse_answer(raw: str) -> ParsedAnswer:
                     sources.append(number)
         text = pattern.sub("", text).strip()
 
+    # Every leading token is consumed, not just the first; any NOANSWER among them is a refusal.
     tokens: list[str] = []
     for _ in range(4):
         lead = _LEAD_RE.match(text)
@@ -468,6 +473,7 @@ def parse_answer(raw: str) -> ParsedAnswer:
         text = text[lead.end() :].strip()
     refused = REFUSAL_TOKEN in tokens
     text = _STRAY_LEAD_RE.sub("", text).strip()
+    # Two-word floor: a one-word remnant is not a reason, so the standard sentence replaces it.
     if refused and len(text.split()) < 2:
         text = "I could not find anything in your records that answers that."
     return ParsedAnswer(

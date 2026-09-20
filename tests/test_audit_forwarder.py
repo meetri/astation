@@ -264,9 +264,7 @@ def test_a_call_row_is_marked_as_the_call_half():
 @pytest.mark.parametrize("duration", [None, "", "abc", -5, object()])
 def test_a_nonsense_duration_becomes_zero_rather_than_raising(duration):
     f = forwarder("http://ingest.invalid/ingest")
-    f.record_tool_result(
-        {"session_id": "s1", "tool_call_id": "c", "duration_ms": duration}
-    )
+    f.record_tool_result({"session_id": "s1", "tool_call_id": "c", "duration_ms": duration})
     assert f._drain_batch()[0]["duration_ms"] == 0
 
 

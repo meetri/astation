@@ -478,6 +478,7 @@ def _pinned_artifacts_for(db: OrmSession, projects: list[Project]) -> dict[str, 
     return {
         project.id: rows[project.pinned_artifact_id]
         for project in projects
+        # The pin is not a foreign key, so it can dangle; a dangling pin reads as unpinned.
         if project.pinned_artifact_id in rows
     }
 
@@ -585,6 +586,7 @@ async def update_project(
         project.description = body.description
     if "folder_path" in fields:
         project.folder_path = _validated_folder_path(body.folder_path)
+    # Set explicitly: onupdate only fires when a column value actually changed.
     project.updated_at = utcnow()
     db.commit()
     return _project_row_with_pin(db, project)
@@ -599,9 +601,11 @@ async def delete_project(project_id: str, db: OrmSession = Depends(workspace_db)
             select(Session.runtime_session_id).where(Session.project_id == project.id)
         ).scalars()
     )
+    # Runs must be detached before the delete; the FKs are enforced and would refuse it otherwise.
     db.execute(
         update(Run).where(Run.project_id == project.id).values(session_id=None, project_id=None)
     )
+    # Artifacts are unfiled here, never deleted: nothing in this system deletes an artifact.
     db.execute(update(Artifact).where(Artifact.project_id == project.id).values(project_id=None))
     filing_ids = list(
         db.execute(select(Session.id).where(Session.project_id == project.id)).scalars()
@@ -660,6 +664,7 @@ async def list_project_sessions(
         )
         for row in rows
     ]
+    # session.list returns rows already ranked by last activity; their dict order IS that rank.
     hermes_rank = {stored_id: rank for rank, stored_id in enumerate(lookup.keys())}
     sessions.sort(key=lambda row: hermes_rank.get(row["id"], len(hermes_rank)))
     orphans = [
@@ -674,6 +679,7 @@ async def list_project_sessions(
         for stored_id in orphan_ids
         if latest.get(stored_id) is not None
     ]
+    # Sorts on the datetime, not the ISO string: the string form does not order correctly.
     orphans.sort(key=lambda row: latest[row["id"]].taken_at, reverse=True)
     sessions.extend(orphans)
     active_filed = sum(1 for row in rows if row.archived_at is None)
@@ -711,6 +717,7 @@ def file_stored_session(
         runtime=runtime,
         profile=profile,
         runtime_session_id=stored_id,
+        # Never persist the live handle: it is process-local and re-minted on every reconnect.
         runtime_live_session_id=None,
         title=(title or "").strip() or None,
         status="active",

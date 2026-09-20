@@ -43,12 +43,17 @@ _READY_EVENT_METHOD = "gateway.ready"
 _READY_TIMEOUT_S = 10.0
 _REQUEST_TIMEOUT_S = 30.0
 _HEARTBEAT_INTERVAL_S = 25.0
+# A method this build actually implements: gateway.ping answers [-32601] unknown method here.
 _KEEPALIVE_METHOD = "session.active_list"
 
+
+# session.resume returns a whole transcript in one frame; the library default 1 MiB closes on it.
 _MAX_WS_FRAME_BYTES = 64 * 1024 * 1024
 
 _MAX_QUEUED_UPSTREAM_EVENTS = 10_000
 
+
+# Server-sent requests are relabelled as the events they replaced; the layers above stay unchanged.
 SERVER_REQUEST_RAW_TYPES: dict[str, str] = {
     "clarify": "clarify.request",
     "approval": "approval.request",
@@ -180,6 +185,7 @@ class HermesAdapter:
     async def connect(self) -> None:
         """Mint a fresh ticket, open the WS, and wait for `gateway.ready`."""
         await self._teardown_ws()
+        # Bumped before the new socket opens: every handle from the old one is already void.
         self._connection_generation += 1
         auth_query = await self._ws_auth_query()
         scheme = "wss" if self._settings.hermes_scheme == "https" else "ws"
@@ -197,6 +203,8 @@ class HermesAdapter:
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=_READY_TIMEOUT_S)
         except TimeoutError as exc:
+
+            # The socket only: closing the HTTP client would take the cookie jar with it.
             await self._teardown_ws()
             raise HermesConnectionError(
                 f"did not observe a '{_READY_EVENT_METHOD}' event within {_READY_TIMEOUT_S}s of connecting"
@@ -213,6 +221,8 @@ class HermesAdapter:
             except asyncio.CancelledError:
                 raise
             except HermesRPCError:
+
+                # An RPC error proves the socket works; only a transport failure means it is dead.
                 continue
             except Exception:
                 self._ws_live = False
@@ -329,6 +339,8 @@ class HermesAdapter:
             pass
         finally:
             self._ws_live = False
+
+            # request_was_sent: these calls reached Hermes, so a retry layer must not replay them.
             closed_exc = HermesConnectionError(
                 "Hermes WebSocket closed while a request was pending",
                 request_was_sent=True,
@@ -369,6 +381,8 @@ class HermesAdapter:
             self._dispatch_server_request(frame_id, frame["method"], frame.get("params"))
             return
 
+
+        # Every pushed event's outer method is literally "event"; its real name is params.type.
         if frame.get("method") == "event":
             outer_params = frame.get("params")
             outer_params = outer_params if isinstance(outer_params, dict) else {}
@@ -603,6 +617,7 @@ class HermesAdapter:
         **extra_params: Any,
     ) -> dict[str, Any]:
         """Submit a prompt to a session."""
+        # The rewind fields destructively rewrite history; they may arrive only via `rewind=`.
         leaked = REWIND_FIELDS & extra_params.keys()
         if leaked:
             raise ValueError(

@@ -159,6 +159,7 @@ class SubprocessProfileLauncher(ProfileLauncher):
             ),
         )
 
+    # Exact-argv match: the unified dashboard has no -p or --isolated, so it can never be killed here.
     _REAPER_SCRIPT = (
         "import os, signal, sys\n"
         "profile, host = sys.argv[1], sys.argv[2]\n"
@@ -419,6 +420,7 @@ class ProfileConnectionManager:
             if isinstance(name, str) and name:
                 wanted[name] = row
         if not wanted:
+            # A Hermes that lists no profiles must still leave the default connection standing.
             wanted[self._default_profile_name] = {"is_default": True}
 
         for name, row in wanted.items():
@@ -551,6 +553,7 @@ class ProfileConnectionManager:
             return
         if conn.pump_task is not None:
             conn.pump_task.cancel()
+            # A task whose loop already closed cannot be awaited, and shutdown must not fail.
             with contextlib.suppress(asyncio.CancelledError, RuntimeError):
                 await conn.pump_task
         if not conn.is_default:
@@ -598,6 +601,7 @@ class ProfileConnectionManager:
                                 conn.profile,
                             )
                             break
+                        # Other profiles have their own pump; capturing here would file every frame twice.
                         payload = frame.get("payload")
                         if isinstance(payload, dict):
                             origin = payload.get(_PROFILE_FIELD)
@@ -650,6 +654,7 @@ class ProfileConnectionManager:
             self._stamp_identity(conn, raw_event_type(raw_event), payload)
         hook = self._resolve_canonical_event_hook()
         if hook is not None:
+            # Runs before the chat-store capture: the hook stamps the run id the row stores as its turn id.
             try:
                 hook(canonical, envelope, conn.profile)
             except Exception:  # pragma: no cover - defensive
@@ -679,6 +684,7 @@ class ProfileConnectionManager:
 
         cache = conn.live_handle_cache
         if stored_id is not None and live_id is not None:
+            # pop-then-insert refreshes recency; insertion order is what the eviction below reads.
             conn.live_to_stored.pop(live_id, None)
             conn.live_to_stored[live_id] = stored_id
             while len(conn.live_to_stored) > _MAX_LIVE_TO_STORED:
