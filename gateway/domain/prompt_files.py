@@ -65,7 +65,7 @@ DEFAULT_PROMPT_SUBDIR = "astation/prompts"
 
 #: `style` -> file name. Same three styles `api/rewrite.py` knows; the file
 #: names say what they are for rather than repeating the wire value, because
-#: the owner reads these in a file browser (`code.md`, not `explain.md`).
+#: the operator reads these in a file browser (`code.md`, not `explain.md`).
 PROMPT_FILE_FOR_STYLE: dict[str, str] = {
     "listen": "listen.md",
     "document": "document.md",

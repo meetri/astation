@@ -162,7 +162,7 @@ def _artifact_json(artifact: Artifact) -> dict[str, Any]:
         #: so it cannot be read off the artifact row: `bookmarked` /
         #: `bookmarked_at` are filled in by `_with_bookmarks` for the scope the
         #: request named. Defaulted here so every row carries the keys and a
-        #: client never treats absence as a special case (B-34).
+        #: client never treats absence as a special case.
         "bookmarked_at": None,
         "bookmarked": False,
         #: Hidden from the library's default listings, not deleted: the bytes,

@@ -74,7 +74,7 @@ PERSISTED_RUN_EVENT_TYPES: frozenset[str] = frozenset(
         # Message/segment boundaries: "the model started / sealed a segment /
         # finished the turn" are exactly §7.1's significant transitions, and
         # `message.completed` carries the final text + reasoning.
-        # `message.interim` carries each interim segment's full text (B-38),
+        # `message.interim` carries each interim segment's full text,
         # so the persisted timeline keeps every segment, not just the last.
         "message.started",
         "message.interim",
@@ -91,7 +91,7 @@ PERSISTED_RUN_EVENT_TYPES: frozenset[str] = frozenset(
         # prompt never comes back as an event -- only the gateway's own
         # *.respond route knows, and it synthesizes the matching *.resolved
         # row (payload.resolution == "answered", by == "app") through
-        # `RunRecorder.record_synthetic` (B-189). `approval.resolved` and
+        # `RunRecorder.record_synthetic`. `approval.resolved` and
         # `clarify.resolved` therefore have no raw producer in
         # `RAW_TO_CANONICAL_TYPE`; they are gateway-authored rows.
         "approval.requested",

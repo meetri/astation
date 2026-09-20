@@ -163,7 +163,7 @@ def is_valid_kind(kind: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Folders (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §4.1)
+# Folders
 #
 # **Folders are a VIEW over `source_path`, never a stored column.** The agent
 # already organizes its output into directories that mean something

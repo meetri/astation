@@ -94,7 +94,7 @@ CAPTURED_EVENT_TYPES: frozenset[str] = frozenset(
     {"message.interim", "tool.completed", "message.completed", "status.update"}
 )
 
-#: `status.update` kinds captured as marker rows outright (B-191). A
+#: `status.update` kinds captured as marker rows outright. A
 #: `lifecycle` notice is captured only when its text names Hindsight.
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
 _LIFECYCLE_STATUS_KIND = "lifecycle"

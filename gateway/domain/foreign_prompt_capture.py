@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 
 #: Text prefixes of the `role: user` rows Hermes serves after a compaction
 #: (measured in the live `state.db`, B-175/B-176). They are Hermes's summary
-#: of the conversation, not something the owner typed, and never a prompt.
+#: of the conversation, not something the operator typed, and never a prompt.
 SUMMARY_MARKERS: tuple[str, ...] = (
     "[Durable Summary",
     "[Session Arc Summary",

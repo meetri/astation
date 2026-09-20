@@ -135,7 +135,7 @@ SERVER_REQUEST_RAW_TYPES: dict[str, str] = {
 }
 
 #: The open request's own id, stamped into the payload so the answer routes
-#: can address it. `_`-prefixed: the gateway's namespace (B-02/B-14), never
+#: can address it. `_`-prefixed: the gateway's namespace, never
 #: forgeable from upstream because it is assigned, not merged.
 SERVER_REQUEST_ID_FIELD = "_srq_id"
 
@@ -702,7 +702,7 @@ class HermesAdapter:
             # successfully written to the socket: Hermes received these calls
             # and only their replies were lost. Say so, or `_with_reconnect()`
             # will replay a `prompt.submit` that already reached a real
-            # session (B-15).
+            # session.
             closed_exc = HermesConnectionError(
                 "Hermes WebSocket closed while a request was pending",
                 request_was_sent=True,
@@ -1475,7 +1475,7 @@ class HermesAdapter:
     # RPC with the request's ORIGINAL `request_id`. They do NOT share a shape,
     # and getting the field name wrong is invisible -- three of these four
     # methods used to send the wrong parameter and Hermes answered 200 to two
-    # of them anyway (B-39). Each verb below is the one Hermes actually reads;
+    # of them anyway. Each verb below is the one Hermes actually reads;
     # `docs/PROTOCOL_VERIFIED.md` ("The four human-in-the-loop prompts")
     # records which are measured and which are source-read.
     #

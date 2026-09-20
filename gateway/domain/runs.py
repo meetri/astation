@@ -134,7 +134,7 @@ def stale_close_note(run: Run) -> str | None:
 
 
 #: Key under `runs.command_json` for a close the wire itself explained
-#: (B-186): the closing frame said `error` (-> `failed`) or `interrupted`
+#:: the closing frame said `error` (-> `failed`) or `interrupted`
 #: (-> `interrupted`), and the note is what it said. Same reserved-key
 #: mechanism as `STALE_CLOSE_NOTE_KEY`, same reason (no explanation column,
 #: no migration).

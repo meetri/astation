@@ -506,7 +506,7 @@ async def _start_gateway_services() -> None:
             # Rewrite/handoff on a profile's OWN model, run by the host.
             # Resolving a profile to an OpenAI-compatible base URL plus a key
             # of our own cannot work for a local llama.cpp server, bedrock, moa
-            # or openai-codex -- the honest answer there was a 503 (B-195).
+            # or openai-codex -- the honest answer there was a 503.
             # Hermes already knows how to talk to every provider it is
             # configured with, so hand it the messages instead.
             entry_mod = entry
@@ -531,7 +531,7 @@ async def _start_gateway_services() -> None:
                     )
                 except Exception as exc:
                     # Returning None would silently fall back to the HTTP path
-                    # and produce the same 503 the owner already saw, so say
+                    # and produce the same 503 the operator already saw, so say
                     # what went wrong instead.
                     raise RuntimeError(f"the host LLM refused the request: {exc}") from exc
                 content = getattr(result, "content", None) or getattr(result, "text", None)

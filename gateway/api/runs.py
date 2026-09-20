@@ -131,7 +131,7 @@ STALE_CLOSED_EXPLANATION = (
 STALE_GRACE_SECONDS = 60.0
 
 #: The one `session.active_list` per-session status observed live
-#: (2026-09-01, PV "session.active_list & session.status"): every quiet
+#:: every quiet
 #: session reports `"idle"`. The non-idle value was NOT observed, so ONLY
 #: this exact string (or the session being absent from the list entirely)
 #: may close a stale run -- anything else means "possibly still working".
@@ -146,7 +146,7 @@ def run_row(run: Run, last_seq: int) -> dict[str, Any]:
         "status": run.status,
         # Hermes STORED session id -- always present, the filter key.
         "runtime_session_id": run.runtime_session_id,
-        # Which connection the turn was observed on (B-136). Always a real
+        # Which connection the turn was observed on. Always a real
         # name, never null: pre-column rows read as "default", which is what
         # they were.
         "profile": run.profile or DEFAULT_RUN_PROFILE,

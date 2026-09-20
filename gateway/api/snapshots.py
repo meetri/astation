@@ -169,7 +169,7 @@ async def create_snapshot(
     reason = body.reason if body is not None else "manual"
     try:
         # `profile=None` lets `take_snapshot` read it off the filing row --
-        # see its own docstring (B-147).
+        # see its own docstring.
         snapshot = await take_snapshot(
             request.app.state, stored_id, reason=reason, db=db, profile=profile
         )

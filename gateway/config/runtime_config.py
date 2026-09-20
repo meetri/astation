@@ -105,7 +105,7 @@ class ConfigValueError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# The registry: every key the owner may change at runtime
+# The registry: every key the operator may change at runtime
 # ---------------------------------------------------------------------------
 
 
@@ -629,7 +629,7 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
     #
     # The `tts` capability used to be listed here as `writable: False` with a
     # note saying the gateway held no speech-synthesis configuration. That was
-    # true and is not any more: `POST /api/speak` gives the owner a choice of
+    # true and is not any more: `POST /api/speak` gives the operator a choice of
     # engine, so the choice belongs where every other provider choice does --
     # changeable from the phone, reporting its source, with no `.env` edit.
     ConfigKey(

@@ -1,35 +1,41 @@
 # audit-setup
 
-The host half of the audit layer: a kernel sensor, a shipper and a queryable store, as a Compose
-project.
+The host half of astation's audit trail: a kernel sensor, a shipper and a queryable store, as a
+Compose project.
 
-It records what happens on a machine at the kernel level — every process executed, every file
-created, written, renamed or deleted, and every TCP connection made or accepted — and makes it
-queryable. Optionally it also writes to an append-only archive the host itself cannot alter.
+It records what happens on the machine — every process executed, every file created, written,
+renamed or deleted, and every TCP connection — and makes it queryable. The plugin ties that
+activity to the agent session that caused it.
 
-The plugin's own half, which ties that activity to the agent session that caused it, is in the
-parent directory and needs nothing from here to run.
+Three containers:
 
-**This file is the quick start.** For what each container is, why it was chosen, how they are
-wired, and what every setting does, read [`AUDIT_SETUP.md`](AUDIT_SETUP.md).
+| | | |
+|---|---|---|
+| **Tetragon** | kernel sensor | Watches syscalls through eBPF. Privileged; sees the whole host. |
+| **Vector** | shipper | Parses, redacts secrets, routes by event class. |
+| **ClickHouse** | store | One table per event class, each with its own retention. |
 
-## Quick start
+## Setup
 
 ```bash
-cp .env.example .env          # set AUDIT_HOST_LABEL; everything else has a default
+cp .env.example .env          # set AUDIT_HOST_LABEL; the rest have defaults
 ./install.sh --preflight      # check this host can run it; changes nothing
 ./install.sh                  # install, then self-test
 ```
 
-That is a complete working stack with no cloud account: sensor, shipper and queryable store. It
-runs **local-only**, which means nothing leaves the machine and the record is therefore not
-tamper-evident. Set `AUDIT_BUCKET` to add the archive — see
-[§8](AUDIT_SETUP.md#8-local-only-vs-archived).
+That is a complete working stack with no cloud account. Passwords are generated on first run and
+written back into `.env`.
 
-## Connecting the plugin
+The installer is idempotent. Change any config or `.env` value and run it again; it re-renders,
+recreates what changed, and re-runs the self-test.
 
-The plugin reads the store directly and writes session events through the shipper. Point it at
-both:
+```bash
+./install.sh --no-test        # skip the self-test
+./install.sh --uninstall      # stop and remove containers, keep the data
+./selftest.sh                 # 21 checks against a running stack
+```
+
+### Connect the plugin
 
 ```bash
 AUDIT_INGEST_URL=http://<shipper-host>:8686/ingest
@@ -39,44 +45,70 @@ AUDIT_CLICKHOUSE_PASSWORD=<the reader password from .env>
 AUDIT_HOST_LABEL=<this host's label>
 ```
 
-Both services must be reachable from wherever the agent runs. With neither set, the plugin starts
-normally and its audit surface reports that it is not configured.
+Both must be reachable from wherever the agent runs.
 
-## Verifying
+### Archiving
 
-```bash
-./selftest.sh
-```
+By default nothing leaves the machine, which means the record is not tamper-evident: anyone with
+root can edit the store. Set `AUDIT_BUCKET` and AWS credentials to also write to S3 under Object
+Lock, where objects cannot be altered or deleted for their retention period — including by you.
 
-21 checks against the running stack: that an in-container process carries a container id, that file
-creates, renames and deletes are all captured, that paths resolve, that inbound and outbound
-connections are recorded, that a secret is masked rather than dropped, that the reader role cannot
-write, that the ingest role cannot read, and that every table has a retention policy.
-
-## Updating the configuration
-
-`install.sh` is idempotent. Edit `.env` or any config file and run it again; it re-renders,
-recreates what changed and re-runs the self-test.
-
-```bash
-./install.sh --no-test        # skip the self-test
-./install.sh --uninstall      # stop and remove containers, keep the data
-```
+Turning it on later is not a migration. Set the variables and re-run `./install.sh`.
 
 ## Retention
 
-`retention.yaml` is the only place retention is decided. It sets how long each class of event stays
-in the queryable store, and how long archived copies are kept before moving to colder storage or
-expiring. Edit it and re-run `install.sh`.
+`retention.yaml` is the only place retention is decided. It sets how long each class of event
+stays queryable, and how long archived copies are kept. Edit it and re-run `./install.sh`.
+
+Defaults run from 7 days for the liveness heartbeat to 90 days for authentication events. File
+events get the shortest window because they are by far the highest volume — a build writes
+millions of them.
+
+## Access
+
+Three database roles, each doing one job:
+
+| Role | Can |
+|---|---|
+| `ingest` | Insert only. Cannot read what it wrote. |
+| `reader` | Select only, forced read-only, with row and memory limits. |
+| `admin` | Schema changes. Loopback only. |
+
+The plugin uses `reader`. Every query it runs is itself recorded.
+
+## Troubleshooting
+
+**The sensor will not start.** It needs a kernel with BTF (`/sys/kernel/btf/vmlinux`) and
+`CAP_SYS_ADMIN`. `./install.sh --preflight` checks both and changes nothing.
+
+**A policy change kills the sensor.** Tetragon refuses more than four values in a selector, and a
+malformed policy takes down the whole daemon rather than just that policy. Read the header of
+`tetragon/policies/file-mutations.yaml` before editing — the selectors are narrower than they look.
+
+**The shipper starts but nothing lands.** Its config is rendered from a template, because Vector
+does not read environment variables in config values at all. Edit `vector/vector.yaml`, not the
+rendered copy, and re-run `./install.sh`.
+
+**Config changes appear to do nothing.** A running container's bind mounts stay attached to the
+old file. The installer forces container recreation for this reason; if you ran `docker compose
+up` by hand, add `--force-recreate`.
+
+**The store will not start after editing users.** A `--` inside an XML comment is a parse error,
+and `<grants>` alongside `<access_management>` on one user causes a restart loop.
+
+**Checking it works.** `./selftest.sh` performs a real action for each check and then looks for
+its record: an in-container process carrying a container id, a file created, renamed and deleted,
+inbound and outbound connections, a secret masked rather than dropped, the reader role refused a
+write, and every table carrying a retention policy.
 
 ## Layout
 
-| Path | What it is |
+| Path | |
 |---|---|
-| `docker-compose.yml` | The three services and their profiles |
+| `docker-compose.yml` | The three services. Images pinned by digest. |
 | `install.sh` | Renders config, starts the stack, runs the self-test |
 | `selftest.sh` | 21 checks against a running stack |
-| `.env.example` | Every setting, with which are required |
+| `.env.example` | Every setting, marked required or optional |
 | `retention.yaml` | Retention policy, per event class |
 | `tetragon/policies/` | What the kernel sensor watches |
 | `vector/vector.yaml` | Parsing, redaction, routing. A template |

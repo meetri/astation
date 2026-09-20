@@ -304,7 +304,7 @@ def _bookmark_shelf(
         artifact.id: artifact
         for artifact in db.execute(
             select(Artifact)
-            # An archived artifact is one the owner put away; leaving it on a
+            # An archived artifact is one the operator put away; leaving it on a
             # shelf would make "archive" mean nothing on exactly the rows they
             # cared enough about to star. The star itself survives, so
             # un-archiving brings it back.
@@ -326,12 +326,11 @@ def _listing(db: OrmSession, query, *, latest: bool, limit: int) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Browsing: prefix, search, archive and keyset paging
-# (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §5.1)
 #
 # Measured on the deploy host 2026-09-19: 5,226 rows, 2,443 distinct files,
 # 4,955 of them in ONE project, against a listing capped at 500 rows with no
 # paging and a type filter that ran on the phone over whatever page it had.
-# Roughly three quarters of the owner's largest project could not be reached
+# Roughly three quarters of the operator's largest project could not be reached
 # from the app at all. These four parameters are what make the corpus
 # navigable; the folders route below is what gives it shape.
 # ---------------------------------------------------------------------------
@@ -484,7 +483,7 @@ def _page(
         # row stands for every save of its path, and older saves of a path
         # already shown sort after the cursor -- filtering in SQL would let
         # them collapse again on the next page and hand the reader the same
-        # file twice. Collapsing reads the whole scope either way (B-184), so
+        # file twice. Collapsing reads the whole scope either way, so
         # this costs nothing that was not already being paid.
         collapsed = _collapse_to_latest(db.execute(query).scalars())
         start = 0
@@ -1118,7 +1117,7 @@ async def tag_artifacts(body: TagBulkRequest, db: OrmSession = Depends(_artifact
 # ---------------------------------------------------------------------------
 # Collections (Phase C, §5.3)
 #
-# A collection is a named, ORDERED, cross-project set the owner curates.
+# A collection is a named, ORDERED, cross-project set the operator curates.
 # Ordered is the whole difference from a tag: "figures for the L328 paper" has
 # a figure 1 and a figure 2.
 # ---------------------------------------------------------------------------

@@ -109,7 +109,7 @@ _STORED_SESSION_ID_FIELD = STORED_SESSION_ID_FIELD
 RUN_CLOSING_TYPE = "message.completed"
 
 #: What the closing frame's own `status` says about how the turn ended
-#: (B-186). Measured 2026-09-17 on the ledger, 198 closes: `complete` 149,
+#:. Measured 2026-09-17 on the ledger, 198 closes: `complete` 149,
 #: `interrupted` 27, `error` 22 -- and every one had been closed as
 #: `completed` because nothing read the field. `error` rows also carry
 #: `error` (the text), `error_surface` and `recoverable`.
@@ -147,7 +147,7 @@ def completion_close(payload: Any) -> tuple[str, str | None]:
     return runs_ops.STATUS_COMPLETED, None
 
 
-#: **`status.update` attaches to an open run and never opens one (B-128).**
+#: **`status.update` attaches to an open run and never opens one.**
 #: Measured 2026-09-04 (PV "Compress + the LCM context engine"):
 #: `session.compress` emits `status.update` kinds `compressing` ->
 #: `compacting` -> `compacted` -> `status` ("ready") and **no
@@ -205,7 +205,7 @@ NON_RUN_TYPES: frozenset[str] = frozenset({"session.updated", "background.comple
 #: dependency on the chat surface for one string.
 DEFAULT_RUN_PROFILE = "default"
 
-#: The gateway-authored rows `record_synthetic` may write (B-189): one
+#: The gateway-authored rows `record_synthetic` may write: one
 #: `*.resolved` per human-in-the-loop prompt kind. Anything else is refused
 #: (returns False) so the ledger's persisted-type policy stays the single
 #: decision surface -- every entry here is in `PERSISTED_RUN_EVENT_TYPES`.
@@ -226,7 +226,7 @@ _REQUEST_LOOKUP_TYPES: frozenset[str] = frozenset(
 )
 
 #: How many of the newest prompt rows the fallback reads before giving up
-#: (B-193). Prompts are a few per turn at most, so 200 spans many turns; the
+#:. Prompts are a few per turn at most, so 200 spans many turns; the
 #: payload is JSON and the match is Python-side, which is why it is bounded.
 REQUEST_LOOKUP_LIMIT = 200
 
@@ -251,12 +251,12 @@ class _OpenRun:
     workspace_session_id: str | None
     project_id: str | None
     last_seq: int = 0
-    #: Which Hermes connection the run was observed on (B-136); the
+    #: Which Hermes connection the run was observed on; the
     #: request-id lookup below refuses a match from another profile, since
     #: `request_id` is per-Hermes-process, not global (`api/prompts.py`).
     profile: str = DEFAULT_RUN_PROFILE
     #: `request_id -> canonical requested type` for every `*.requested`
-    #: frame persisted on this run (B-189). Lets the session-less respond
+    #: frame persisted on this run. Lets the session-less respond
     #: routes find the run their answer belongs to. Cleared with the run.
     pending_requests: dict[str, str] = field(default_factory=dict)
 
@@ -514,7 +514,7 @@ class RunRecorder:
         envelope["session_id"] = record.workspace_session_id
         envelope["run_id"] = record.run_id
 
-    # -- gateway-authored rows (B-189) --------------------------------------
+    # -- gateway-authored rows --------------------------------------
 
     def stored_id_for_request(
         self, request_id: str, profile: str = DEFAULT_RUN_PROFILE

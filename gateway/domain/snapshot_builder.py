@@ -246,7 +246,7 @@ def _content_checksum(messages: Any, background_results: list[dict[str, Any]]) -
     rows = list(messages) if isinstance(messages, list) else []
     payload = json.dumps(
         rows + background_results, sort_keys=True
-    )  # exactly the §6.1 recipe (B-118)
+    )  # exactly the §6.1 recipe
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session as OrmSession
 from domain.models import Artifact, ArtifactTag, ProjectTag, Tag, new_id, utcnow
 from domain.tags import normalize_tag_name
 
-#: The join table for each owner kind, and the column naming the owner. One
+#: The join table for each owner kind, and the column naming the operator. One
 #: table rather than a branch at every call site: adding an owner is a row
 #: here, not an `if` in six functions.
 _JOINS: dict[str, tuple[Any, Any]] = {
@@ -191,7 +191,7 @@ def catalog(
     elif unfiled:
         # The unfiled scope has no project, so no project can carry a tag in
         # it -- reporting the workspace's project counts there would be a
-        # count of something the owner is not looking at.
+        # count of something the operator is not looking at.
         project_query = project_query.where(sa_false())
     project_counts = dict(db.execute(project_query).all())
 

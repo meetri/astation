@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Protocol
 
 #: The `messages` table's column list, in order, measured live against the
-#: deployed Hermes 0.20.5 (2026-09-04). Pinned verbatim
+#: deployed Hermes 0.20.5. Pinned verbatim
 #: from the CREATE TABLE handed down for this task -- do not "helpfully"
 #: re-sort or re-derive this from a live introspection; the whole point of
 #: `assert_messages_schema` is to notice when a real db disagrees with this

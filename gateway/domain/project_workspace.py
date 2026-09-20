@@ -53,7 +53,7 @@ INSTRUCTIONS_FILENAME = "HERMES.md"
 
 #: What a new `HERMES.md` starts as: the filing convention, and nothing else.
 #:
-#: C3 (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §5.3). The agent has no credential
+#: C3. The agent has no credential
 #: for the gateway's API and no tool that speaks it, so the only filing it can
 #: do is the one it already controls -- the path it writes to. Every session
 #: created under a project runs with its `cwd` here, so a relative write lands

@@ -54,7 +54,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENV_FILE = _REPO_ROOT / ".env"
 
 #: The `.env` this service reads, exported so `api/config.py` can report which
-#: values the owner has written down there (presence only, never a value).
+#: values the operator has written down there (presence only, never a value).
 ENV_FILE = _ENV_FILE
 
 
@@ -202,7 +202,7 @@ class Settings(BaseSettings):
     #
     # `REWRITE_BASE_URL` empty (the default) cleanly DISABLES the feature:
     # the route answers an honest 503 naming the variable, and never falls
-    # back to some other provider the owner did not configure.
+    # back to some other provider the operator did not configure.
     rewrite_base_url: str = Field(alias="REWRITE_BASE_URL", default="")
     rewrite_model: str = Field(alias="REWRITE_MODEL", default="anthropic/claude-3.5-haiku")
     # May legitimately be EMPTY: a local llama.cpp/vLLM server needs no key,
@@ -217,7 +217,7 @@ class Settings(BaseSettings):
     # so re-pointing the profile in the Agents screen re-points the rewrite
     # too. The key is still REWRITE_API_KEY: Hermes never exposes its own.
     rewrite_profile: str = Field(alias="REWRITE_PROFILE", default="")
-    # The system prompt, overridable so the owner can tune the rewrite by ear
+    # The system prompt, overridable so the operator can tune the rewrite by ear
     # from `.env` without a rebuild.
     rewrite_prompt: str = Field(
         alias="REWRITE_PROMPT",
@@ -337,7 +337,7 @@ class Settings(BaseSettings):
     # already fast.
     rewrite_disable_thinking: bool = Field(alias="REWRITE_DISABLE_THINKING", default=False)
 
-    # File-backed rewrite prompts (owner, 2026-09-07): the speech prompts as
+    # File-backed rewrite prompts: the speech prompts as
     # files the app's own editor can open and save, rather than a redeploy or
     # a Settings text field. Empty (the default) means
     # `<HERMES_SANDBOX_ROOT>/astation/prompts`. The directory MUST be
@@ -354,7 +354,7 @@ class Settings(BaseSettings):
     # takes effect within this window, with no restart. 0 disables caching.
     rewrite_prompt_file_ttl_s: float = Field(alias="REWRITE_PROMPT_FILE_TTL_S", default=15.0)
 
-    # Continue in a new session (owner ask 2026-09-07, `api/handoff.py`): the
+    # Continue in a new session: the
     # last several messages of a conversation distilled into the opening
     # prompt of a fresh session. Goes down the SAME path as the rewrite above
     # -- REWRITE_PROFILE (or REWRITE_BASE_URL / REWRITE_MODEL), the same key,
@@ -391,7 +391,7 @@ class Settings(BaseSettings):
     # model reads it whole.
     handoff_last_messages: int = Field(alias="HANDOFF_LAST_MESSAGES", default=12, ge=1, le=200)
 
-    # Per-project workspace directories (owner, 2026-09-07): a project's
+    # Per-project workspace directories: a project's
     # instructions are a `HERMES.md` file the gateway keeps under
     # `<HERMES_SANDBOX_ROOT>/<this>/<project_id>/`, edited with the app's file
     # editor and baked into each new session's system prompt via its `cwd`
@@ -403,7 +403,7 @@ class Settings(BaseSettings):
     # (the workspace helper no-ops) rather than writing outside it.
     project_workspace_subdir: str = Field(alias="PROJECT_WORKSPACE_SUBDIR", default="")
 
-    # Conversation about the owner's own research (`api/converse.py`).
+    # Conversation about the operator's own research (`api/converse.py`).
     # Mirrors the `REWRITE_*` block above -- one implementation, an
     # OpenAI-compatible `/chat/completions` endpoint behind a configurable base
     # URL -- and exists for the same measured reason: a Hermes agent turn takes
@@ -419,7 +419,7 @@ class Settings(BaseSettings):
     # only produced a confusing 502. Set it to Ollama's OpenAI-compatible base
     # (`http://<ollama-host>:11434/v1`) or any other endpoint to turn it on. An
     # endpoint that is configured but not running is a 502, never a silent
-    # fallback to somewhere the owner did not configure.
+    # fallback to somewhere the operator did not configure.
     converse_base_url: str = Field(alias="CONVERSE_BASE_URL", default="")
     converse_model: str = Field(alias="CONVERSE_MODEL", default="llama3.2:3b")
     # May legitimately be EMPTY: Ollama and every local llama.cpp/vLLM server
@@ -611,7 +611,7 @@ class Settings(BaseSettings):
     # starts" was for building this; turning the timer on is a separate,
     # later decision), not something this change turns on by shipping.
     #
-    # B-137 (`docs/BUGS.md`, fixed `63a6fce`) is why it was unsafe to set this
+    # B-137 is why it was unsafe to set this
     # above `0` before: the default profile's connection reused
     # `app.state.hermes_adapter` -- the SAME object `EventBroadcaster` already
     # drains for `/ws/events` -- and two concurrent consumers of
@@ -626,7 +626,7 @@ class Settings(BaseSettings):
     # Non-default profile dashboards are launched via `docker exec <target>
     # hermes -p <profile> dashboard ...` rather than a bare `hermes` subprocess
     # (`SubprocessProfileLauncher`'s `command_prefix`) -- the gateway and
-    # Hermes run as separate containers (2026-09-05 Docker deploy), so the
+    # Hermes run as separate containers, so the
     # `hermes` CLI isn't present in the gateway's own image. Empty (the
     # default) means "run `hermes` as a bare subprocess", which only works if
     # the gateway process and Hermes's CLI share a host/filesystem.

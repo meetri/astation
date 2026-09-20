@@ -187,7 +187,7 @@ class TTSProvider:
         self.shipped = shipped
         self.mime = mime
         self.missing = missing
-        #: The engine's own documented default, used ONLY when the owner has
+        #: The engine's own documented default, used ONLY when the operator has
         #: configured no voice AND this id is in the probed list. It is a hint,
         #: never a claim: see `default_voice_id()` for why the alternative
         #: (the first voice in the list) is measurably wrong for `edge`.
@@ -218,7 +218,7 @@ TTS_PROVIDERS: dict[str, TTSProvider] = {
         # `edge_tts.Communicate`'s own default. Measured 2026-09-02: the
         # service lists 322 voices ordered by locale, so "the first one" is
         # `af-ZA-AdriNeural` -- Afrikaans, for an English-speaking owner who
-        # configured nothing. A default that is wrong in a way the owner can
+        # configured nothing. A default that is wrong in a way the operator can
         # HEAR is worse than one that is arbitrary.
         preferred_voice="en-US-EmmaMultilingualNeural",
     ),
@@ -752,7 +752,7 @@ async def speak(body: SpeakRequest) -> Response:
     if not audio:
         # An engine that answers with zero bytes has failed, and saying so is
         # the difference between the app falling back and the app playing
-        # silence -- which the owner would read as a broken button.
+        # silence -- which the operator would read as a broken button.
         raise HTTPException(
             status_code=502,
             detail=(

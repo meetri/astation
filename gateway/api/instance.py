@@ -141,7 +141,7 @@ APPROVALS_MODE_KEY = "approvals.mode"
 #:
 #: `smart` is measured, not inferred: on the live instance its LLM
 #: auto-approved four commands matching Hermes's own `DANGEROUS_PATTERNS`
-#: (B-44). Every other mode name is left out deliberately -- an unobserved
+#:. Every other mode name is left out deliberately -- an unobserved
 #: mode answers `null` ("this gateway does not know"), never a guessed
 #: `false`, because a false negative here is exactly the reassurance the
 #: owner must not be given.

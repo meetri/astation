@@ -62,7 +62,7 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
         # can distinguish a live-but-quiet stream from one that never came
         # back. Sent from inside `subscribe()` so no upstream frame can
         # overtake it or be lost behind it. It names the Hermes connection
-        # generation (B-29), which is the generation every live handle this
+        # generation, which is the generation every live handle this
         # client goes on to hold belongs to.
         await websocket.send_json(
             stream_ready_frame(getattr(adapter, "connection_generation", None))

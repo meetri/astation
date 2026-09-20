@@ -137,7 +137,7 @@ MAX_DESCRIPTION_CHARS = 500
 #: first turn with `Unknown provider 'local-3080ti'`, because each profile
 #: process loads ITS config, not the default profile's). The keys mirrored are
 #: the ones `model.options` exposes; a keyed endpoint's `key_env` is not among
-#: them and stays a hand edit (docs/AGENT_MODEL_DESIGN.md §9).
+#: them and stays a hand edit.
 HERMES_CONFIG_SET_ARGV: tuple[str, ...] = ("config", "set")
 _PROVIDER_SLUG = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _MIRRORED_PROVIDER_KEYS: tuple[str, ...] = ("name", "base_url", "discover_models")

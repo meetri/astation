@@ -256,7 +256,7 @@ def wire_event_stream(
         background_ledger.handle_generation_change(generation, previous)
 
     # The broadcaster reads that same cache to turn the live handle Hermes
-    # stamps on an event back into the STORED id the app matches on (B-29).
+    # stamps on an event back into the STORED id the app matches on.
     # One object, so a session resolved by a route is immediately attributable
     # on the event stream. The P2-1 hooks make a background task's single
     # completion event durable and injected; the P2-2 hook attributes and
@@ -340,9 +340,9 @@ def start_artifact_ingestors(
     `media_tag_ingestor`, each ingestor subscribed to the broadcaster."""
     # The Tier-2 artifact ingestor (P3-1): an *internal subscriber* to the
     # broadcaster -- it rides the same bounded per-subscriber queue as a
-    # `/ws/events` client (B-33) and costs `_forward_one` nothing beyond one
+    # `/ws/events` client and costs `_forward_one` nothing beyond one
     # queue put. (The third-party notify relay that first used this pattern
-    # was removed 2026-09-04 at the owner's direction; native notifications
+    # was removed 2026-09-04 at the operator's direction; native notifications
     # are P6-5, `docs/NOTIFICATIONS_DESIGN.md`.) It watches write_file/patch completions and
     # pulls the produced files into the durable library; the promote route
     # reuses the same object (`app.state.artifact_ingestor`).
@@ -350,7 +350,7 @@ def start_artifact_ingestors(
     # A5: ONE set of ignore rules, honoured by both producers. The diff walk
     # has checked them since B-61; the `tool.completed` path did not, which is
     # how `.npm/_logs`, `.curator_backups/blobs` and `profiles/<name>` rows
-    # reached the owner's library.
+    # reached the operator's library.
     sandbox_denylist = SandboxDiffDenylist.from_settings(settings)
     artifact_ingestor = ArtifactIngestor(
         adapter,
@@ -431,7 +431,7 @@ def start_snapshot_sweeper(app_state: Any, settings: Settings) -> SnapshotSweepe
     # the deliberately-unconnected adapter above). `INTERVAL_S=0` starts no
     # task; `POST /api/snapshot-sweeps` still runs a pass. `SnapshotSweeper`
     # lives in `domain/snapshot_sweeper.py`; its router is included by
-    # `api/main.py` (`docs/SESSION_ARCHIVE_DESIGN.md` §6.0's seam for Stream B).
+    # `api/main.py`.
     snapshot_sweeper = SnapshotSweeper.from_settings(app_state, settings)
     app_state.snapshot_sweeper = snapshot_sweeper
     snapshot_sweeper.start()
@@ -489,7 +489,7 @@ def startup(
     open_database(app_state, settings)
     open_chat_store(app_state)
     build_profile_connection_manager(app_state, settings)
-    # Live handles for the *current* Hermes connection only (B-01). Built
+    # Live handles for the *current* Hermes connection only. Built
     # here, per process, and never persisted -- see `LiveHandleCache`.
     live_handle_cache = LiveHandleCache(adapter)
     background_ledger = build_background_ledger(app_state, adapter, live_handle_cache)

@@ -401,7 +401,7 @@ async def session_timeline(
     # tool calls were `skill_view`, `search_files` and `read_file`, none of
     # which runs a shell command or writes a file, so the host row count was
     # zero and this screen showed nothing at all. The account was in the store
-    # the whole time (B-205).
+    # the whole time.
     params: dict[str, Any] = {"session": stored_session_id, "limit": limit}
 
     def window_clause(column: str = "ts") -> str:
@@ -685,7 +685,7 @@ def _group(rows: list[dict[str, Any]], truncated: bool) -> dict[str, Any]:
     return {"counts": counts, "events": rows, "truncated": truncated}
 
 
-#: How much of a recorded result a single call returns. Results on the owner's
+#: How much of a recorded result a single call returns. Results on the operator's
 #: host average ~3,500 characters and run past 200,000; the viewer that renders
 #: this highlights up to 512 KiB, so this cap is about what crosses the network
 #: to a phone rather than about what can be displayed.

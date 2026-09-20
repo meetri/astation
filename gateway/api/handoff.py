@@ -188,7 +188,7 @@ async def session_handoff(
     if rewrite_profile:
         # Same route as the rewrite: inside Hermes the HOST runs it on the
         # profile's own model, which is the only thing that works for a
-        # provider with no endpoint this process could call (B-195). This
+        # provider with no endpoint this process could call. This
         # screen shares `resolve_rewrite_endpoint`, so without it "Continue in
         # new session" hits the identical 503.
         prompt = await rewrite_mod.rewrite_via_host_llm(

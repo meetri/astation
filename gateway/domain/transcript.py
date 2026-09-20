@@ -62,7 +62,7 @@ def _transcript(result: Any, count_key: str) -> tuple[int, Any]:
 
 # --- B-86: what a transcript row is allowed to leave out -------------------
 #
-# Measured live 2026-09-01 against the owner's own session
+# Measured live 2026-09-01 against the operator's own session
 # (`20260829_223119_a8da0069`, 1,379 messages): the transcript these two
 # routes served was **3,958,334 B**, of which `reasoning` was 1,638,139 B and
 # `reasoning_content` was *the same* **1,638,139 B** -- byte-identical on all

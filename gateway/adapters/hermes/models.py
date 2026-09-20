@@ -40,7 +40,7 @@ REWIND_FIELDS = frozenset(
 #   deny     refuse (also Hermes's own default for a missing `choice`)
 #
 # Modelling the prompt as approve/deny throws away `session` and `always` —
-# the two answers that stop the owner being asked the same question forever.
+# the two answers that stop the operator being asked the same question forever.
 APPROVAL_CHOICES: tuple[str, ...] = ("once", "session", "always", "deny")
 
 # What a boolean maps onto when a client can only express yes/no. `True` is

@@ -57,7 +57,7 @@ class Project(Base):
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     memory_namespace: Mapped[str | None] = mapped_column(String, nullable=True)
-    #: The file-browser bookmark (owner ask 2026-09-07): an absolute sandbox
+    #: The file-browser bookmark: an absolute sandbox
     #: path the browser opens at, or NULL for "open at the root". Nothing but
     #: the browser reads it -- deliberately NOT the project's instructions,
     #: which are a `HERMES.md` file (`domain/project_workspace.py`).
@@ -101,7 +101,7 @@ class Session(Base):
     __tablename__ = "sessions"
     __table_args__ = (
         # A given stored runtime session maps to at most one workspace
-        # Session row per runtime *and profile* (B-136) -- a stored id is
+        # Session row per runtime *and profile* -- a stored id is
         # only unique within a profile, so two profiles could otherwise
         # collide on the same id. NULLs compare as distinct in both SQLite
         # and Postgres, so any number of rows may still be unbound (not yet
@@ -125,7 +125,7 @@ class Session(Base):
     project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
     runtime: Mapped[str] = mapped_column(String, nullable=False)
 
-    #: The Hermes profile this session's runtime ids belong to (B-136) --
+    #: The Hermes profile this session's runtime ids belong to --
     #: "default", "kimi25", "qwen38-flash", ... `runtime_session_id` is only
     #: unique *within* a profile, so this has to travel with the session
     #: rather than be inferred; every session-scoped route resolves its
@@ -430,7 +430,7 @@ class Run(Base):
     #: because rows predating this column exist in principle; the recorder
     #: always writes it.
     runtime_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    #: Which Hermes profile's connection this turn was observed on (B-136).
+    #: Which Hermes profile's connection this turn was observed on.
     #: Recorded at open time because it is the only moment it is known for
     #: certain -- the run's own event stream is what identifies it, and
     #: `session_id` is NULL for every unfiled session, so there is no row to
@@ -630,7 +630,7 @@ class Artifact(Base):
     source_path: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    #: When the owner archived this artifact; NULL means visible. A timestamp
+    #: When the operator archived this artifact; NULL means visible. A timestamp
     #: rather than a boolean: it orders "recently archived", and un-archiving
     #: is a null write rather than a state machine.
     #:
@@ -639,7 +639,7 @@ class Artifact(Base):
     #: from the library's default listings and from the bookmark shelf, and
     #: reachable again through "Show archived". There is deliberately no
     #: delete for an artifact anywhere in this system
-    #: (`docs/ARTIFACT_ORGANIZATION_PLAN.md` §10).
+    #:.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -784,7 +784,7 @@ class ArtifactBookmark(Base):
     )
     #: The project this star was made in, or `""` for the unfiled scope.
     scope: Mapped[str] = mapped_column(String, primary_key=True)
-    #: When the owner last said this matters -- the shelf's order. Re-starring
+    #: When the operator last said this matters -- the shelf's order. Re-starring
     #: refreshes it, so "un-star then star again" reads as a fresh entry.
     bookmarked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

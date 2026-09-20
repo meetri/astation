@@ -256,7 +256,7 @@ def _respond_status(result: Any, method: str, request_id: str, *, redact: str | 
     raise _unrecognized_upstream_answer(method, _redacted(repr(status), redact))
 
 
-#: `payload.resolution` / `payload.by` on every synthesized row (B-189). The
+#: `payload.resolution` / `payload.by` on every synthesized row. The
 #: wire's own expiry rows carry `resolution: "expired"` and no `by`.
 _RESOLUTION_ANSWERED = "answered"
 _RESOLVED_BY_APP = "app"
@@ -488,7 +488,7 @@ class SecretResponse(BaseModel):
 
 # Pydantic attaches the rejected input to every validation error, and FastAPI's
 # default handler serializes it into the 422 body. For `/api/prompts/*` that
-# input can be the owner's password.
+# input can be the operator's password.
 _VALUE_BEARING_ERROR_KEYS = ("input", "ctx")
 
 
@@ -660,7 +660,7 @@ async def respond_to_clarify(
         raise _upstream_failure(exc) from exc
 
     status = _respond_status(result, "clarify.respond", rid)
-    # The answer itself is the owner's words, not a credential -- but there is
+    # The answer itself is the operator's words, not a credential -- but there is
     # no reason to put it in the log either, so this records only that the
     # prompt was answered.
     logger.info("clarify %s answered", rid)

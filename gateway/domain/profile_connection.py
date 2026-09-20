@@ -153,7 +153,7 @@ _PROFILE_FIELD = PROFILE_FIELD
 #: behind (`domain/event_stream.py`'s `desynchronized_frame`) -- pinned equal
 #: to `api/artifacts.py`'s own `_DESYNCHRONIZED_TYPE` by a test. Only
 #: meaningful on the default connection's `broadcaster.subscribe()` path
-#: (B-137); the direct-drain path (`_pump`) never sees a synthetic frame like
+#:; the direct-drain path (`_pump`) never sees a synthetic frame like
 #: this one.
 _DESYNCHRONIZED_TYPE = STREAM_DESYNCHRONIZED_EVENT_TYPE
 
@@ -531,7 +531,7 @@ class ProfileConnection:
     live_to_stored: dict[str, str] = field(default_factory=dict)
     #: A `LiveHandleCache` (`domain/live_handles.py`), lazily constructed by
     #: `domain.hermes_runtime.resolve_live_handle_cache` the first time a
-    #: session-scoped route needs one for this connection (B-136). Safe by construction
+    #: session-scoped route needs one for this connection. Safe by construction
     #: rather than by an invalidation hook: a torn-down connection's
     #: `ProfileConnection` object is discarded, never mutated in place
     #: (`ProfileConnectionManager._start` always builds a fresh one), so a
@@ -1098,7 +1098,7 @@ class ProfileConnectionManager:
             self._stamp_identity(conn, raw_event_type(raw_event), payload)
         hook = self._resolve_canonical_event_hook()
         if hook is not None:
-            # BEFORE the chat store (B-188), and never allowed to break it:
+            # BEFORE the chat store, and never allowed to break it:
             # the recorder stamps `envelope["run_id"]`, which is the
             # `turn_id` the capture below writes on the row -- the same
             # order the broadcaster's own `_forward_one` already has for the

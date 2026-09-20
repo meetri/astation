@@ -422,7 +422,7 @@ async def session_messages(
         raise _http_error_from_hermes(exc, stored_id) from exc
 
     count, messages = _transcript(history, "count")
-    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)  # B-156
+    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
     # P2-1: same injection as POST /resume -- a background turn has no Hermes
     # row, so its result rides in from the ledger or nowhere.
     count += append_finished_background_results(request.app.state, stored_id, messages)
@@ -719,7 +719,7 @@ class NewFiledSession(BaseModel):
 
     title: str = Field(min_length=1)
     first_message: str = Field(min_length=1)
-    #: Which Hermes profile to create this session on (B-136). `default`
+    #: Which Hermes profile to create this session on. `default`
     #: unless the caller names a connected one (`GET /api/profiles`) -- an
     #: unconnected name is a 503 from `resolve_profile_adapter`, same as
     #: every other session-scoped route, not a silent fall-back to default.
@@ -776,7 +776,7 @@ async def create_and_file_session(
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, body.profile)
     cache: LiveHandleCache = resolve_live_handle_cache(request.app.state, body.profile)
 
-    # Project instructions (owner ask 2026-09-07): if this project has a
+    # Project instructions: if this project has a
     # `HERMES.md`, create the session with its `cwd` pointing at the project's
     # workspace folder. Hermes bakes that file into the session's system
     # prompt at creation (measured, `docs/PROJECT_INSTRUCTIONS_DESIGN.md`), so

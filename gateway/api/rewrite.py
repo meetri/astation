@@ -143,14 +143,14 @@ _UPSTREAM_DETAIL_CHARS = 300
 #: getting exactly the rewrite it got before.
 DEFAULT_REWRITE_STYLE = "listen"
 
-#: P6-2 (owner, 2026-09-03): "the default is to give a very clear pros
+#: P6-2: "the default is to give a very clear pros
 #: reconstruction ... if I tap and hold ... brief ... medium ... full ... or
 #: raw." `depth` is ORTHOGONAL to `style` -- style picks WHICH prompt (chat
 #: reply / source / document chunk), depth picks HOW MUCH of it survives. The
 #: two compose: "explain this source file, briefly" is a real request.
 #:
 #: `full` is the historical, and default, behaviour -- the faithful
-#: conversion B-91 was corrected into (34/34 facts kept). It is the owner's
+#: conversion B-91 was corrected into (34/34 facts kept). It is the operator's
 #: "very clear pros reconstruction" and what every older client already gets,
 #: so making it the default costs an old client nothing.
 #:
@@ -390,7 +390,7 @@ def build_payload(
         # against a local reasoning model, a small budget is spent entirely on
         # `reasoning_content` and `content` comes back EMPTY (see
         # `Settings.rewrite_max_tokens`). Leaving it unset makes the result
-        # depend on whichever server the owner points at that week.
+        # depend on whichever server the operator points at that week.
         "max_tokens": max_tokens,
         # Qwen-family template switch; see `Settings.rewrite_disable_thinking`.
         # Omitted entirely when off, so a provider that rejects unknown body
@@ -435,7 +435,7 @@ def content_from_completion(payload: Any, *, label: str = "rewrite") -> str:
     first = choices[0]
     # B-91: a response cut off at the token ceiling arrives as a normal 200
     # with `finish_reason: "length"` and a half-finished final sentence. The
-    # route used to hand that straight to the synthesizer, so the owner heard
+    # route used to hand that straight to the synthesizer, so the operator heard
     # "less than 25% of the message" and had no way to know it was truncated.
     # Refusing it is the honest move AND the better outcome: the app's
     # fallback then speaks the FULL original verbatim, so nothing is lost --

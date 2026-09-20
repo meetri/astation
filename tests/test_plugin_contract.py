@@ -105,7 +105,7 @@ def test_plugin_api_exposes_a_module_level_router():
 #: The two scripts that publish the plugin, and where each one sends it.
 #:
 #: BOTH must ship the same modules. They drifted once and it was invisible:
-#: the deploy script carried `audit_forwarder.py` to the owner's host, so
+#: the deploy script carried `audit_forwarder.py` to the operator's host, so
 #: session attribution worked there, while the generator that builds the
 #: PUBLIC repo did not, so the published plugin had the audit routes and not
 #: the thing that feeds them. Testing only one script is what let that happen.
@@ -115,10 +115,22 @@ _PUBLISH_SCRIPTS = {
 }
 
 
+_SCRIPTS_DIR = PLUGIN_DIR.parent / "scripts"
+
+#: These tests check the machinery that PUBLISHES the plugin, which exists
+#: only in the development repository. The published copy runs the same suite,
+#: so they skip there rather than failing on a path that was never meant to
+#: be there.
+_upstream_only = pytest.mark.skipif(
+    not _SCRIPTS_DIR.is_dir(), reason="publishing scripts are upstream-only"
+)
+
+
 def _publish_script(name: str) -> str:
-    return (PLUGIN_DIR.parent / "scripts" / name).read_text()
+    return (_SCRIPTS_DIR / name).read_text()
 
 
+@_upstream_only
 @pytest.mark.parametrize("script", sorted(_PUBLISH_SCRIPTS))
 def test_every_publish_path_ships_every_module(script):
     """B-202's failure class, generalised to every way the plugin leaves this
@@ -142,6 +154,7 @@ def test_every_publish_path_ships_every_module(script):
     )
 
 
+@_upstream_only
 def test_the_public_repo_ships_the_audit_stack():
     """Half the audit feature is plugin code and the other half is the sensor,
     shipper and store it talks to. Someone installing the published plugin and
@@ -149,6 +162,7 @@ def test_the_public_repo_ships_the_audit_stack():
     assert "audit-setup" in _publish_script("build_plugin_repo.sh")
 
 
+@_upstream_only
 def test_the_publish_paths_are_both_still_known_here():
     """If a third way to publish the plugin appears, it has to be added above,
     or it inherits the drift this file exists to prevent."""

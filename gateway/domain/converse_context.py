@@ -665,7 +665,7 @@ def parse_answer(raw: str) -> ParsedAnswer:
         text = pattern.sub("", text).strip()
 
     # **Every** leading protocol token is consumed, not just the first.
-    # Measured on the owner's records (2026-09-02, `gemma3:4b`): the model
+    # Measured on the operator's records: the model
     # wrote `ANSWER: NOANSWER. The context does not contain ...` -- a refusal
     # wearing an answer's hat. Stripping only the first token reported that as
     # an ANSWER and left the word NOANSWER in the text to be read aloud, which

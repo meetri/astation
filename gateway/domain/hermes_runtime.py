@@ -210,7 +210,7 @@ def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
 
     # One shared connection serving every profile. Each profile still gets its
     # OWN cache: a stored id is unique only within a profile
-    # (`docs/CHAT_HISTORY_DESIGN.md` §4), so a single cache keyed on
+    #, so a single cache keyed on
     # (generation, stored_id) could alias two different sessions that happen to
     # share an id and hand a route the wrong live handle. The caches all bind
     # to the same adapter, so they share its generation counter and a
@@ -244,7 +244,7 @@ def _validate_stored_session_id(stored_session_id: str) -> str:
     return cleaned
 
 
-# --- Hermes's "that session isn't here" error codes (B-23) ----------------
+# --- Hermes's "that session isn't here" error codes ----------------
 #
 # Both are real, both were measured against the live instance on 2026-08-29,
 # and they are NOT interchangeable -- they belong to the two id spaces:

@@ -106,7 +106,7 @@ _UPSTREAM_LOST_MESSAGE = (
 # deliberately shaped as an ordinary canonical envelope so no client needs a
 # special case (an older build decodes it as an unknown type and ignores it),
 # and it deliberately carries **`seq` 0**: `seq` is the client's replay cursor
-# over the *upstream* stream (B-14) and a gateway-generated frame must not
+# over the *upstream* stream and a gateway-generated frame must not
 # spend one. Sent inside `subscribe()`, so nothing Hermes pushes can slip in
 # ahead of it or be lost behind it.
 STREAM_READY_EVENT_TYPE = "stream.ready"
@@ -239,9 +239,9 @@ KNOWN_SUBMIT_STATUSES: frozenset[str] = frozenset(
     }
 )
 
-# --- gateway -> app WebSocket frame budget (B-02) -------------------------
+# --- gateway -> app WebSocket frame budget -------------------------
 #
-# Measured, not assumed (2026-08-29):
+# Measured, not assumed:
 #
 # * The *server* side applies no limit at all to a server->client send.
 #   uvicorn's `ws_max_size` (default 16,777,216) is passed to `websockets`'
@@ -854,7 +854,7 @@ class EventBroadcaster:
         self._profile = profile
         # B-198: inside Hermes there are no per-profile connections -- ONE
         # connection serves every profile, because `session.resume` takes the
-        # profile as a parameter (B-196). So `self._profile` no longer
+        # profile as a parameter. So `self._profile` no longer
         # identifies the frame: it is just the name of the connection, which
         # is `default` for everything.
         #
@@ -1121,7 +1121,7 @@ class EventBroadcaster:
         stored_id, live_id, profile = self._resolve_identity(stored_id, live_id)
 
         # Assigned, never `setdefault`: `_`-prefixed keys are the gateway's
-        # namespace (B-02/B-14), so upstream must not be able to forge one.
+        # namespace, so upstream must not be able to forge one.
         payload[STORED_SESSION_ID_FIELD] = stored_id
         payload[LIVE_SESSION_ID_FIELD] = live_id
         payload[CONNECTION_GENERATION_FIELD] = generation
@@ -1314,7 +1314,7 @@ class EventBroadcaster:
         # dropped types and unsendable frames now cost nothing, and what
         # arrives at a subscriber is contiguous.
         frame["seq"] = next(self._seq)
-        # Bounded per subscriber (B-33). Nothing is ever removed from the
+        # Bounded per subscriber. Nothing is ever removed from the
         # middle -- that would silently corrupt the transcript being
         # assembled -- so a client that falls past the cap is cut off with
         # an explicit `stream.desynchronized` frame instead. `_fan_out`

@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 #: Authenticated routes (mounted under `/api` in `api.main`).
 config_router = APIRouter(tags=["config"])
 
-#: How long a discovery probe waits. Short on purpose: the owner is standing in
+#: How long a discovery probe waits. Short on purpose: the operator is standing in
 #: a settings screen watching a spinner, and "that box is not answering" is a
 #: useful answer delivered in seconds rather than a useful answer delivered in
 #: two minutes.
@@ -104,7 +104,7 @@ MAX_MODEL_ID_CHARS = 200
 # --- probe outcomes -------------------------------------------------------
 #
 # Five, not one. Each names a different fix, and collapsing them into "failed"
-# is how a settings screen tells the owner to check the network when the real
+# is how a settings screen tells the operator to check the network when the real
 # problem is a rejected key.
 PROBE_OK = "ok"  # answered, and served a model list
 PROBE_UNREACHABLE = "unreachable"  # no HTTP response at all: DNS, refused, timeout
@@ -115,7 +115,7 @@ PROBE_NO_MODELS = "no_models"  # answered 2xx JSON with no recognisable model li
 
 #: The validator `POST .../probe` reuses for its `base_url`, so "that is not a
 #: URL" -- including the refusal of `user:key@host`, which would otherwise put a
-#: secret into every later report -- is answered identically wherever the owner
+#: secret into every later report -- is answered identically wherever the operator
 #: types one. Resolved at import so a registry that ever lost the key fails
 #: loudly at startup rather than as a 500 on the probe route.
 _PROBE_URL_SPEC: ConfigKey = CONFIG_KEYS_BY_NAME["rewrite_base_url"]
@@ -312,7 +312,7 @@ def provider_config_report() -> dict[str, Any]:
     return {
         "capabilities": capabilities,
         # Where the overlay lives and whether it is currently in play. The path
-        # is a filesystem location the owner configured, not a secret.
+        # is a filesystem location the operator configured, not a secret.
         "overlay": {
             "path": settings.research_gateway_runtime_config_path,
             "present": overlay.present,
@@ -407,7 +407,7 @@ async def update_provider_config(body: ProviderConfigUpdate) -> dict[str, Any]:
         )
 
     # Validate the whole batch before touching the file. A half-applied config
-    # change is worse than a rejected one -- the owner would be looking at a
+    # change is worse than a rejected one -- the operator would be looking at a
     # screen that is partly what they asked for and partly not.
     validated: dict[str, Any] = {}
     for name, raw in body.values.items():

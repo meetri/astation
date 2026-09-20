@@ -267,7 +267,7 @@ class ArtifactIngestor:
         # does not care about it gets.
         self._workspace_root = workspace_root
         # A5: the SAME rules the diff walk honours. Until this existed only
-        # one of the two producers checked them, and the owner's library had
+        # one of the two producers checked them, and the operator's library had
         # filed `.npm/_logs`, `.curator_backups/blobs` and `profiles/<name>`
         # rows through the other one -- a rule half the writers ignore is not
         # a rule.
@@ -612,8 +612,8 @@ class ArtifactIngestor:
                 artifact.project_id = project_id
             if is_new:
                 # C3: the path files itself, ONCE. Re-tagging on every later
-                # save would put back a tag the owner had deliberately taken
-                # off, and the owner's edit has to win over a convention.
+                # save would put back a tag the operator had deliberately taken
+                # off, and the operator's edit has to win over a convention.
                 db.flush()
                 self._apply_filing_tags(db, artifact)
             db.commit()
@@ -792,7 +792,7 @@ MAX_PENDING_DIFF_RUNS = 64
 # overrides (settings.py; comma-separated; a non-empty override REPLACES the
 # corresponding built-in default, it does not append).
 #
-# Denylist, not allowlist -- considered and decided (B-61): the alternative
+# Denylist, not allowlist -- considered and decided: the alternative
 # is an allowlist of known user-facing subtrees (`scratch/`, `probe_scratch/`,
 # `attachments/`). Rejected for now because `docs/PROTOCOL_VERIFIED.md`
 # documents no stable user-facing subtree, and terminal scripts write
@@ -814,7 +814,7 @@ MAX_PENDING_DIFF_RUNS = 64
 SANDBOX_DIFF_DENYLIST_DIRS: frozenset[str] = frozenset({"logs", "cron", "state", "cache"})
 
 #: Directory names denied WHEREVER they appear in a path, not only at the top
-#: level. The top-level rule above cannot see these: measured on the owner's
+#: level. The top-level rule above cannot see these: measured on the operator's
 #: library 2026-09-19, `.npm/_logs`, `.curator_backups/blobs` and
 #: `profiles/<name>` had filed real rows, and a repository checkout puts
 #: `.git`, `__pycache__`, `node_modules` and `.venv` several levels down where
@@ -1358,7 +1358,7 @@ class MediaReference:
 
     path: str
     #: True for an explicit `MEDIA:` tag; False for a bare absolute path
-    #: on its own line whose extension the app can open (B-182). The
+    #: on its own line whose extension the app can open. The
     #: distinction matters gateway-side only: an explicit tag is a claim
     #: strong enough to record an `unavailable` row when the file cannot be
     #: fetched, a bare path outside the sandbox root is just a mention.

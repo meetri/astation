@@ -49,7 +49,7 @@ from typing import Any
 # The table below was originally written from PROTOCOL_VERIFIED.md's event
 # catalog, which lists the message/tool/human-in-the-loop families and then
 # says "plus session lifecycle and error events". That elision hid most of
-# the real traffic. One complete live turn (2026-08-29) pushed:
+# the real traffic. One complete live turn pushed:
 #
 #     reasoning.delta   x945    message.delta      x328
 #     sessions.changed   x12    thinking.delta      x11
@@ -115,7 +115,7 @@ from typing import Any
 # This gateway dropped that frame -- it was in neither table, so
 # `normalize_event` returned None and one warning per process was all that was
 # ever said about it (`unmapped Hermes event type 'message.interim'`, present
-# in the owner's own gateway log for the failing turn). Without the boundary a
+# in the operator's own gateway log for the failing turn). Without the boundary a
 # client pours every segment into one bubble and `message.complete` then
 # replaces the whole accumulation with the final segment, deleting text the
 # user already watched arrive. That is B-38.
@@ -181,7 +181,7 @@ RAW_TO_CANONICAL_TYPE: dict[str, str] = {
     "secret.cancel": "secret.resolved",
 }
 
-# --- deliberate drops (B-14) ---------------------------------------------
+# --- deliberate drops ---------------------------------------------
 #
 # A raw event name in here is dropped ON PURPOSE, with the reason recorded.
 # The distinction from "not in either table" matters: an unlisted name is a
@@ -254,7 +254,7 @@ MERGED_RAW_EVENTS: frozenset[str] = frozenset(
 # that side; see events/README note in normalizer.py).
 EXPIRY_RAW_EVENTS: frozenset[str] = frozenset({"sudo.expire", "secret.expire"})
 
-# Raw names produced from a `request.cancel` (B-197). Like an expiry, a
+# Raw names produced from a `request.cancel`. Like an expiry, a
 # withdrawal IS a resolution -- but it carries Hermes's own `reason`
 # (`timeout`, `interrupted`, `shutdown`), which is more than "expired" and is
 # worth keeping.

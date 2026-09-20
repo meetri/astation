@@ -40,20 +40,19 @@ from typing import Any
 
 log = logging.getLogger("astation.plugin")
 
-# Hooks the capture path consumes, and what each one replaces. See
-# docs/PLUGIN_V2_PLAN.md §4.3.
+# Hooks the capture path consumes, and what each one replaces.
 CAPTURE_HOOKS = (
     "on_session_start",  # opens a run
-    "pre_llm_call",  # the user's message, including one typed in the TUI (B-190)
-    # Carries the tool RESULT Hermes's transcript drops (B-156), and also the
+    "pre_llm_call",  # the user's message, including one typed in the TUI
+    # Carries the tool RESULT Hermes's transcript drops, and also the
     # `duration_ms`, `status` and `error_type` the audit surface reports. Only
     # those three reach the audit store; the result does not.
     "post_tool_call",
     "post_api_request",  # per-request token usage, not a cumulative total
     "post_llm_call",  # the assistant's reply
-    "on_session_end",  # completed / interrupted, at the moment the turn ends (B-62)
-    "on_session_reset",  # compaction and reset boundaries (B-175/176)
-    # The audit join (docs/AUDIT_PLAN.md phase 2). `pre_tool_call` is the ONLY
+    "on_session_end",  # completed / interrupted, at the moment the turn ends
+    "on_session_reset",  # compaction and reset boundaries
+    # The audit join. `pre_tool_call` is the ONLY
     # place Hermes hands out the session, turn and tool-call ids TOGETHER with
     # the command about to run -- read off the deployed
     # `agent_runtime_helpers._pre_tool_block_message`, which passes
@@ -99,7 +98,7 @@ def _record(hook_name: str, kwargs: dict) -> None:
 #: is the dashboard alone. The hook queue below is drained there and nowhere
 #: else, so for ten months' worth of profiles every hook event was enqueued
 #: and silently discarded. Attribution worked for `default` and no other
-#: profile, which is exactly what the owner saw.
+#: profile, which is exactly what the operator saw.
 audit_forwarder: Any = None
 
 

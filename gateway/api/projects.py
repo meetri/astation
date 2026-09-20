@@ -126,7 +126,7 @@ class ProjectCreate(BaseModel):
 
     title: str = Field(min_length=1, max_length=_MAX_TITLE_CHARS)
     description: str | None = Field(default=None, max_length=_MAX_DESCRIPTION_CHARS)
-    #: The file-browser bookmark (owner ask 2026-09-07). An absolute sandbox
+    #: The file-browser bookmark. An absolute sandbox
     #: path, or null. Its confinement to the sandbox root is checked in the
     #: route, not here, because the root lives in settings; the validator only
     #: normalizes the string. Deliberately unrelated to the project's
@@ -245,7 +245,7 @@ class SessionFiling(BaseModel):
 
     stored_session_id: str = Field(min_length=1)
     title: str | None = Field(default=None, max_length=_MAX_TITLE_CHARS)
-    #: Which Hermes profile `stored_session_id` belongs to (B-136) -- e.g.
+    #: Which Hermes profile `stored_session_id` belongs to -- e.g.
     #: filing in a session found by browsing `GET /api/sessions?profile=
     #: kimi25`. `default` unless named, matching every row filed before this
     #: field existed. Not validated against `GET /api/profiles` here: unlike
@@ -289,7 +289,7 @@ def _project_row(
 ) -> dict[str, Any]:
     return {
         # Always present, `[]` when there are none, so a client never has to
-        # treat absence as a special case (B-34). Sorted by name.
+        # treat absence as a special case. Sorted by name.
         "tags": tags or [],
         # The one artifact this project is currently ABOUT, rendered rather
         # than a bare id so the project card does not need a second request.
@@ -559,7 +559,7 @@ def _filed_session_row(
         "profile": session.profile,
         "status": session.status,
         "filed_at": iso_z(session.created_at),
-        # P6-3 (`docs/SESSION_ARCHIVE_DESIGN.md` §6.4).
+        # P6-3.
         "row_key": session.id,
         "archived_at": iso_z(session.archived_at),
         "snapshot_count": snapshot_count,
@@ -784,7 +784,7 @@ async def list_projects(
     )
     if wanted:
         # AND, like the artifact listing: tags narrow, and OR would hand back
-        # more projects the more precisely the owner asked.
+        # more projects the more precisely the operator asked.
         matching = set(tag_owner_ids_with_all(db, "project", wanted))
         projects = [project for project in projects if project.id in matching]
     counts = _session_counts(db, [project.id for project in projects])
@@ -1095,7 +1095,7 @@ async def list_project_sessions(
         if latest.get(stored_id) is not None
     ]
     # Sort on the datetime, not its ISO string: `_iso` drops the fractional
-    # part on a whole second and 'Z' > '.', which mis-ordered rows (B-119).
+    # part on a whole second and 'Z' > '.', which mis-ordered rows.
     orphans.sort(key=lambda row: latest[row["id"]].taken_at, reverse=True)
     sessions.extend(orphans)
     active_filed = sum(1 for row in rows if row.archived_at is None)

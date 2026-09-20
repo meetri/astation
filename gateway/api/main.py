@@ -155,7 +155,7 @@ app = FastAPI(title="Research Gateway", version="0.1.0", lifespan=lifespan)
 
 # Pydantic puts the value it rejected on every validation error and FastAPI's
 # default 422 handler serializes it into the response body. On
-# `/api/prompts/*` that value can be the owner's sudo password or a secret the
+# `/api/prompts/*` that value can be the operator's sudo password or a secret the
 # agent asked them to supply (`ARCHITECTURE.md` §14), so those two keys are
 # stripped for that prefix -- see `api/prompts.py`. Every other path keeps the
 # default shape, where echoing the input is genuinely useful for debugging.
@@ -195,7 +195,7 @@ api.include_router(prompts_router)
 
 # Background tasks: submit + ledger lists (`api/background.py`, P2-1/B-42).
 # Mounted on `api` like the others, so every route -- including the one that
-# starts real work on the owner's Hermes -- is authenticated by construction.
+# starts real work on the operator's Hermes -- is authenticated by construction.
 api.include_router(background_router)
 
 # The run read path (`api/runs.py`, P2-2e): flat run list + per-run event
@@ -246,7 +246,7 @@ api.include_router(attachments_router)
 api.include_router(transcribe_router)
 
 # Prose rewrite for speech (`api/rewrite.py`, P5-4a): text -> read-aloud text
-# via an OpenAI-compatible endpoint the owner points at OpenRouter today and a
+# via an OpenAI-compatible endpoint the operator points at OpenRouter today and a
 # LAN model later, with no code change. Mounted on `api` -- authenticated by
 # construction like everything else.
 api.include_router(rewrite_router)
@@ -265,7 +265,7 @@ api.include_router(handoff_router)
 # construction like everything else.
 api.include_router(speak_router)
 
-# Conversation about the owner's own research (`api/converse.py`, G-12): a
+# Conversation about the operator's own research (`api/converse.py`, G-12): a
 # spoken question plus a scope -> a two-or-three-sentence answer with real
 # citations, assembled from this gateway's own runs, run events and artifacts
 # plus the session's transcript. Deliberately NOT routed through the Hermes
@@ -304,7 +304,7 @@ api.include_router(compress_router)
 # Runtime provider configuration (`api/config.py`, P5-9): read/write/reset the
 # rewrite and STT provider settings, plus the `/models` discovery probe that
 # lets the app offer a picker instead of a text field. The overlay it writes
-# sits above `.env` and takes effect on the next request, so the owner can
+# sits above `.env` and takes effect on the next request, so the operator can
 # change which endpoint, model and key are in force from the phone without a
 # file edit or a restart. Mounted on `api` -- authenticated by construction
 # like everything else, which matters more here than anywhere: this router
