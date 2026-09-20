@@ -66,6 +66,7 @@ class ConverseRequest(BaseModel):
 
     question: str = Field(min_length=1)
     scope: Literal["session", "project", "document"]
+    # A Hermes STORED session id, never a live handle and never a workspace sess_ id.
     session_id: str | None = None
     project_id: str | None = None
     artifact_id: str | None = None
@@ -100,6 +101,7 @@ SCOPE_ID_FIELD: dict[str, str] = {
 }
 
 
+# Question last: it stays in view after thousands of characters of records.
 def build_user_message(question: str, selection: Selection) -> str:
     """The user turn: the numbered context, then the question."""
     return (
@@ -109,6 +111,7 @@ def build_user_message(question: str, selection: Selection) -> str:
     )
 
 
+# Separate from rewrite's payload to force temperature: the 0.8 default invents.
 def build_payload(
     user_message: str,
     *,
@@ -256,6 +259,7 @@ async def converse(
         "question_terms": list(selection.question_terms),
     }
 
+    # Not a fallback: with nothing recorded there is nothing to answer from, so no call.
     if not selection.units:
         logger.info(
             "converse refused before calling the model: no context units for %s %s",
@@ -304,6 +308,7 @@ async def converse(
             **context_report,
             "model_called": True,
             "sources_declared": parsed.sources_declared,
+            # False means the token protocol was ignored, so refused is not reliable.
             "protocol_followed": parsed.protocol_followed,
         },
         "provider": provider_label(base_url),

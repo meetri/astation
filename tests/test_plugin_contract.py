@@ -49,6 +49,8 @@ def test_plugin_yaml_is_valid_and_declares_no_capabilities():
     assert data["name"] == "astation"
     assert data["api_version"] == 1
     assert "version" in data and "description" in data
+    # Without llm.profile_override the host refuses a completion on a named profile.
+    # Each extra capability is a consent prompt that fails closed on a headless install.
     assert data.get("capabilities") == ["llm.profile_override"], (
         f"the plugin should declare exactly llm.profile_override; got {data.get('capabilities')!r}"
     )
@@ -75,6 +77,7 @@ def test_plugin_api_exposes_a_module_level_router():
     assert "router" in names
 
 
+# Both publish paths must ship the same modules; testing only one let them drift.
 _PUBLISH_SCRIPTS = {
     "deploy_plugin.sh": "the owner's host",
     "build_plugin_repo.sh": "the public repo",
@@ -100,6 +103,7 @@ def test_every_publish_path_ships_every_module(script):
     only at the destination, and only when it is first needed.
     """
     text = _publish_script(script)
+    # A glob also satisfies this: the check is the outcome, not the style of the list.
     ships_all = "plugin/*.py" in text
     missing = [
         path.name
@@ -141,6 +145,7 @@ def test_plugin_api_has_no_import_time_side_effects_that_can_raise():
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
             func = node.value.func
             name = getattr(func, "id", None) or getattr(func, "attr", None)
+            # Any other module-level call can raise at import and 404 every route.
             assert name in {"getLogger"}, f"unguarded module-level call: {name}"
 
 

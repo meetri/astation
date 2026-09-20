@@ -19,6 +19,7 @@ transcribe_router = APIRouter(tags=["transcribe"])
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+# Enforced for the local provider only; a cloud provider exposes no pre-decode duration.
 MAX_AUDIO_DURATION_S = 150.0
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
@@ -50,6 +51,7 @@ def combined_vocab_hint(server_hint: str, request_hint: str | None) -> str | Non
     return ", ".join(parts) or None
 
 
+# Held across the load so a concurrent first request waits instead of loading its own.
 _MODEL_LOCK = threading.Lock()
 _MODEL: Any = None
 _MODEL_NAME: str | None = None
@@ -66,6 +68,7 @@ def _get_local_model(model_name: str) -> Any:
         return _MODEL
 
 
+# Module-level so tests can replace it with a fake engine instead of downloading a model.
 def transcribe_local(
     audio: bytes,
     *,
@@ -80,6 +83,7 @@ def transcribe_local(
         language=language or None,
         initial_prompt=initial_prompt,
     )
+    # info.duration is known before any segment decodes; the cap must be checked here.
     duration = getattr(info, "duration", None)
     if duration is not None and duration > MAX_AUDIO_DURATION_S:
         raise AudioTooLongError(float(duration))
@@ -192,6 +196,7 @@ def _transcription_response(result: dict[str, Any], *, provider: str, model: str
     }
 
 
+# MIME and extension are deliberately not gated; the decoder decides what is audio.
 @transcribe_router.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile,
@@ -226,6 +231,7 @@ async def transcribe_audio(
             )
         except AudioTooLongError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # A decode failure here means undecodable bytes, a client error: 422, not 500.
         except Exception as exc:
             raise HTTPException(
                 status_code=422,

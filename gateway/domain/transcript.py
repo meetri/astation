@@ -12,6 +12,7 @@ def _transcript(result: Any, count_key: str) -> tuple[int, Any]:
     messages = body.get("messages")
     if messages is None:
         messages = []
+    # A get() default never fires on an explicit null; the type is checked instead.
     count = body.get(count_key)
     if isinstance(count, bool) or not isinstance(count, int):
         count = len(messages) if isinstance(messages, (list, tuple)) else 0
@@ -23,6 +24,8 @@ TRANSCRIPT_DETAIL_LIGHT = "light"
 
 _REASONING_KEY = "reasoning"
 _REASONING_CONTENT_KEY = "reasoning_content"
+# args never leaves: a tool row has no row_id and could not fetch it back.
+# A blacklist, not a whitelist: a whitelist would delete row keys Hermes adds later.
 _LIGHT_OMITTED_KEYS = frozenset({_REASONING_KEY, _REASONING_CONTENT_KEY})
 
 
@@ -51,6 +54,7 @@ def _measure_reasoning(row: dict) -> tuple[bool, int]:
 
 def _reasoning_content_is_duplicate(row: dict) -> bool:
     """Whether `reasoning_content` is an exact copy of `reasoning` on this row."""
+    # Exact equality only: a reasoning_content differing by one character is content.
     if _REASONING_KEY not in row or _REASONING_CONTENT_KEY not in row:
         return False
     primary = row[_REASONING_KEY]
@@ -88,6 +92,7 @@ def _find_transcript_row(messages: Any, row_id: str) -> Any:
     for row in messages:
         if not isinstance(row, dict):
             continue
+        # Compared as strings: row_id is an int here but a path parameter is not.
         candidate = row.get("row_id")
         if isinstance(candidate, bool) or not isinstance(candidate, (int, str)):
             continue

@@ -99,6 +99,7 @@ class _Unsatisfiable:
 UNSATISFIABLE = _Unsatisfiable()
 
 
+# A malformed or multi-range header is ignored and the whole body served, per RFC 9110.
 def parse_range_header(header: str | None, size: int):
     """`None` (serve everything), `(start, end)` inclusive (206), or
     `UNSATISFIABLE` (416).
@@ -145,6 +146,7 @@ def _file_slice(path: Path, start: int, end: int) -> Iterator[bytes]:
             yield chunk
 
 
+# Callers must pass rows newest-first; the first row seen for a path is kept.
 def _collapse_to_latest(rows) -> list[dict]:
     """B-184: one row per `source_path`, the newest, plus how many rows it
     stands for as `versions`.
@@ -164,6 +166,7 @@ def _collapse_to_latest(rows) -> list[dict]:
     return ordered
 
 
+# Not a SQL filter: kind is derived from mime and extension, so limit counts unfiltered.
 def _filter_by_kind(rows: list[dict], kind: str | None) -> list[dict]:
     """Keep only rows of one kind."""
     if not kind:
@@ -261,6 +264,7 @@ def _tag_filter(db: OrmSession, query, tags: list[str]) -> tuple[list[str], Any]
 def _browse_filters(query, *, prefix: str | None, q: str | None, archived: ArchivedFilter):
     """Apply the scope-independent filters both listings share."""
     if prefix is not None:
+        # The trailing slash matters: a bare prefix puts /opt/data-old inside /opt/data.
         query = query.where(
             or_(
                 Artifact.source_path == prefix,
@@ -313,6 +317,7 @@ def _page(
 ) -> tuple[list[dict], str | None]:
     """One page of rows, and the cursor for the next one (`None` when last)."""
     if latest:
+        # The cursor is applied after the collapse; in SQL older saves would re-collapse.
         collapsed = _collapse_to_latest(db.execute(query).scalars())
         start = 0
         if position is not None:
@@ -472,6 +477,7 @@ async def list_artifacts(
                     "(e.g. 20260829_182532_991e3f), not a live handle"
                 ),
             )
+        # The join drops artifacts with no producing run; run_attributed_only says so.
         query = query.join(Run, Artifact.producing_run_id == Run.id).where(
             Run.runtime_session_id == stored_session_id
         )
@@ -532,6 +538,7 @@ def _folder_tree(
     for name, bucket in buckets.items():
         path = f"{base}/{name}"
         children = bucket["children"]
+        # None in children marks a file directly here, which is what blocks a collapse.
         while len(children) == 1 and None not in children:
             only = next(iter(children))
             path = f"{path}/{only}"

@@ -48,8 +48,10 @@ def completion_close(payload: Any) -> tuple[str, str | None]:
     return runs_ops.STATUS_COMPLETED, None
 
 
+# A compress emits these with no message.completed, so a run opened by one never closes.
 RUN_ATTACH_ONLY_TYPES: frozenset[str] = frozenset({"status.update"})
 
+# message.completed opens one too, so a turn this process joined late still gets a run.
 RUN_OPENING_TYPES: frozenset[str] = frozenset(
     {
         "message.started",
@@ -87,6 +89,7 @@ _REQUEST_LOOKUP_TYPES: frozenset[str] = frozenset(
     | SYNTHETIC_RESOLVED_TYPES
 )
 
+# Bounded because the request_id match runs in Python over JSON payloads, not in SQL.
 REQUEST_LOOKUP_LIMIT = 200
 
 
@@ -231,6 +234,7 @@ class RunRecorder:
                     "(logged once per session until a write succeeds)",
                     stored_id,
                 )
+            # A run that failed to open was rolled back; its id would name no row.
             if preexisting and record is not None:
                 self._stamp(envelope, record)
             return
@@ -273,6 +277,7 @@ class RunRecorder:
             profile=profile,
             now=now,
         )
+        # Flush first: run.id is a python-side default and is unset until the flush.
         db.flush()
         return _OpenRun(
             run_id=run.id,
@@ -339,6 +344,7 @@ class RunRecorder:
             payload = runs_ops.payload_dict(event)
             if payload.get("request_id") != request_id:
                 continue
+            # Already answered: a second resolved row would say it was answered twice.
             if event.event_type.endswith(_RESOLVED_SUFFIX):
                 return None
             return run, event

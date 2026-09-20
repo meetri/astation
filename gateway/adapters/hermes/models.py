@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+# A denylist: these fields make prompt.submit destructively rewrite session history.
 REWIND_FIELDS = frozenset(
     {
         "truncate_before_row_id",
@@ -14,8 +15,10 @@ REWIND_FIELDS = frozenset(
     }
 )
 
+# An approval is not a boolean; Hermes offers a subset of these per request.
 APPROVAL_CHOICES: tuple[str, ...] = ("once", "session", "always", "deny")
 
+# True is deliberately the narrowest yes, never the permanent allowlist entry.
 APPROVAL_CHOICE_FOR_APPROVED = {True: "once", False: "deny"}
 
 

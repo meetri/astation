@@ -55,6 +55,7 @@ _LLAMA_FTYPE_NAMES: dict[int, str] = {
 }
 
 
+# No Authorization header is ever sent: the list is public and this module holds no key.
 async def fetch_openrouter_models(
     *, timeout_s: float = FETCH_TIMEOUT_S
 ) -> dict[str, dict[str, Any]] | None:
@@ -66,6 +67,7 @@ async def fetch_openrouter_models(
             )
         response.raise_for_status()
         payload = response.json()
+    # None, not {}: "no answer" retries on the short failure TTL; "none" does not.
     except (httpx.HTTPError, ValueError) as exc:
         logger.info("OpenRouter model list unavailable: %s: %s", exc.__class__.__name__, exc)
         return None
@@ -288,6 +290,7 @@ def _local_entry_for(
         return None
     if model_id in probe:
         return probe[model_id]
+    # A llama.cpp server serves only the model it was launched with, whatever id it uses.
     if len(probe) == 1:
         return next(iter(probe.values()))
     return None
@@ -348,6 +351,7 @@ def _build_model(
     if hermes_free is True:
         row["free"] = True
 
+    # OpenRouter's live list overrides Hermes's on-disk price; it needs no key to read.
     if kind == KIND_OPENROUTER and openrouter:
         facts = openrouter.get(model_id)
         if isinstance(facts, dict):
@@ -481,6 +485,7 @@ async def build_catalog(
             else None
         )
         model_ids = model_ids_for(options, slug) or []
+        # Hermes lists no ids for a local provider it has not probed; our own probe does.
         if not model_ids and local_probe:
             model_ids = [mid for mid in local_probe if isinstance(mid, str) and mid]
         built_by_slug[slug] = {
@@ -573,6 +578,7 @@ def model_facts_for(
     kind = entry.get("kind", KIND_OTHER)
     if kind == KIND_LOCAL and row.get("local") is not None:
         source = SOURCE_LOCAL
+    # A name differing from the id means the public list answered for this row.
     elif kind == KIND_OPENROUTER and (
         row.get("context_length") is not None or row.get("name") != model_id
     ):
@@ -608,6 +614,7 @@ def price_lookup_from_catalog(
             if not isinstance(row, dict) or not isinstance(row.get("id"), str):
                 continue
             model_id = row["id"]
+            # First in catalog order wins, so a local model shadows a same-named remote.
             if model_id in table:
                 continue
             price = row.get("price_per_million")

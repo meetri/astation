@@ -25,8 +25,10 @@ sandbox_router = APIRouter(tags=["sandbox"])
 
 _STREAMED_STATUSES = frozenset({200, 206})
 
+# Hermes understood and refused these; a 502 instead would hide that from the caller.
 _PASSTHROUGH_CLIENT_ERRORS = frozenset({403, 404, 416})
 
+# An allowlist, not a copy: an upstream header this gateway has not vetted cannot leak.
 _DOWNLOAD_HEADER_ALLOWLIST = (
     "content-type",
     "content-length",
@@ -121,6 +123,7 @@ def _record_health(app_state: Any, ok: bool, detail: str) -> dict[str, Any]:
     return record
 
 
+# Startup makes no network call, so the first listing after boot is the startup check.
 def _check_listing_shape(app_state: Any, body: Any) -> None:
     """The free, continuous half of the health check: every listing verifies
     the measured contract as a side effect and refreshes the health record."""
@@ -131,6 +134,7 @@ def _check_listing_shape(app_state: Any, body: Any) -> None:
         _record_health(app_state, True, "listing answered in the measured shape")
 
 
+# Reports brokenness instead of raising: every failure path returns a health record.
 async def run_sandbox_health_check(app_state: Any, adapter: HermesAdapter) -> dict[str, Any]:
     """One explicit probe: list the sandbox root, verify the measured shape."""
     root = get_settings().hermes_sandbox_root
@@ -162,6 +166,7 @@ async def list_sandbox_files(
 ) -> dict:
     """List a sandbox directory, forwarded verbatim from Hermes."""
     settings = get_settings()
+    # Checked here too: Hermes's own confinement is undocumented and may change.
     target = validate_sandbox_path(
         path or settings.hermes_sandbox_root, settings.hermes_sandbox_root
     )
@@ -185,6 +190,7 @@ async def list_sandbox_files(
             ),
         ) from exc
     _check_listing_shape(request.app.state, body)
+    # Returned verbatim: the upstream route is undocumented, so nothing is reshaped.
     return body
 
 
@@ -198,6 +204,7 @@ async def download_sandbox_file(
     target = validate_sandbox_path(path, settings.hermes_sandbox_root)
     adapter: HermesAdapter = request.app.state.hermes_adapter
     try:
+        # The one file route left on Hermes: it already streams, ranges and confines.
         response = await adapter.files_download(target, range_header=request.headers.get("range"))
     except HermesError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

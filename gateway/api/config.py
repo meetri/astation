@@ -37,6 +37,7 @@ PROBE_HTTP_ERROR = "http_error"
 PROBE_NOT_JSON = "not_json"
 PROBE_NO_MODELS = "no_models"
 
+# Every probe URL is validated by this one spec, whatever capability the body names.
 _PROBE_URL_SPEC: ConfigKey = CONFIG_KEYS_BY_NAME["rewrite_base_url"]
 
 PROBE_OUTCOMES: tuple[str, ...] = (
@@ -118,6 +119,7 @@ def _probe_secrets(settings: Settings, used_key: str) -> list[str]:
     found: list[str] = []
     if used_key:
         found.append(used_key)
+    # Provider keys only: scrubbing the gateway's own short password mangles the text.
     for name in sorted(runtime_config.SECRET_CONFIG_KEYS):
         text = _secret_text(getattr(settings, name, None))
         if text and text not in found:
@@ -283,6 +285,7 @@ def models_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/models"
 
 
+# None, not []: "serves no models" and "not a models endpoint" are different answers.
 def models_from_payload(payload: Any) -> list[dict[str, Any]] | None:
     """The model list out of an OpenAI-compatible `/models` body, or None."""
     if isinstance(payload, dict):
@@ -319,6 +322,7 @@ async def probe_models_endpoint(
     """GET `{base}/models` and report, honestly, what happened."""
     url = models_url(base_url)
     headers = {"Accept": "application/json"}
+    # An empty key sends no Authorization header: "Bearer " with nothing is a 401.
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     result: dict[str, Any] = {
@@ -400,6 +404,7 @@ async def probe_provider(body: ProviderProbe) -> dict[str, Any]:
         )
 
     settings = get_settings()
+    # None borrows the stored key; "" is a real value meaning "send no Authorization".
     if body.api_key is None:
         api_key = _stored_key_for(settings, body.capability)
     else:

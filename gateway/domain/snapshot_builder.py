@@ -170,6 +170,7 @@ def _build_document(
             "source": "workspace" if parent_stored_id is not None else None,
         },
         "runs": runs,
+        # Verbatim, with no dedup or projection: an archive is storage, not bandwidth.
         "messages": messages if messages is not None else [],
         "background_results": background_results,
         "background_tasks": background_tasks,
@@ -180,6 +181,7 @@ def _build_document(
 
 def _content_checksum(messages: Any, background_results: list[dict[str, Any]]) -> str:
     rows = list(messages) if isinstance(messages, list) else []
+    # The checksum recipe is fixed: changing it invalidates every stored content hash.
     payload = json.dumps(
         rows + background_results, sort_keys=True
     )
@@ -196,6 +198,7 @@ async def _store_document(store: ArtifactStore, document_bytes: bytes) -> tuple[
         raise SnapshotStorageError(
             f"snapshot document is {len(document_bytes)} B, over the {MAX_INGEST_BYTES} B store cap"
         )
+    # mtime=0 keeps identical documents byte-identical for the content-addressed store.
     compressed = gzip.compress(document_bytes, mtime=0)
     try:
         _checksum, size, storage_key = await store.write_stream(_one_chunk(compressed))
@@ -239,6 +242,7 @@ async def take_snapshot(
     if reason not in SNAPSHOT_REASONS:
         raise ValueError(f"unknown snapshot reason {reason!r}; expected one of {SNAPSHOT_REASONS}")
 
+    # Resume on the session's own profile: the default connection answers "not found".
     resolved_profile = profile if profile is not None else _profile_for(stored_id, db)
     adapter: HermesAdapter = resolve_profile_adapter(app_state, resolved_profile)
     cache = resolve_live_handle_cache(app_state, resolved_profile)
@@ -292,6 +296,7 @@ async def take_snapshot(
             if isinstance(list_title, str) and list_title
             else (filing.title if filing is not None else None)
         )
+        # A change flag, not a size: it disagrees with the row count by design.
         list_count = (
             int_or_none(list_row.get("message_count")) if isinstance(list_row, dict) else None
         )
@@ -325,6 +330,7 @@ async def take_snapshot(
             ) from exc
         row.raw_bytes = len(document_bytes)
         row.checksum = hashlib.sha256(document_bytes).hexdigest()
+        # Bytes land before the row is inserted: never an index row without its bytes.
         row.storage_key, row.size_bytes = await _store_document(store, document_bytes)
         try:
             session.add(row)
@@ -445,6 +451,7 @@ def is_archived(
     *, archived_at: Any, has_filing: bool, missing: bool | None, snapshot_count: int
 ) -> bool:
     """The one predicate both the gateway and the app use for the Archived section."""
+    # missing is None means Hermes was unreachable, which is not the same as gone.
     return archived_at is not None or not has_filing or (missing is True and snapshot_count > 0)
 
 

@@ -17,6 +17,7 @@ from domain.hermes_runtime import (
 
 logger = logging.getLogger(__name__)
 
+# Hermes serves its compaction summaries as role: user rows; they are never prompts.
 SUMMARY_MARKERS: tuple[str, ...] = (
     "[Durable Summary",
     "[Session Arc Summary",
@@ -43,6 +44,7 @@ def newest_foreign_prompt(messages: Any) -> tuple[int, str] | None:
         if row.get("display_kind"):
             continue
         row_id = row.get("row_id")
+        # bool is an int subclass: without this check True would pass as a row id.
         if isinstance(row_id, bool) or not isinstance(row_id, int):
             continue
         text = row.get("text")
@@ -69,6 +71,7 @@ class ForeignPromptCapture:
         self._chat_store = chat_store
         self._schedule = schedule
         self._prompt_source = prompt_source
+        # Strong refs: asyncio holds only weak ones and would collect a live capture.
         self._tasks: set[Any] = set()
 
     def set_prompt_source(
@@ -85,10 +88,12 @@ class ForeignPromptCapture:
         except Exception:  # pragma: no cover - attach_turn guards itself
             logger.exception("attach_turn failed for run %s; treating as no waiting row", run_id)
             attached = 0
+        # Attaching nothing is the whole foreign-turn test: no prompt row was waiting.
         if attached:
             return False
         return self._spawn(profile, stored_id, run_id)
 
+    # Scheduled, not awaited: the caller is the event pump and a resume is a round trip.
     def _spawn(self, profile: str, stored_id: str, run_id: str) -> bool:
         coro = self.capture(profile, stored_id, run_id)
         try:

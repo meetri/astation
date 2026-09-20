@@ -27,6 +27,7 @@ sandbox_text_router = APIRouter(tags=["sandbox"])
 
 _TEXT_PASSTHROUGH = _PASSTHROUGH_CLIENT_ERRORS | frozenset({400, 413})
 
+# Mirrors Hermes's measured read-text cap; it is quoted to the user, not enforced.
 _HERMES_READ_TEXT_CAP = "512 KiB"
 
 
@@ -45,6 +46,7 @@ class TextWriteRequest(BaseModel):
     )
 
 
+# Hashes the decoded text, not the file bytes: text is what both sides hold.
 def _sha256_of_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -122,6 +124,7 @@ async def _read_current(backend: SandboxFS, target: str) -> dict[str, Any]:
         ) from exc
     problems = _read_text_shape_problems(body)
     if problems:
+        # Problems only: file contents are never logged, on success or on failure.
         logger.error(
             "Hermes read-text answered outside the measured shape for a "
             "sandbox path (%s) -- the editor routes may be broken",
@@ -141,6 +144,7 @@ async def read_sandbox_text(
 ) -> dict[str, Any]:
     """One sandbox file as text, with the hash the app must send back on save."""
     settings = get_settings()
+    # Hermes's fs/* routes confine nothing; this check is the only sandbox wall.
     target = validate_view_path(
         path, settings.hermes_sandbox_root, parse_roots(settings.research_gateway_view_roots)
     )
@@ -155,6 +159,7 @@ async def read_sandbox_text(
 async def write_sandbox_text(request: Request, payload: TextWriteRequest) -> Any:
     """Compare-then-write. Never writes when the compare fails."""
     settings = get_settings()
+    # Strict root, unlike GET: no setting can widen what this gateway writes.
     target = validate_sandbox_path(payload.path, settings.hermes_sandbox_root)
     adapter: HermesAdapter = request.app.state.hermes_adapter
     backend = sandbox_fs_for(request.app.state, adapter)
@@ -176,6 +181,7 @@ async def write_sandbox_text(request: Request, payload: TextWriteRequest) -> Any
             },
         )
 
+    # The compare above ran before an await; only the backend can close that gap.
     condition = current_view["sha256"] if backend.supports_conditional_write else None
     try:
         if condition is None:
@@ -192,5 +198,6 @@ async def write_sandbox_text(request: Request, payload: TextWriteRequest) -> Any
         await _raise_for_upstream(response, target, passthrough=_TEXT_PASSTHROUGH)
     await response.aclose()
 
+    # Re-read: the app's next hash must be of what the backend holds, not the sent text.
     fresh = await _read_current(backend, target)
     return _text_response(target, fresh)

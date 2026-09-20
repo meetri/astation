@@ -20,6 +20,7 @@ from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
 
+# message.completed would replace the app's streaming buffer; interim adds a segment.
 SYNTHESIZED_MESSAGE_EVENT_TYPE = "message.interim"
 
 SYNTHESIZED_FROM_FIELD = "_synthesized_from"
@@ -89,6 +90,7 @@ class BackgroundLedger:
         return len(rows)
 
 
+    # Orphan first, rescue second: from this instant the outcome is genuinely unknown.
     def handle_generation_change(self, generation: int | None, previous: int | None) -> None:
         """Orphan running rows, then schedule the re-resume rescue (P2-0b)."""
         try:
@@ -125,6 +127,7 @@ class BackgroundLedger:
             logger.warning("could not read the ledger for the rescue", exc_info=True)
             return 0
         rescued = 0
+        # Re-attaching is the point: a completion reaches only attached connections.
         for stored_id in stored_ids:
             try:
                 await _resume_for_live_id(self._adapter, stored_id, self._cache)
@@ -174,6 +177,7 @@ class BackgroundLedger:
             )
             return None
 
+        # The frame carries only a live handle; the ledger's row is the real mapping.
         if hint is None and stored_id:
             payload["_stored_session_id"] = stored_id
 
@@ -195,6 +199,7 @@ class BackgroundLedger:
             "project_id": envelope.get("project_id"),
             "session_id": envelope.get("session_id"),
             "run_id": envelope.get("run_id"),
+            # seq 0: the cursor counts frames Hermes sent, and it never sent this one.
             "seq": 0,
             "type": SYNTHESIZED_MESSAGE_EVENT_TYPE,
             "timestamp": envelope.get("timestamp")
@@ -242,6 +247,7 @@ def append_finished_background_results(
             exc_info=True,
         )
         return 0
+    # Appended at the end: a background turn has no Hermes row order to interleave with.
     for task in rows:
         messages.append(synthesized_transcript_row(task))
     return len(rows)

@@ -17,6 +17,7 @@ from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
 
+# Exceeding this is the designed unavailable path, not a crash; it bounds disk use.
 MAX_INGEST_BYTES = 256 * 1024 * 1024
 
 
@@ -41,11 +42,13 @@ class ArtifactStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
+    # The shard/name layout is pinned: changing it migrates stored files, not just rows.
     def storage_key_for(self, checksum: str) -> str:
         return f"{checksum[:2]}/{checksum}"
 
     def path_for_key(self, storage_key: str) -> Path:
         """Resolve a row's storage key to a real path, re-confined to the root."""
+        # Revalidated though the key is ours: a bad key must not escape the root.
         normalized = posixpath.normpath(storage_key)
         if normalized.startswith(("/", "..")) or "\x00" in normalized:
             raise ValueError(f"storage key {storage_key!r} escapes the artifact root")
@@ -78,6 +81,7 @@ class ArtifactStore:
             else:
                 os.replace(temp_path, final_path)
             return checksum, size, storage_key
+        # After a successful replace the temp name is gone; this covers the other paths.
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -100,6 +104,7 @@ def _artifact_json(artifact: Artifact) -> dict[str, Any]:
         "created_at": iso_z(artifact.created_at),
         "kind": kind_for(artifact.mime_type, artifact.source_path),
         "extension": extension_of(artifact.source_path),
+        # A star is per project, so it cannot be read off this row; filled in per scope.
         "bookmarked_at": None,
         "bookmarked": False,
         "archived_at": iso_z(artifact.archived_at) if artifact.archived_at else None,

@@ -137,6 +137,7 @@ def _annotate_filing_status(app_state: Any, result: Any) -> None:
         row["archived_at"] = filing.get("archived_at") if filing else None
 
 
+# Every {stored_session_id} path segment is Hermes's durable id, never a live handle.
 @sessions_router.post("/sessions/{stored_session_id}/resume")
 async def resume_session(
     stored_session_id: str,
@@ -158,7 +159,9 @@ async def resume_session(
         raise _http_error_from_hermes(exc, stored_id) from exc
 
     message_count, messages = _transcript(result, "message_count")
+    # Hermes keeps a tool call's args but not its result; captured rows restore them.
     _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
+    # A background turn leaves no Hermes transcript row; the ledger is the only record.
     message_count += append_finished_background_results(request.app.state, stored_id, messages)
     return {
         "stored_session_id": stored_id,
@@ -190,6 +193,7 @@ def pending_prompt_from_open_requests(result: Any, method: str) -> dict | None:
     return None
 
 
+# Newer Hermes replays a clarify only in open_requests; older builds still send the key.
 def _pending_prompt(result: Any, method: str) -> dict | None:
     """Hermes's own `pending_<method>` key when this build still sends one,
     the `open_requests` replay otherwise.
@@ -281,6 +285,7 @@ async def session_message_detail(
 class TurnSubmission(BaseModel):
     """Request body for `POST /api/sessions/{stored_session_id}/turns`."""
 
+    # Closed schema: no rewind/truncate key can reach prompt.submit from the wire.
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1)
@@ -303,6 +308,7 @@ class TurnSubmission(BaseModel):
         return reject_rewind_fields(data, submission="turn")
 
 
+# Hermes returns four different 200 outcomes; an unknown status must never read as sent.
 def _normalize_submit_status(acknowledgement: Any) -> tuple[str, bool]:
     """Pull the real outcome out of a `prompt.submit` acknowledgement (B-05o)."""
     raw = acknowledgement.get("status") if isinstance(acknowledgement, dict) else None
@@ -370,6 +376,7 @@ class NewFiledSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1)
+    # Hermes persists a session only once it has content, so a first turn is required.
     first_message: str = Field(min_length=1)
     profile: str = Field(default="default")
 
@@ -397,6 +404,7 @@ async def create_and_file_session(
 
     settings = get_settings()
     create_kwargs: dict[str, Any] = {}
+    # Honoured since Hermes 0.21.3; without it the session lands on the default profile.
     if body.profile and body.profile != "default":
         create_kwargs["profile"] = body.profile
     if await instructions_file_exists(

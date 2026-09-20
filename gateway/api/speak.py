@@ -91,6 +91,7 @@ TTS_PROVIDERS: dict[str, TTSProvider] = {
         keyless=True,
         shipped=True,
         mime="audio/mpeg",
+        # Edge lists by locale, so "the first voice" is Afrikaans; used only if probed.
         preferred_voice="en-US-EmmaMultilingualNeural",
     ),
     "kittentts": TTSProvider(
@@ -166,6 +167,7 @@ EDGE_TIMEOUT_S = 30.0
 MAX_VOICES = 500
 
 
+# Held across the load: two concurrent first requests must not both load the model.
 _VOICE_LOCK = threading.Lock()
 _VOICES: dict[str, Any] = {}
 
@@ -182,6 +184,7 @@ def piper_installed_voices(directory: Path) -> list[dict[str, Any]]:
     voices: list[dict[str, Any]] = []
     for model in sorted(directory.glob("*.onnx")):
         config = model.with_suffix(".onnx.json")
+        # A lone .onnx is a half-finished download: the .json holds the sample rate.
         if not config.is_file():
             logger.warning(
                 "piper voice %s has no %s beside it; skipping (incomplete download)",
@@ -299,6 +302,7 @@ async def synthesize_edge(text: str, *, voice: str, rate: str) -> bytes:
     return b"".join(frames)
 
 
+# No provider field on purpose: a request must not route the text to another service.
 class SpeakRequest(BaseModel):
     """Body for `POST /api/speak`."""
 
@@ -385,6 +389,7 @@ def default_voice_id(voices: list[dict[str, Any]], spec: TTSProvider) -> str | N
     return str(voices[0]["id"])
 
 
+# A requested voice is 422, a configured one 503: a bad setting is not a bad request.
 def resolve_voice(
     voices: list[dict[str, Any]],
     *,

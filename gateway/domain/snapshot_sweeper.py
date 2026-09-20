@@ -62,6 +62,7 @@ class _HandleRecorder:
     def __init__(self) -> None:
         self.live_id: str | None = None
 
+    # Always answers "nothing cached": the sweep must never seed the shared handle cache.
     def get(self, stored_id: str) -> str | None:
         return None
 
@@ -90,6 +91,7 @@ class _HeldSession(OrmSession):
         super().__init__(*args, **kwargs)
         self.commit_requested = False
 
+    # Records the request only; the sweep commits or rolls back after the checksum test.
     def commit(self) -> None:  # type: ignore[override]
         self.commit_requested = True
 
@@ -97,6 +99,7 @@ class _HeldSession(OrmSession):
         super().commit()
 
 
+# active_list carries the stored id as session_key; its "id" is the live handle.
 def _rows_by_stored_id(result: Any, key: str) -> dict[str, dict[str, Any]]:
     """`{stored_id: row}` for every dict row whose `key` is a non-empty string."""
     sessions = result.get("sessions") if isinstance(result, dict) else None
@@ -147,6 +150,7 @@ def _change_reason(
     """Why a listed candidate needs a snapshot, or None when its copy is current."""
     if prior is None:
         return "no_snapshot"
+    # message_count is a change flag, not a size: test difference, never growth.
     if int_or_none(list_row.get("message_count")) != prior.list_message_count:
         return "message_count"
     if newest_run is not None and newest_run > prior.taken_at:
@@ -240,6 +244,7 @@ class SnapshotSweeper:
     async def _run_timer(self) -> None:
         if self.startup_delay_s > 0:
             await asyncio.sleep(self.startup_delay_s)
+        # Waits for a connection, never opens one: startup must not exercise credentials.
         while not self._adapter().is_connected:
             await asyncio.sleep(self.connect_poll_s)
         while True:
@@ -305,6 +310,7 @@ class SnapshotSweeper:
             was_live = stored in active
             if was_live:
                 status = active[stored].get("status")
+                # Only an exact "idle" may proceed; a missing status counts as working.
                 if status != ACTIVE_IDLE_STATUS:
                     skipped[stored] = active_skip_reason(status)
                     continue
@@ -377,12 +383,14 @@ class SnapshotSweeper:
         finally:
             held.close()
             minted = recorder.live_id
+            # Only a handle this pass minted is closed; the app's own is left alone.
             if minted is not None and not was_live and not had_cached:
                 await self._close_footprint(stored, minted)
 
     async def _close_footprint(self, stored: str, live_id: str) -> None:
         """`session.close` the handle this pass minted. Best-effort, never raises."""
         try:
+            # No _with_reconnect: a handle dies with its socket, so a retry is pointless.
             result = await self._adapter().session_close(live_id)
         except Exception as exc:
             logger.warning("snapshot sweep: session.close for %s raised: %s", stored, exc)

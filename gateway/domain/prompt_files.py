@@ -15,14 +15,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT_SUBDIR = "astation/prompts"
 
+# The file name describes the prompt, not the wire style: "explain" reads code.md.
 PROMPT_FILE_FOR_STYLE: dict[str, str] = {
     "listen": "listen.md",
     "document": "document.md",
     "explain": "code.md",
 }
 
+# Not in PROMPT_FILE_FOR_STYLE: it is not a rewrite style, and /api/rewrite rejects it.
 HANDOFF_PROMPT_FILE = "handoff.md"
 
+# full and raw are absent on purpose: full is the style prompt, raw never reaches one.
 PROMPT_FILE_FOR_DEPTH: dict[str, str] = {
     "brief": "depth-brief.md",
     "medium": "depth-medium.md",
@@ -89,6 +92,7 @@ class PromptFileStore:
         if raw is None:
             return None
         text = raw.strip()
+        # An empty file means "use the setting", so clearing one in the editor reverts.
         if not text:
             return None
         if len(text) > MAX_PROMPT_CHARS:
@@ -108,6 +112,7 @@ def hermes_prompt_reader(
     """A reader that fetches prompt files through the sandbox backend."""
 
     async def read(path: str) -> str | None:
+        # Hermes's own fs/read-text confines nothing: measured, it reads /etc/passwd.
         if not is_under_root(posixpath.normpath(path), sandbox_root):
             logger.warning(
                 "prompt directory %r is outside the sandbox root %r; "
@@ -117,6 +122,7 @@ def hermes_prompt_reader(
                 sandbox_root,
             )
             return None
+        # Resolved per call, never captured: tests replace the adapter after startup.
         adapter = getattr(app_state, "hermes_adapter", None)
         if adapter is None:
             return None

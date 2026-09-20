@@ -20,6 +20,7 @@ def _new_event_id() -> str:
     return f"evt_{uuid.uuid4().hex}"
 
 
+# Public so the caller can name the type this module declined, without re-deriving it.
 def raw_event_type(raw_event: dict[str, Any]) -> str | None:
     """Extract the event name from a raw Hermes event dict."""
     return raw_event.get("method") or raw_event.get("type")
@@ -30,6 +31,7 @@ def _raw_params(raw_event: dict[str, Any]) -> dict[str, Any]:
     params = raw_event.get("params", raw_event.get("payload"))
     if isinstance(params, dict):
         return params
+    # params/payload stay excluded here so a non-dict value cannot leak into the body.
     return {
         k: v
         for k, v in raw_event.items()
@@ -37,6 +39,7 @@ def _raw_params(raw_event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# None covers both a dropped name and an unseen one; the caller tells them apart.
 def normalize_event(
     raw_event: dict[str, Any],
     context: EventContext,
@@ -52,6 +55,7 @@ def normalize_event(
     payload = dict(_raw_params(raw_event))
 
     if method in MERGED_RAW_EVENTS:
+        # Assigned, not setdefault: an upstream key must not fake this provenance.
         payload["_raw_type"] = method
 
     if method in EXPIRY_RAW_EVENTS:

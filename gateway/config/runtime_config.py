@@ -653,6 +653,7 @@ def _validate_bool(spec: ConfigKey, raw: Any) -> bool:
 
 
 def _validate_number(spec: ConfigKey, raw: Any, *, integer: bool) -> Any:
+    # bool is an int subclass, so True would otherwise pass as a number.
     if isinstance(raw, bool):
         raise ConfigValueError(f"{spec.key} must be a number; got {raw!r}")
     if isinstance(raw, str):
@@ -752,6 +753,7 @@ def read_overlay(path: str | os.PathLike[str]) -> OverlayLoad:
 
     load = _parse_overlay(Path(path))
     after = _stamp(Path(path))
+    # Cached only if the file did not move under the read: a torn read must not stick.
     if after == before:
         with _CACHE_LOCK:
             _CACHE[key] = (before, load)
@@ -800,6 +802,7 @@ def _parse_overlay(path: Path) -> OverlayLoad:
         try:
             values[name] = validate_value(spec, raw_value)
         except ConfigValueError as exc:
+            # The message only, never the value: a rejected secret must not reach a log.
             problems.append(str(exc))
     return OverlayLoad(values=values, present=True, problems=tuple(problems))
 
@@ -809,6 +812,7 @@ def write_overlay(path: str | os.PathLike[str], values: dict[str, Any]) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"version": OVERLAY_VERSION, "values": values}, indent=2, sort_keys=True)
+    # The temp file sits in the destination directory so os.replace is an atomic rename.
     temporary = destination.with_name(f".{destination.name}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, OVERLAY_FILE_MODE)
     try:
@@ -816,6 +820,7 @@ def write_overlay(path: str | os.PathLike[str], values: dict[str, Any]) -> None:
             handle.write(payload + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # chmod as well: umask can clear bits from the mode os.open was given.
         os.chmod(temporary, OVERLAY_FILE_MODE)
         os.replace(temporary, destination)
     except BaseException:

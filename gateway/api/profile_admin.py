@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 profile_admin_router = APIRouter(tags=["profile-admin"])
 
+# Also the argv gate: a leading '-' would be read as a CLI option, not a name.
 PROFILE_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,39}$"
 _PROFILE_NAME = re.compile(PROFILE_NAME_PATTERN)
 
@@ -41,6 +42,7 @@ MAX_DESCRIPTION_CHARS = 500
 
 HERMES_CONFIG_SET_ARGV: tuple[str, ...] = ("config", "set")
 _PROVIDER_SLUG = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+# key_env is deliberately absent: a keyed endpoint stays a hand edit.
 _MIRRORED_PROVIDER_KEYS: tuple[str, ...] = ("name", "base_url", "discover_models")
 
 
@@ -248,6 +250,7 @@ def _cli_succeeded(result: Any) -> tuple[bool, Any, str]:
     return succeeded, code, said
 
 
+# Without this the model write lands but the agent's first turn fails: unknown provider.
 async def _mirror_provider_into_profile(
     request: Request, options: dict[str, Any], name: str, provider: str
 ) -> None:
@@ -390,6 +393,7 @@ async def set_profile_model(
     result = await _hermes(
         request, lambda: adapter.profiles_configure(name, provider=body.provider, model=body.model)
     )
+    # ok alone is not proof; Hermes reports the per-field outcome under applied.
     applied = result.get("applied") if isinstance(result, dict) else None
     if (
         not isinstance(result, dict)
@@ -462,6 +466,7 @@ async def update_profile(
     _require_row(rows, name)
     adapter: HermesAdapter = request.app.state.hermes_adapter
 
+    # Description first, under the old name, so a failed rename leaves a known name.
     if body.description is not None:
         result = await _hermes(
             request, lambda: adapter.profiles_configure(name, description=body.description)
@@ -486,6 +491,7 @@ async def update_profile(
             )
         argv = [*HERMES_PROFILE_RENAME_ARGV, name, body.name]
         await _run_cli(request, argv, f"profile rename {name} {body.name}")
+        # Renaming default moves only its display name; the profile id stays "default".
         if name == DEFAULT_PROFILE_NAME:
             renamed_display_only = True
         else:
@@ -520,6 +526,7 @@ async def delete_profile(
         )
     rows = await _profile_rows(request)
     row = _require_row(rows, name)
+    # A second gate: the default profile can be listed under some other name.
     if row.get("is_default") is True:
         raise HTTPException(status_code=409, detail="the default profile cannot be deleted")
 

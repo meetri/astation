@@ -11,9 +11,11 @@ from domain.sandbox_paths import is_under_root
 
 DEFAULT_WORKSPACE_SUBDIR = "astation/projects"
 
+# HERMES.md is read first and, unlike AGENTS.md, does not flip on coding posture.
 INSTRUCTIONS_FILENAME = "HERMES.md"
 
 
+# Baked into the system prompt at session create; an edit reaches later sessions only.
 INSTRUCTIONS_SEED = """## Filing what you produce
 
 Files you write in this folder are kept automatically. Put anything worth
@@ -72,6 +74,7 @@ async def ensure_instructions_file(fs: SandboxFS, settings: Any, project_id: str
     directory = workspace_dir(settings, project_id)
     path = instructions_path(settings, project_id)
 
+    # PUT /api/sandbox/text cannot create a file or a parent dir; both happen here.
     mkdir_response = await fs.files_mkdir(directory)
     if mkdir_response.status_code not in (200, 201):
         raise HermesError(
@@ -89,6 +92,7 @@ async def instructions_file_exists(fs: SandboxFS, settings: Any, project_id: str
     """Whether a `HERMES.md` is present in the project's workspace."""
     if not is_within_sandbox(settings, project_id):
         return False
+    # Unreadable counts as absent, so cwd stays at Hermes's default.
     try:
         response = await fs.fs_read_text(instructions_path(settings, project_id))
     except HermesError:

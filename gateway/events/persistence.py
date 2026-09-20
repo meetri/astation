@@ -12,12 +12,14 @@ from domain.models import RunEvent
 PERSISTED_RUN_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "message.started",
+        # message.interim carries each segment's full text, so no segment is lost.
         "message.interim",
         "message.completed",
         "tool.generating",
         "tool.started",
         "tool.progress",
         "tool.completed",
+        # approval.resolved and clarify.resolved are gateway-authored; no raw producer.
         "approval.requested",
         "approval.resolved",
         "clarify.requested",
@@ -83,8 +85,10 @@ def persist_run_event(
     timestamp: datetime,
 ) -> RunEvent:
     """Write one `run_events` row."""
+    # No commit or flush: the caller batches a whole forwarded frame into one commit.
     run_event = RunEvent(
         run_id=run_id,
+        # The caller-allocated per-run cursor, never the broadcaster's global counter.
         seq=seq,
         event_type=event_type,
         payload_json=payload,

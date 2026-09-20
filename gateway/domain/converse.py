@@ -10,6 +10,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.\-/]*")
 
 _SPLIT_RE = re.compile(r"[_.\-/]+")
 
+# Short on purpose: an aggressive stopword list starts deleting research vocabulary.
 STOPWORDS: frozenset[str] = frozenset(
     [
         "a",
@@ -199,6 +200,7 @@ def content_terms(text: str) -> list[str]:
     seen: set[str] = set()
     terms: list[str] = []
     for token in tokenize(text):
+        # Floor is 2, not 3: two-character terms (8b, s3, db, pr) carry real signal.
         if len(token) < 2 or token in STOPWORDS or token in seen:
             continue
         seen.add(token)
@@ -313,6 +315,7 @@ def select_context(
     per_unit_chars: int | None = None,
 ) -> Selection:
     """Choose the window: recency anchor first, then lexical relevance."""
+    # A single 40 KB record must not take the whole window; cap it at a quarter.
     if per_unit_chars is None:
         per_unit_chars = max(400, budget_chars // 4)
 
@@ -351,17 +354,20 @@ def select_context(
         used += len(text)
         return True
 
+    # Anchors go in even at score zero: "what did we just do" has no lexical hook.
     for unit in anchors:
         score, matched = scores_by_unit[id(unit)]
         take(unit, "anchor", score, matched)
 
     by_kind: dict[str, list[tuple[ContextUnit, float, tuple[str, ...]]]] = {}
     for entry in sorted(scored, key=lambda e: (-e[1], -e[0].order)):
+        # Never select a zero-score unit: padding the window is what invents answers.
         if entry[1] <= 0 or id(entry[0]) in anchor_refs:
             continue
         by_kind.setdefault(entry[0].kind, []).append(entry)
     rotation = sorted(by_kind, key=lambda kind: -by_kind[kind][0][1])
     cursors = dict.fromkeys(rotation, 0)
+    # One unit per kind in rotation: a burst of same-kind rows must not bury the rest.
     while any(cursors[kind] < len(by_kind[kind]) for kind in rotation):
         for kind in rotation:
             index = cursors[kind]
@@ -397,6 +403,7 @@ def select_context(
 def render_context(selection: Selection) -> str:
     """The numbered context block put in front of the question."""
     blocks: list[str] = []
+    # The header carries no raw id: a model told to speak the answer would read it out.
     for entry in selection.units:
         unit = entry.unit
         when = f", {unit.timestamp}" if unit.timestamp else ""

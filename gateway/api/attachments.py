@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 attachments_router = APIRouter(tags=["attachments"])
 
+# Deliberately unauthenticated: the priming curl runs with no gateway credential.
 attachment_serve_router = APIRouter(tags=["attachments"])
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -58,6 +59,7 @@ def sanitize_filename(raw: str | None) -> str:
     """A sandbox-safe, shell-inert filename from whatever the picker sent."""
     base = posixpath.basename((raw or "").replace("\\", "/")).strip()
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+    # Leading dots stripped: no hidden file, and no ".." reaching the sandbox path.
     cleaned = cleaned.lstrip(".")
     if len(cleaned) > 80:
         stem, dot, ext = cleaned.rpartition(".")
@@ -87,6 +89,7 @@ def kind_for_mime(mime_type: str) -> str:
 
 def reference_text_for(attachment: Attachment) -> str | None:
     """What the app appends to the user's message for a document attachment."""
+    # Images return None: image.attach already referenced them into the conversation.
     if attachment.kind != "document" or attachment.state != STATE_ATTACHED:
         return None
     return (
@@ -101,6 +104,7 @@ def _attachment_json(attachment: Attachment) -> dict[str, Any]:
     the token is the capability itself and the key is store-internal (§14).
     `attach_result` is scrubbed of `serve_url` for the same reason -- it
     embeds the token (found leaking in the live rehearsal's own output)."""
+    # serve_url embeds the capability token; it must not reach the app's JSON.
     attach_result = attachment.attach_result_json
     if isinstance(attach_result, dict):
         attach_result = {k: v for k, v in attach_result.items() if k != "serve_url"}
@@ -142,6 +146,7 @@ def _serve_base_url(request: Request) -> str:
     configured = get_settings().research_gateway_public_base_url.strip()
     if configured:
         return configured.rstrip("/")
+    # The Host fallback holds only when phone and sandbox host reach the same address.
     host = request.headers.get("host", "")
     if not host:
         raise HTTPException(
@@ -210,6 +215,7 @@ async def upload_attachment(
     db.add(attachment)
     db.commit()
 
+    # No Hermes call on this path: a prompt turn takes minutes, so the attach is async.
     orchestrator: AttachmentOrchestrator = request.app.state.attachment_orchestrator
     orchestrator.start_attach(attachment.id)
     return {"attachment": _attachment_json(attachment)}
@@ -261,6 +267,7 @@ async def serve_attachment(token: str, request: Request):
         ).scalar_one_or_none()
         if row is None or not secrets.compare_digest(row.serve_token, token):
             raise HTTPException(status_code=404, detail="not found")
+        # Refused once the row is terminal: the token copy in the transcript goes dead.
         if row.state in TERMINAL_STATES:
             raise HTTPException(
                 status_code=410,

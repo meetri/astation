@@ -50,8 +50,10 @@ STALE_CLOSED_EXPLANATION = (
     "and the completion event never arrived (B-62)"
 )
 
+# Shorter would race a just-started turn Hermes has not listed as active yet.
 STALE_GRACE_SECONDS = 60.0
 
+# Only this exact status may close a run; any other value means possibly still working.
 HERMES_IDLE_STATUS = "idle"
 
 
@@ -91,6 +93,7 @@ def _run_age_seconds(run: Run, now: datetime) -> float | None:
     started = run.started_at
     if started is None:
         return None
+    # SQLite returns started_at naive; the recorder only ever writes UTC.
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     return (now - started).total_seconds()
@@ -116,6 +119,7 @@ async def _reconcile_stale_running(request: Request, db: OrmSession, rows: list[
     closed: list[str] = []
     for profile, runs_for_profile in by_profile.items():
         try:
+            # Another connection lists these sessions as absent, which reads as finished.
             if not profile_is_observable(request.app.state, profile):
                 logger.info(
                     "staleness reconciliation skipped for profile %r "
@@ -149,6 +153,7 @@ async def _reconcile_stale_running(request: Request, db: OrmSession, rows: list[
         statuses: dict[str, Any] = {}
         for entry in sessions if isinstance(sessions, list) else []:
             if isinstance(entry, dict):
+                # session_key is the STORED session id, matching Run.runtime_session_id.
                 key = entry.get("session_key")
                 if isinstance(key, str) and key:
                     statuses[key] = entry.get("status")
