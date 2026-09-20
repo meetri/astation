@@ -1,72 +1,4 @@
-"""`ChatStore` -- the read/write interface over `chat_messages`.
-
-See `docs/CHAT_HISTORY_DESIGN.md` §3/§4 for the design this implements.
-Follows the same shape as the P2-1/P2-2 ledgers (`api/background.py`'s
-`BackgroundLedger`, `api/runs.py`'s `RunRecorder`): owns its own
-`sessionmaker`, opens a session per call, and never raises past its own
-per-event entry point -- a chat-history write failing must never take down
-the event pump or the turn-submit route it rides inside.
-
-## What gets captured, and the idempotency rule
-
-These write rows here:
-
-* `message.interim` (a segment finished) -> one `assistant` row.
-* `tool.completed` (raw wire name `tool.complete`) -> one `tool` row.
-* `message.completed` (turn finished) -> one `assistant` row, carrying the
-  turn's full reasoning (D-3, never truncated). The design note "plus record
-  the turn's final usage" is NOT implemented here -- `chat_messages` (§4) has
-  no usage/token column, and `session.usage` is already durable in
-  `run_events` (`events/persistence.py::PERSISTED_RUN_EVENT_TYPES`) via
-  `RunRecorder`. Recording it a second time in this table would need a schema
-  change this migration does not make; flagged rather than silently
-  invented.
-* `status.update` -> one `marker` row for three notices, text verbatim
-  (B-191; `RUN_EVENT_UX_AUDIT.md` §2.3):
-  - `kind == "compacted"`: a bookmark that a compaction happened
-    (`compacted=True`). Compaction never deletes Hermes's own rows (§1.4),
-    so nothing needs backfilling around it.
-  - `kind == "lifecycle"` whose text names Hindsight (measured: "👁️
-    Hindsight — recalled 43 memories"): the turn's memory-recall fact,
-    which the app renders as a durable note row at the top of the turn.
-  - `kind == "process"`: a background process ended.
-  Every other notice is forwarded live and recorded nowhere here -- in
-  particular the compression warning ("Session compressed N times …", kind
-  `lifecycle`), which repeats on every step of a turn and whose count is
-  already durable in `session.usage.compressions`.
-* the gateway's own turn-submit route -> one `user` row, written via
-  `capture_submitted_user_row` BEFORE Hermes is called (so a durable copy of
-  what the user typed exists even if the Hermes call then fails; the route
-  calls `discard_row` in that case).
-* `domain/foreign_prompt_capture.py` -> one `user` row with
-  `source="backfill"` and its `hermes_row_id`, for a turn started from
-  Hermes's own TUI or another client -- the one prompt the submit route
-  never sees. Written via `capture_backfilled_user_row`.
-
-**Idempotency ("use `hermes_row_id` where you have it, else the event's own
-natural key"):** none of the three live event payloads Hermes actually pushes
-(`message.interim`, `tool.complete`, `message.complete`) carry a Hermes-side
-row id on the wire -- only the transcript rows `session.resume` /
-`session.history` return do. `hermes_row_id`
-is therefore populated by backfill, not by live capture, and this store's
-live-capture idempotency has to substitute something else:
-
-* `tool.completed` carries Hermes's own `tool_id` (verified live,
-  `docs/PROTOCOL_VERIFIED.md`'s `tool.complete` capture) -- mapped onto the
-  `tool_call_id` column, which *is* a stable natural key, so a redelivered
-  `tool.completed` for the same `tool_id` is detected directly.
-* `message.interim` / `message.completed` / the compaction marker carry no
-  id of any kind. This store's chosen natural key for those is "the same
-  (profile, stored_session_id) pair's most recently captured row is
-  byte-identical in every column this event would write" -- i.e. a redelivery
-  right behind the original is caught; two genuinely distinct occurrences of
-  identical text are extremely rare for prose and are not what "redelivered"
-  means here (the codebase's own measurements elsewhere record that nothing
-  buffers or replays the live stream, so an exact redelivery is itself a rare
-  edge, not routine traffic). This is a judgment call the design doc leaves
-  open ("the event's own natural key") and is recorded here rather than
-  silently assumed.
-"""
+"""`ChatStore` -- the read/write interface over `chat_messages`."""
 
 from __future__ import annotations
 
@@ -83,34 +15,20 @@ from .models import ChatMessage, new_id, utcnow
 
 logger = logging.getLogger(__name__)
 
-#: B-29 identity key, by literal (same import-cycle avoidance as `api/runs.py`
-#: and `api/background.py`; pinned equal to `api.main.STORED_SESSION_ID_FIELD`
-#: by `tests/test_chat_store.py`).
 _STORED_SESSION_ID_FIELD = "_stored_session_id"
 
-#: Canonical event types this store captures live, per
-#: `docs/CHAT_HISTORY_DESIGN.md` §3's table. Everything else is a no-op.
 CAPTURED_EVENT_TYPES: frozenset[str] = frozenset(
     {"message.interim", "tool.completed", "message.completed", "status.update"}
 )
 
-#: `status.update` kinds captured as marker rows outright. A
-#: `lifecycle` notice is captured only when its text names Hindsight.
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
 _LIFECYCLE_STATUS_KIND = "lifecycle"
-#: Measured 2026-08-29 (`tests/test_event_normalizer.py`'s live capture):
-#: "👁️ Hindsight — recalled 32 memories". Matched on the product name only,
-#: since the glyph and the dash have both varied across Hermes builds.
 MEMORY_RECALL_MARKER = "Hindsight"
 
-#: `notice_kind` values on a `marker` row (`_row_dict`), derived -- no column.
 NOTICE_KIND_COMPACTED = "compacted"
 NOTICE_KIND_MEMORY = "memory"
 NOTICE_KIND_PROCESS = "process"
 
-#: How many times `_write` retries after a `seq` collision (a genuine race
-#: between two writers for the same (profile, stored_session_id), not a
-#: duplicate-content skip -- see `_write`'s docstring) before giving up.
 _MAX_SEQ_RETRIES = 5
 
 
@@ -123,15 +41,7 @@ def _turn_id(envelope: Any) -> str | None:
 
 
 def notice_kind(row: ChatMessage) -> str | None:
-    """Which notice a `marker` row is, for the app to render without re-parsing.
-
-    Derived from the row, not stored: `compacted` from the flag,
-    `memory` when the text names Hindsight, and `process` for the only other
-    marker this store writes. Null for every non-marker row. If a fourth
-    marker source is ever added, it needs its own rule here -- the fallback
-    is `process` because that is the one remaining writer today, not
-    because "unknown" means process.
-    """
+    """Which notice a `marker` row is, for the app to render without re-parsing."""
     if row.role != "marker":
         return None
     if row.compacted:
@@ -167,12 +77,7 @@ def _row_dict(row: ChatMessage) -> dict[str, Any]:
 
 
 def _is_captured_notice(kind: Any, text: Any) -> bool:
-    """Whether a `status.update` earns a marker row (B-191, module docstring).
-
-    `compacted` and `process` by kind; `lifecycle` only when the text names
-    Hindsight -- the other lifecycle notice measured live is the per-step
-    compression warning, which is deliberately not a row.
-    """
+    """Whether a `status.update` earns a marker row (B-191, module docstring)."""
     if kind in _MARKER_STATUS_KINDS:
         return True
     if kind == _LIFECYCLE_STATUS_KIND:
@@ -181,17 +86,11 @@ def _is_captured_notice(kind: Any, text: Any) -> bool:
 
 
 class ChatStore:
-    """The durable chat-history read/write surface (`chat_messages`).
-
-    One instance per gateway process (`app.state.chat_store`, built in
-    `api.main.lifespan` alongside the other P1/P2 ledgers), shared by every
-    `ProfileConnection`'s capture hook and by the turn-submit route.
-    """
+    """The durable chat-history read/write surface (`chat_messages`)."""
 
     def __init__(self, session_factory: sessionmaker[OrmSession]) -> None:
         self._session_factory = session_factory
 
-    # -- writes -----------------------------------------------------------
 
     def capture_submitted_user_row(
         self,
@@ -201,13 +100,7 @@ class ChatStore:
         text: str,
         turn_id: str | None = None,
     ) -> str:
-        """Write the user's own row, BEFORE Hermes is asked to act on it.
-
-        Always inserts (never treated as a possible duplicate): a submit is a
-        fresh user action every time, and the caller (the turn-submit route)
-        calls `discard_row(row_id)` itself if the subsequent Hermes call
-        fails. Returns the new row's id.
-        """
+        """Write the user's own row, BEFORE Hermes is asked to act on it."""
         with self._session_factory() as db:
             return self._insert(
                 db,
@@ -220,21 +113,7 @@ class ChatStore:
             )
 
     def attach_turn(self, profile: str, stored_session_id: str, turn_id: str) -> int:
-        """Give the user row that started `turn_id` its run id.
-
-        The submit route writes the user's row BEFORE Hermes is called, so
-        no run exists yet to stamp it with; `RunRecorder` reports the open
-        (`on_run_opened`) and this attaches the run to the newest user row of
-        that session that has no turn yet. One row at most: a message
-        Hermes queued behind a running turn keeps waiting for its own run,
-        and one it folded into the running reply (a steer) is left with no
-        turn of its own, which is what happened to it.
-
-        Positional arguments, deliberately: this is the exact
-        `(profile, stored_id, run_id)` shape `RunRecorder.on_run_opened`
-        calls with. Returns how many rows were attached (0 or 1). Never
-        raises past this method -- a miss here costs one link, not the run.
-        """
+        """Give the user row that started `turn_id` its run id."""
         try:
             with self._session_factory() as db:
                 row = db.execute(
@@ -271,18 +150,7 @@ class ChatStore:
         hermes_row_id: int,
         turn_id: str | None,
     ) -> str | None:
-        """Write a user prompt read back from Hermes's own transcript.
-
-        The foreign-prompt path (`domain/foreign_prompt_capture.py`): a turn
-        started from the TUI or another client has no submit-route row, so
-        its prompt is read from `session.resume` and stored here with
-        `source="backfill"` and the Hermes `row_id` it came with. Idempotent
-        on `hermes_row_id` (the store's strongest natural key, module
-        docstring): a row already stored for this `(profile, session,
-        hermes_row_id)` is a no-op and returns None, so a repeated run open
-        for the same turn cannot duplicate it. Raises on a DB failure --
-        the caller owns the best-effort guard.
-        """
+        """Write a user prompt read back from Hermes's own transcript."""
         return self._write(
             profile,
             stored_session_id,
@@ -301,25 +169,7 @@ class ChatStore:
         text: str,
         turn_id: str,
     ) -> str | None:
-        """Write a foreign turn's user prompt as delivered by a Hermes plugin hook.
-
-        Same job as `capture_backfilled_user_row`, different source. That one
-        reads the prompt back out of Hermes's transcript with a whole
-        `session.resume` (up to 1.6 MB) and dedups on the `hermes_row_id` the
-        transcript carries. A `pre_llm_call` hook hands the same text over
-        in-process for nothing -- but carries **no** Hermes row id, so it needs
-        a different natural key.
-
-        The key is `(profile, stored_session_id, turn_id)` with `role="user"`:
-        a run has exactly one user prompt, so a second user row for a run this
-        store has already recorded one for is by definition a duplicate. That
-        makes a repeated run-open, or a hook and a transcript read racing for
-        the same turn, a no-op returning None.
-
-        `turn_id` is required here, unlike on the backfill path -- without it
-        there is no key at all and the row could duplicate silently on every
-        retry. Raises on a DB failure; the caller owns the best-effort guard.
-        """
+        """Write a foreign turn's user prompt as delivered by a Hermes plugin hook."""
         with self._session_factory() as db:
             duplicate = db.execute(
                 select(ChatMessage.id).where(
@@ -342,34 +192,13 @@ class ChatStore:
             )
 
     def discard_row(self, row_id: str) -> None:
-        """Roll back a row written by `capture_submitted_user_row`.
-
-        Used only when the Hermes call that was supposed to follow it never
-        happened -- mirrors the existing `submit_turn` route's own
-        error-handling style (structured, never a bare crash). A row that
-        does not exist (already discarded, or never written) is a silent
-        no-op: discarding is idempotent by construction.
-        """
+        """Roll back a row written by `capture_submitted_user_row`."""
         with self._session_factory() as db:
             db.execute(delete(ChatMessage).where(ChatMessage.id == row_id))
             db.commit()
 
     def capture_event(self, profile: str, canonical: Any, envelope: dict[str, Any]) -> str | None:
-        """Map one forwarded canonical event to a `chat_messages` row, if any.
-
-        `canonical` is a `events.canonical.CanonicalEvent` (typed `Any` here
-        to avoid an import cycle with `events`, which this module does not
-        otherwise need); `envelope` is that event's `to_dict()` -- the same
-        two arguments `RunRecorder.handle_event` receives, so a
-        `ProfileConnection` can wire this in exactly the same way.
-
-        Never raises: a capture failure costs this one row, never the event
-        stream it rides inside (same contract as `RunRecorder.handle_event`
-        and `BackgroundLedger.handle_completed`). Returns the new row's id,
-        or `None` when the event was not one of `CAPTURED_EVENT_TYPES`, was
-        unattributed (no `_stored_session_id` on the payload), or was
-        recognized as a duplicate/redelivery.
-        """
+        """Map one forwarded canonical event to a `chat_messages` row, if any."""
         try:
             return self._capture(profile, canonical, envelope)
         except Exception:  # pragma: no cover - defensive; same contract as B-26
@@ -393,17 +222,8 @@ class ChatStore:
 
         stored_id = payload.get(_STORED_SESSION_ID_FIELD)
         if not isinstance(stored_id, str) or not stored_id:
-            # Unattributed frame (no live->stored mapping resolved yet on
-            # this connection). Honest nothing, same rule as every other
-            # attribution path in this codebase (P2-2).
             return None
 
-        # the run this frame belongs to, stamped on the envelope by
-        # `RunRecorder.handle_event` (which runs BEFORE this capture on both
-        # pump paths -- `ProfileConnectionManager._forward_one` and the
-        # broadcaster's `_forward_one`). `run_id` == `turn_id`: a run is one
-        # turn (`domain/runs.py`). None when the recorder could not
-        # attribute the frame, which is the honest column value.
         turn_id = _turn_id(envelope)
 
         if event_type == "message.interim":
@@ -555,15 +375,7 @@ class ChatStore:
         source: str,
         compacted: bool = False,
     ) -> str:
-        """Allocate the next `seq` and insert, retrying on a real collision.
-
-        A `seq` collision (`IntegrityError` on the unique constraint) means
-        two writers raced for the same `(profile, stored_session_id)` --
-        e.g. the submit route and a live capture landing at the same instant
-        -- and is NOT a duplicate-content signal (that is decided by the
-        caller before this is reached). Retrying with a freshly recomputed
-        `seq` is what keeps a race from silently dropping a real message.
-        """
+        """Allocate the next `seq` and insert, retrying on a real collision."""
         row = ChatMessage(
             id=new_id("cm"),
             profile=profile,
@@ -588,10 +400,6 @@ class ChatStore:
                 db.commit()
                 return row.id
             except IntegrityError:
-                # A failed flush already detaches `row` back to transient
-                # (SQLAlchemy's own rollback behavior for pending objects),
-                # so it is safe to mutate and re-`add()` on the next
-                # iteration without an explicit `expunge()`.
                 db.rollback()
                 row.seq = self._next_seq(db, profile, stored_session_id)
         raise RuntimeError(
@@ -600,15 +408,9 @@ class ChatStore:
             f"after {_MAX_SEQ_RETRIES} attempts"
         )
 
-    # -- reads --------------------------------------------------------------
 
     def tool_rows(self, *, profile: str, stored_session_id: str) -> list[dict[str, Any]]:
-        """Every captured tool row for one session, ascending by `seq`.
-
-        The input to `domain.tool_result_backfill.attach_captured_results`:
-        Hermes's own transcript keeps a call's arguments but never its result,
-        and these rows are the only durable copy of what each call returned.
-        """
+        """Every captured tool row for one session, ascending by `seq`."""
         with self._session_factory() as db:
             query = (
                 select(ChatMessage)
@@ -625,28 +427,7 @@ class ChatStore:
     def tool_result(
         self, *, stored_session_id: str, tool_call_id: str, max_chars: int
     ) -> dict[str, Any] | None:
-        """One captured tool result, by the call id the audit trail carries.
-
-        The audit store deliberately does NOT hold tool output: a file read
-        returns the file, and the audit archive cannot be edited or deleted for
-        the retention window. This store does hold it, as
-        part of the conversation, and it is what the audit detail screen offers
-        behind an explicit tap.
-
-        The two are NOT the same kind of evidence and the caller is expected to
-        say so. This row lives in a database the gateway writes freely, so it
-        can be rewritten; the audit trail cannot. Returned unredacted, because
-        it was never passed through the audit path's masking.
-
-        `profile` is not a parameter: the audit trail's tool call id is
-        unique on its own, and requiring a profile here would make the lookup
-        fail for exactly the sessions whose profile the run ledger records
-        wrongly.
-
-        Bounded by `max_chars`, and says whether it truncated. Results run past
-        200,000 characters on the operator's host; a screen must not be handed the
-        whole thing by default.
-        """
+        """One captured tool result, by the call id the audit trail carries."""
         with self._session_factory() as db:
             row = db.execute(
                 select(ChatMessage)
@@ -660,16 +441,6 @@ class ChatStore:
             ).scalar_one_or_none()
         if row is None:
             return None
-        # `tool_result_json` is a JSON column, so SQLAlchemy hands back the
-        # DECODED value -- usually a dict, sometimes a list, occasionally a
-        # bare string. Treating it as text made `len()` count keys: a 1,763
-        # character result reported itself as 4 and the dict went out under a
-        # field the client decodes as a string, so the screen rendered empty
-        # with no error anywhere. Caught live, 2026-09-20.
-        #
-        # Re-serialised with indentation rather than compactly: this is going
-        # into a source viewer, and pretty-printed JSON is both what a person
-        # wants to read and what the highlighter can colour.
         raw = row.tool_result_json
         if raw is None:
             text = ""
@@ -700,13 +471,7 @@ class ChatStore:
         before_seq: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Up to `limit` rows immediately before `before_seq`, ascending by `seq`.
-
-        `before_seq=None` (the default) returns the newest `limit` rows --
-        the initial page a chat screen opens to. Passing the oldest `seq`
-        already shown pages further into the past ("reveal earlier",
-        `docs/CHAT_HISTORY_DESIGN.md` §6's `revealEarlier()`).
-        """
+        """Up to `limit` rows immediately before `before_seq`, ascending by `seq`."""
         with self._session_factory() as db:
             query = select(ChatMessage).where(
                 ChatMessage.profile == profile,

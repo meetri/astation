@@ -1,36 +1,4 @@
-"""Composer attachments: upload, poll, list and the capability serve route (P3-3).
-
-The chain itself -- prime -> verify -> attach, as a background task per row
--- is `AttachmentOrchestrator` in `domain/attachment_orchestrator.py`
-(CLEANUP_PLAN step 3.5), re-exported here with the row states and the
-priming-command builders.
-
-## The capability serve URL
-
-The priming turn's `curl` runs on the Hermes host WITHOUT the gateway's
-Basic-auth credential (credentials never go into prompt text, transcripts,
-or logs). So the serve route is mounted UNAUTHENTICATED on the app root and
-keyed on a single-use-scope capability token (`secrets.token_urlsafe(32)`):
-
-* the token grants exactly one attachment's bytes, nothing else;
-* it is refused (410) once the row is terminal (attached/failed/orphaned),
-  so the copy that lands in the session transcript goes dead as soon as the
-  flow ends;
-* an unknown token is a plain 404 with no detail.
-
-The URL's host comes from `RESEARCH_GATEWAY_PUBLIC_BASE_URL` when set, else
-from the upload request's own Host header -- correct whenever the phone and
-the Hermes host both reach the gateway at the same address (P3-0c: verified
-live, the GET arrived from the Hermes host). **Firewall gotcha, measured:**
-macOS's Application Firewall silently blackholes a server binary
-not on its allow list (TCP accepts, HTTP never answers). The gateway process
-itself must be firewall-allowed or the priming curl times out with nothing
-logged anywhere -- the verify timeout is what surfaces it.
-
-Bytes live in the shared content-addressed `ArtifactStore` -- an attachment
-re-uses the artifact root and its crash-safe write path, and attaching the
-same file twice stores it once.
-"""
+"""Composer attachments: upload, poll, list and the capability serve route (P3-3)."""
 
 from __future__ import annotations
 
@@ -77,29 +45,17 @@ from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
 
-#: Authenticated routes (mounted under `/api` in `api.main`).
 attachments_router = APIRouter(tags=["attachments"])
 
-#: The UNAUTHENTICATED capability serve route (mounted on the app root in
-#: `api.main` -- see module docstring for why it must not require Basic auth).
 attachment_serve_router = APIRouter(tags=["attachments"])
 
-#: Upload size cap (task spec: ~25MB). Enforced while streaming the upload,
-#: so an oversized body is refused at the cap, not after buffering.
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 _FALLBACK_MIME = "application/octet-stream"
 
 
 def sanitize_filename(raw: str | None) -> str:
-    """A sandbox-safe, shell-inert filename from whatever the picker sent.
-
-    The filename ends up inside the priming turn's command line and in a
-    sandbox path, so this is a security boundary, not cosmetics: only
-    `[A-Za-z0-9._-]` survives, path components are stripped, leading dots are
-    de-fanged (no hidden files, no `..`), and the result is bounded and
-    never empty.
-    """
+    """A sandbox-safe, shell-inert filename from whatever the picker sent."""
     base = posixpath.basename((raw or "").replace("\\", "/")).strip()
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base)
     cleaned = cleaned.lstrip(".")
@@ -130,12 +86,7 @@ def kind_for_mime(mime_type: str) -> str:
 
 
 def reference_text_for(attachment: Attachment) -> str | None:
-    """What the app appends to the user's message for a document attachment.
-
-    Only a VERIFIED document gets one -- the path has been fetched back
-    byte-exact, so telling the agent to read it is honest. Images get None:
-    `image.attach` already referenced them into the conversation.
-    """
+    """What the app appends to the user's message for a document attachment."""
     if attachment.kind != "document" or attachment.state != STATE_ATTACHED:
         return None
     return (
@@ -173,21 +124,9 @@ def _attachment_json(attachment: Attachment) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# DB dependency (503 until the attachments migration has run)
-# ---------------------------------------------------------------------------
-
-
-#: A DB session, with "you never ran the attachments migration" as a 503
-#: (`domain.db.schema_checked_db`, same pattern as `api.artifacts._artifacts_db`).
 _attachments_db = schema_checked_db(
     "attachments_schema_verified", lambda engine: table_present(engine, "attachments")
 )
-
-
-# ---------------------------------------------------------------------------
-# Routes: upload, poll, list
-# ---------------------------------------------------------------------------
 
 
 async def _upload_chunks(upload: UploadFile) -> AsyncIterator[bytes]:
@@ -223,21 +162,10 @@ async def upload_attachment(
     profile: str = "default",
     db: OrmSession = Depends(_attachments_db),
 ) -> dict:
-    """Accept one composer attachment and start the asynchronous attach.
-
-    Multipart upload, 25MB cap enforced while streaming (413 past it). The
-    202 answer is immediate -- bytes stored, ledger row written, orchestration
-    scheduled -- and carries the row the app then POLLS via
-    `GET /api/attachments/{id}` until `state` is terminal. No Hermes call
-    happens on this request path (a prompt turn takes minutes and must never
-    sit in a synchronous UI path -- measured, PV "Phase 3 build probes").
-    """
+    """Accept one composer attachment and start the asynchronous attach."""
     stored_id = _validate_stored_session_id(stored_session_id)
     profile = profile.strip() or "default"
     settings = get_settings()
-    # The attachment dir must itself be inside the sandbox root -- validated
-    # here, before anything is stored, so a misconfiguration fails loudly on
-    # the first upload rather than silently in the background task.
     attachment_dir = validate_sandbox_path(
         settings.hermes_attachment_dir, settings.hermes_sandbox_root
     )
@@ -263,8 +191,6 @@ async def upload_attachment(
         raise HTTPException(status_code=422, detail="attachment is empty (0 bytes)")
 
     token = secrets.token_urlsafe(32)
-    # Mint the id up front (the ORM default only fires at flush) -- the
-    # sandbox target path embeds it for per-attachment uniqueness.
     attachment = Attachment(
         id=new_id("attach"),
         stored_session_id=stored_id,
@@ -279,8 +205,6 @@ async def upload_attachment(
         state=STATE_UPLOADED,
         detail="uploaded; scheduling the sandbox fetch",
     )
-    # Unique target per attachment: dir + row id + sanitized name. Nothing
-    # user-controlled escapes `sanitize_filename`'s character class.
     attachment.sandbox_path = f"{attachment_dir}/{attachment.id}_{filename}"
     attachment.attach_result_json = {"serve_url": f"{serve_base}/attachments/serve/{token}"}
     db.add(attachment)
@@ -325,21 +249,9 @@ async def list_session_attachments(
     }
 
 
-# ---------------------------------------------------------------------------
-# The capability serve route (unauthenticated -- see module docstring)
-# ---------------------------------------------------------------------------
-
-
 @attachment_serve_router.get("/attachments/serve/{token}")
 async def serve_attachment(token: str, request: Request):
-    """Serve one attachment's bytes to the priming turn's `curl`.
-
-    Keyed on the capability token alone: the curl runs on the Hermes host
-    with no gateway credential. Unknown token -> bare 404; terminal row ->
-    410 (the token in the transcript goes dead the moment the flow ends).
-    Exact `Content-Type`/`Content-Length` so the fetched copy is byte-exact
-    by construction.
-    """
+    """Serve one attachment's bytes to the priming turn's `curl`."""
     factory = getattr(request.app.state, "db_sessions", None)
     if factory is None:  # pragma: no cover - lifespan always sets it
         raise HTTPException(status_code=404, detail="not found")

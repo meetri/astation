@@ -1,36 +1,4 @@
-"""`POST /api/sessions/{stored}/compress` -- compress a session's context, in place (P6-4).
-
-Owner, 2026-09-04: *"Really I just want to compress the context."* Everything here rests on
-the live measurement in `docs/PROTOCOL_VERIFIED.md`, "Compress + the LCM context engine --
-verified live 2026-09-04":
-
-* The instance's context engine is the **hermes-lcm** plugin. A compress is **in place**:
-  same session, same stored id, same live handle, no continuation session. Under LCM only raw
-  messages **outside the fresh tail** (32 messages / 24k tokens on the operator's host) are
-  eligible, so a short session is an honest no-op and Hermes says so
-  (`summary.noop`, headline "No changes from compression: N messages").
-* Two upstream routes, both taking the LIVE handle: `session.compress` (plain; every argument
-  is silently ignored) and `command.dispatch {name: "/compress", args: "here N"}` (the partial
-  form -- keeps the last N exchanges verbatim; `args` is the field, `arg` is ignored). Dispatch
-  answers `{"type": "exec", "output": "<headline>\\n<token line>"}`, `session.compress` answers
-  a structured dict; this route normalises both into ONE response shape so the app does not
-  care which ran.
-* `[4009] session busy -- /interrupt the current turn before /compress` while a turn runs ->
-  **409**. The gateway's own `RunRecorder.has_open_run()` is checked first for the same answer
-  without a round trip (it only sees turns made through this gateway, so the upstream code is
-  still mapped).
-* **A `pre_compress` snapshot is taken first** (P6-3's fourth trigger). Under LCM the raw rows
-  survive in `lcm.db` for the *agent*, but the transcript this app can read is the compacted
-  one, so the snapshot is the reader's full copy. Snapshot failure -> 409, nothing compressed
-  (the delete route's rule). `?force=true` skips it.
-* Completion, for a client watching the event stream: `status.update kind=compacted` (measured
-  order: `compressing` -> `compacting` -> `compacted` -> `session.info` -> `status` "ready").
-  The RPC itself returns after the work on this build, but the app keys its transcript reload
-  on the event, not on this response, so a future asynchronous compress needs no client change.
-
-Not built: `--preview` (a `[-32603] internal error` on this build) and a focus topic (accepted
-by dispatch, effect unmeasured -- `focus` is passed through when given, honestly labelled).
-"""
+"""`POST /api/sessions/{stored}/compress` -- compress a session's context, in place (P6-4)."""
 
 from __future__ import annotations
 
@@ -58,11 +26,8 @@ logger = logging.getLogger(__name__)
 
 compress_router = APIRouter(tags=["compress"])
 
-#: Hermes: `session busy -- /interrupt the current turn before /compress`.
 HERMES_SESSION_BUSY_CODE = 4009
-#: The slash command `command.dispatch` executes. `args` carries the raw argument string.
 COMPRESS_COMMAND_NAME = "/compress"
-#: Hermes's own "nothing happened" headline prefix (both routes print it).
 _NOOP_PREFIX = "No changes from compression"
 _HEADLINE_RE = re.compile(r"(?:Compressed:\s*)?(\d[\d,]*)\s*(?:→|->)\s*(\d[\d,]*)\s*messages", re.I)
 _NOOP_MESSAGES_RE = re.compile(r"No changes from compression:\s*(\d[\d,]*)\s*messages", re.I)
@@ -88,8 +53,6 @@ class CompressRequest(BaseModel):
         if not cleaned:
             return None
         if cleaned.startswith("-"):
-            # `--preview` is an internal error upstream and any `--flag` would
-            # be parsed as an option, not a topic. A topic never starts with '-'.
             raise ValueError("focus must be a topic, not an option (no leading '-')")
         return cleaned
 
@@ -104,14 +67,7 @@ def _int(text: str | None) -> int | None:
 
 
 def parse_dispatch_output(output: str | None) -> dict[str, Any]:
-    """Normalise `command.dispatch`'s two-line text into the structured shape.
-
-    Measured lines:
-      "Compressed: 23 → 22 messages\\nApprox request size: ~66,322 → ~66,271 tokens"
-      "No changes from compression: 22 messages\\nApprox request size: ~59,724 tokens (unchanged)"
-    Anything else is passed through verbatim as `headline` with the numbers `None` --
-    never invented.
-    """
+    """Normalise `command.dispatch`'s two-line text into the structured shape."""
     text = (output or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     headline = lines[0] if lines else ""
@@ -216,16 +172,7 @@ async def compress_session(
     force: bool = Query(default=False),
     db: OrmSession = Depends(workspace_db),
 ) -> Any:
-    """Snapshot, then compress in place. See the module docstring for the contract.
-
-    Response (both upstream routes normalised):
-    `{"stored_session_id", "mode": "in_place", "route": "session.compress" |
-    "command.dispatch", "args": <str|null>, "snapshot": <row>|null, "noop", "headline",
-    "token_line", "removed", "before_messages", "after_messages", "before_tokens",
-    "after_tokens", "usage": {context_used, context_max, context_percent, compressions}|null}`.
-    409 mid-turn (local `has_open_run` or Hermes `[4009]`) or when the pre-compress snapshot
-    failed (`{"detail", "snapshot_error"}`); 404 unknown session; 422 bad id/body; 502 upstream.
-    """
+    """Snapshot, then compress in place. See the module docstring for the contract."""
     stored_id = _validate_stored_session_id_for_argv(stored_session_id)
     body = body or CompressRequest()
     args = compress_args(body)

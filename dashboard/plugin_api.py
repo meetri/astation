@@ -1,27 +1,4 @@
-"""Research Gateway routes, mounted inside the Hermes dashboard process.
-
-Hermes's ``_mount_plugin_api_routes()`` imports this file and does
-``app.include_router(router, prefix="/api/plugins/astation")``. So every
-route the gateway has always served at ``/api/x`` is served here at
-``/api/plugins/astation/x``, in Hermes's own process, with no second
-container, no Docker socket and no Hermes-network membership.
-
-Three things differ from ``api/main.py``, and only three:
-
-1. **No ``/api`` prefix and no ``require_basic_auth``.** The mount supplies the
-   prefix, and Hermes's own auth gate already refuses an unauthenticated
-   request to ``/api/plugins/...`` before the route runs.
-   ``RESEARCH_GATEWAY_USERNAME``/``_PASSWORD`` cease to exist.
-2. **No FastAPI lifespan.** A plugin does not own the app, so the services
-   ``api/bootstrap.startup()`` builds are created from a router startup
-   handler instead, onto Hermes's own ``app.state`` -- verified collision-free
-   against every name Hermes puts there.
-3. **``/health`` is not public.** Hermes's own ``GET /api/status`` is the
-   unauthenticated liveness probe now.
-
-Nothing here may raise at import time: an exception means the router never
-mounts and every route silently 404s, with only a line in the dashboard log.
-"""
+"""Research Gateway routes, mounted inside the Hermes dashboard process."""
 
 from __future__ import annotations
 
@@ -40,35 +17,16 @@ log = logging.getLogger("astation.plugin")
 
 router = APIRouter()
 
-# --------------------------------------------------------------------------
-# Locate the gateway package.
-#
-# Phase 1 runs the plugin directly out of this repo, so the source tree is a
-# sibling of the plugin directory. TRG_GATEWAY_SRC overrides it. Phase 4
-# packaging makes the plugin self-contained and this block goes away.
-# --------------------------------------------------------------------------
 _HERE = Path(__file__).resolve().parent
 _CANDIDATES = [
     Path(os.environ["TRG_GATEWAY_SRC"]) if os.environ.get("TRG_GATEWAY_SRC") else None,
-    _HERE.parent / "gateway",  # packaged (Phase 4)
-    _HERE.parent.parent / "services" / "research-gateway",  # in-repo (Phase 1)
+    _HERE.parent / "gateway",
+    _HERE.parent.parent / "services" / "research-gateway",
 ]
 
 
 def _apply_loopback_defaults() -> dict[str, str]:
-    """Point the gateway's Hermes client at the dashboard hosting this plugin.
-
-    The sidecar dialled Hermes across the network and carried its own copy of
-    the credential. In-process, the answer is always loopback, and the
-    credential is the one Hermes itself was started with -- so nothing has to
-    be configured twice and `HERMES_HOST`/`HERMES_PORT` stop being settings a
-    user can get wrong.
-
-    Applied at IMPORT time, before the gateway package is imported at all:
-    `get_settings()` is cached on first call, and a router module may make that
-    call while being imported. Anything already set in the environment wins, so
-    an operator can still override.
-    """
+    """Point the gateway's Hermes client at the dashboard hosting this plugin."""
     applied: dict[str, str] = {}
 
     def default(key: str, value: str | None) -> None:
@@ -79,28 +37,15 @@ def _apply_loopback_defaults() -> dict[str, str]:
     default("HERMES_SCHEME", "http")
     default("HERMES_HOST", "127.0.0.1")
     default("HERMES_PORT", os.environ.get("HERMES_DASHBOARD_PORT") or "9119")
-    # Hermes's own dashboard credential. `login()` presents this straight back
-    # to the process we are running inside.
     default("HERMES_USERNAME", os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME"))
     default("HERMES_PASSWORD", os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"))
 
-    # The gateway's own data lives under HERMES_HOME, inside the bind mount,
-    # beside everything else Hermes persists.
     home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
     root = home / "astation"
     default("RESEARCH_GATEWAY_DB_PATH", str(root / "research.db"))
     default("RESEARCH_GATEWAY_ARTIFACT_ROOT", str(root / "artifacts"))
-    # Speech. Both are plain directories under the same data root, so a voice
-    # download or a Whisper model survives an image rebuild exactly like the
-    # database does. Without these the defaults are RELATIVE ("./data/..."),
-    # which resolve against whatever the dashboard's working directory happens
-    # to be -- and the symptom is a 503 saying piper is not installed even
-    # when it is.
     default("TTS_PIPER_VOICE_DIR", str(root / "piper-voices"))
     default("HF_HOME", str(root / "hf-cache"))
-    # The gateway's own Basic auth is gone: Hermes's gate is the only one now.
-    # `api/auth.py` fails closed when these are unset, and a few routes still
-    # read them, so give them a value that can never be presented externally.
     default("RESEARCH_GATEWAY_USERNAME", "plugin")
     default("RESEARCH_GATEWAY_PASSWORD", os.urandom(24).hex())
     return applied
@@ -117,13 +62,7 @@ for candidate in _CANDIDATES:
 _import_error: str | None = None
 _routers: list[tuple[Any, str]] = []
 def _audit_forwarder_stats() -> Any:
-    """This PROCESS's audit-forwarder counters, for `GET /health`.
-
-    Read from the forwarder module's singleton rather than rebuilt here: one
-    forwarder per process is started by `register()`, which runs everywhere the
-    plugin loads, while this route answers only from the dashboard. A profile
-    gateway has its own forwarder and its own counters, not visible from here.
-    """
+    """This PROCESS's audit-forwarder counters, for `GET /health`."""
     module = sys.modules.get("trg_audit_forwarder")
     forwarder = getattr(module, "INSTANCE", None) if module else None
     if forwarder is None:
@@ -144,8 +83,6 @@ else:
     if str(_gateway_src) not in sys.path:
         sys.path.insert(0, str(_gateway_src))
     try:
-        # Same order as api/main.py, so route precedence is unchanged. Each
-        # module names its router <module>_router, not `router`.
         from api.artifacts import artifacts_router
         from api.attachments import attachment_serve_router, attachments_router
         from api.audit import audit_router
@@ -194,20 +131,8 @@ else:
             (snapshot_sweep_router, "snapshot_sweep"),
             (chat_router, "chat"),
             (audit_router, "audit"),
-            # api/main.py mounts this one on `app` OUTSIDE the /api prefix: it
-            # serves an attachment to the Hermes sandbox host by capability
-            # URL. Under the plugin it lives beside everything else. §4.4
-            # replaces the whole priming-turn flow with a direct sandbox
-            # write, at which point this router goes away entirely.
             (attachment_serve_router, "attachment_serve"),
         ]
-        # Mounted under an extra "/api" so the full path is
-        #   /api/plugins/astation/api/<route>
-        # matching the "/api/..." literals the iOS app has always used -- the
-        # standalone app puts them behind `APIRouter(prefix="/api")` in
-        # api/main.py. Keeping the segment means none of the ~58 route strings
-        # in the app change, and the plugin's own /health stays at the mount
-        # root where it does not collide with a gateway route.
         for sub, _name in _routers:
             router.include_router(sub, prefix="/api")
         log.info("astation: mounted %d gateway routers from %s", len(_routers), _gateway_src)
@@ -217,13 +142,7 @@ else:
 
 
 def _hermes_app():
-    """Hermes's FastAPI app, fetched lazily.
-
-    This module is imported BY web_server while that module is still executing,
-    so a module-level ``from hermes_cli.web_server import app`` would bind a
-    half-initialised module. By startup time it is complete, and `app` is
-    whichever of the two modules actually defines it.
-    """
+    """Hermes's FastAPI app, fetched lazily."""
     for name in ("hermes_cli.web_server", "hermes_cli.web_server_chat"):
         mod = sys.modules.get(name)
         app = getattr(mod, "app", None) if mod else None
@@ -233,16 +152,7 @@ def _hermes_app():
 
 
 def _migrate() -> str:
-    """Back up the workspace database, then bring it to the Alembic head.
-
-    The sidecar deliberately never migrated on start: a crash-looping
-    container must not fire a schema migration unattended. A plugin has no
-    operator step between install and load, so the rule is kept in spirit
-    instead of in letter -- take a copy first, migrate, and refuse to serve if
-    it fails, so a half-migrated database is never served from.
-
-    Returns a short status string for `GET /health`.
-    """
+    """Back up the workspace database, then bring it to the Alembic head."""
     from alembic import command
     from alembic.config import Config
 
@@ -254,8 +164,8 @@ def _migrate() -> str:
         db_path = (Path(str(_gateway_src)) / db_path).resolve()
 
     for candidate in (
-        Path(str(_gateway_src)).parent.parent / "migrations",  # in-repo
-        Path(str(_gateway_src)).parent / "migrations",  # packaged
+        Path(str(_gateway_src)).parent.parent / "migrations",
+        Path(str(_gateway_src)).parent / "migrations",
         _HERE.parent / "migrations",
     ):
         if (candidate / "env.py").exists():
@@ -266,7 +176,7 @@ def _migrate() -> str:
 
     cfg = Config()
     cfg.set_main_option("script_location", str(script_location))
-    cfg.set_main_option("sqlalchemy.url", "")  # migrations/env.py derives it from settings
+    cfg.set_main_option("sqlalchemy.url", "")
 
     if db_path.exists() and db_path.stat().st_size > 0:
         stamp = time.strftime("%Y-%m-%d-%H%M%S")
@@ -279,11 +189,6 @@ def _migrate() -> str:
 
     command.upgrade(cfg, "head")
     return f"migrated to head ({note})"
-
-
-# --------------------------------------------------------------------------
-# The in-process Hermes client.
-# --------------------------------------------------------------------------
 
 
 def _session_token() -> str | None:
@@ -300,11 +205,7 @@ _fs_module = None
 
 
 def _fs():
-    """The direct-filesystem helpers, imported from the plugin directory.
-
-    Loaded by path because the plugin is not an importable package from the
-    route module's point of view -- the same reason `capture.py` is.
-    """
+    """The direct-filesystem helpers, imported from the plugin directory."""
     global _fs_module
     if _fs_module is None:
         import importlib.util
@@ -320,21 +221,7 @@ def _fs():
 
 
 def _build_adapter_class():
-    """An adapter that authenticates the way THIS dashboard was started.
-
-    Hermes engages its auth gate only on a non-loopback bind. The two modes
-    want different WebSocket credentials, and the wrong one is rejected:
-
-      * gated (the deploy host, `--host 0.0.0.0`): cookie login, then a
-        single-use `?ticket=`. Exactly what the sidecar always did.
-      * ungated (a loopback dashboard, which is what a friend running Hermes
-        locally gets): there is no `/auth/password-login` to call, and the
-        socket wants `?token=<session token>`.
-
-    Without this the plugin works on a gated instance and fails on a loopback
-    one with `password-login failed with HTTP 404` -- measured, and the reason
-    this class exists.
-    """
+    """An adapter that authenticates the way THIS dashboard was started."""
     from adapters.hermes.client import HermesAdapter
 
     class InProcessHermesAdapter(HermesAdapter):
@@ -346,8 +233,6 @@ def _build_adapter_class():
             if self._gate_engaged():
                 await super().login()
                 return
-            # Ungated: nothing to log into. Mark the session usable so
-            # `mint_ticket`'s guard and every caller's `_logged_in` check pass.
             self._logged_in = True
 
         async def _ws_auth_query(self) -> str:
@@ -361,18 +246,6 @@ def _build_adapter_class():
                 )
             return f"token={token}"
 
-        # ---- direct filesystem (§4.4) -------------------------------------
-        #
-        # These routes were found by probing and are documented nowhere
-        # upstream; two of them confine nothing. Inside Hermes the files are
-        # just on disk, so four of the five become direct I/O returning the
-        # same response shapes the callers already parse -- api/sandbox.py,
-        # api/sandbox_text.py, domain/prompt_files.py, project_workspace.py
-        # and artifact_ingest.py are untouched.
-        #
-        # `files_download` is deliberately NOT overridden: it is the one file
-        # endpoint Hermes confines server-side, and it streams with native
-        # Range support an in-memory replacement would lose.
 
         async def files_list(self, path: str):  # type: ignore[override]
             return _fs().list_directory(path, self._settings.hermes_sandbox_root)
@@ -390,19 +263,10 @@ def _build_adapter_class():
 
 
 def _plugin_entry_module():
-    """The SAME module object `register()` ran in.
-
-    Hermes loads a plugin package as `hermes_plugins.<slug>`, where the slug is
-    the name with `-` replaced by `_`. Finding it in `sys.modules` matters:
-    importing `__init__.py` by path here would create a SECOND module with its
-    own queue, so the hooks would enqueue into one and the drain would read the
-    other, and capture would silently do nothing.
-    """
+    """The SAME module object `register()` ran in."""
     direct = sys.modules.get("hermes_plugins.astation")
     if direct is not None:
         return direct
-    # The slug rule could change; fall back to any loaded plugin module that
-    # looks like ours rather than silently capturing nothing.
     for name, mod in list(sys.modules.items()):
         if name.startswith("hermes_plugins.") and hasattr(mod, "CAPTURE_HOOKS"):
             return mod
@@ -411,12 +275,7 @@ def _plugin_entry_module():
 
 @router.on_event("startup")
 async def _start_gateway_services() -> None:
-    """Build the gateway's services onto Hermes's ``app.state``.
-
-    This is `api/main.lifespan`'s body. `startup()` is synchronous and makes no
-    network call -- it opens the DB, builds the stores and starts the
-    background tasks -- so it is safe to call here, where a loop is running.
-    """
+    """Build the gateway's services onto Hermes's ``app.state``."""
     global _started, _startup_error
     if _started or _import_error:
         return
@@ -426,8 +285,6 @@ async def _start_gateway_services() -> None:
         log.error("astation: %s", _startup_error)
         return
     try:
-        # Schema first: `startup()` opens the database and the routes assume a
-        # schema, so a migration failure must stop us before either happens.
         global _migration_status
         _migration_status = _migrate()
         log.info("astation: %s", _migration_status)
@@ -439,13 +296,6 @@ async def _start_gateway_services() -> None:
         settings = get_settings()
         adapter_cls = _build_adapter_class()
 
-        # §4.4: the sandbox is THIS process's filesystem. Listings, text reads
-        # and writes become syscalls in a worker thread instead of loopback
-        # HTTP -- which matters most for the artifact diff walker, hundreds of
-        # listings per turn. `DirectSandboxFS` re-implements the two guards
-        # Hermes's routes were providing (real-path confinement and the
-        # credential-file denylist); see its module docstring. Downloads stay
-        # on Hermes's streaming route either way.
         startup(
             app.state,
             settings,
@@ -454,8 +304,6 @@ async def _start_gateway_services() -> None:
         )
         _started = True
 
-        # Hook enrichment (§4.3). Separate from `startup()` because it is the
-        # plugin's own addition, not part of the gateway's service graph.
         global _drain
         entry = _plugin_entry_module()
         if entry is None:
@@ -473,15 +321,6 @@ async def _start_gateway_services() -> None:
             _drain = cap.HookDrain(entry.events, app.state)
             _drain.start()
 
-            # Foreign prompts without a network round trip. `pre_llm_call`
-            # already carried the text of a turn started outside this gateway,
-            # so `ForeignPromptCapture` no longer has to pay a `session.resume`
-            # (up to 1.6 MB) per foreign turn to recover it. It falls back to
-            # the resume whenever the source returns nothing, so this is
-            # additive.
-            # Attachments land in the sandbox by a direct write now, so the
-            # priming turn, the capability URL and the 15-minute verify poll
-            # all stop being used (§4.4).
             orchestrator = getattr(app.state, "attachment_orchestrator", None)
             store = getattr(app.state, "artifact_store", None)
             if (
@@ -503,12 +342,6 @@ async def _start_gateway_services() -> None:
                 orchestrator.set_direct_delivery(_deliver)
                 log.info("astation: attachments deliver directly into the sandbox")
 
-            # Rewrite/handoff on a profile's OWN model, run by the host.
-            # Resolving a profile to an OpenAI-compatible base URL plus a key
-            # of our own cannot work for a local llama.cpp server, bedrock, moa
-            # or openai-codex -- the honest answer there was a 503.
-            # Hermes already knows how to talk to every provider it is
-            # configured with, so hand it the messages instead.
             entry_mod = entry
 
             async def _profile_llm(
@@ -530,9 +363,6 @@ async def _start_gateway_services() -> None:
                         purpose="rewrite-for-listening",
                     )
                 except Exception as exc:
-                    # Returning None would silently fall back to the HTTP path
-                    # and produce the same 503 the operator already saw, so say
-                    # what went wrong instead.
                     raise RuntimeError(f"the host LLM refused the request: {exc}") from exc
                 content = getattr(result, "content", None) or getattr(result, "text", None)
                 if not content and isinstance(result, dict):
@@ -560,11 +390,7 @@ async def _start_gateway_services() -> None:
 
 
 def _foreign_prompt_mode() -> str:
-    """Whether foreign prompts cost a `session.resume` or come from a hook.
-
-    Worth reporting rather than assuming: the difference is a 1.6 MB round trip
-    per turn started outside this gateway, and the fallback is silent by design.
-    """
+    """Whether foreign prompts cost a `session.resume` or come from a hook."""
     app = _hermes_app()
     fpc = getattr(getattr(app, "state", None), "foreign_prompt_capture", None)
     if fpc is None:
@@ -574,12 +400,7 @@ def _foreign_prompt_mode() -> str:
 
 @router.get("/health")
 async def health() -> dict[str, Any]:
-    """Plugin liveness and wiring report.
-
-    Unlike the sidecar's `/health` this sits behind Hermes's auth gate, and it
-    deliberately reports *why* the plugin is unhealthy: a router import failure
-    or a startup failure is otherwise only visible in the dashboard log.
-    """
+    """Plugin liveness and wiring report."""
     hooks: Any
     try:
         home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
@@ -604,23 +425,8 @@ async def health() -> dict[str, Any]:
         "ws_rejections": _ws_rejections[-5:],
         "enrichment": (_drain.stats if _drain is not None else "not started"),
         "foreign_prompts": _foreign_prompt_mode(),
-        # Which filesystem backend the sandbox routes ended up on. Reported
-        # for the same reason `foreign_prompts` is: the fallback to HTTP is
-        # silent, and the two backends differ in confinement and in whether an
-        # editor save can be clobbered.
         "sandbox_fs": _sandbox_fs_mode(),
-        # A5: how many paths the ingest ignore rules kept out of the library
-        # this process. Reported so "why did my file not show up" is
-        # answerable from here rather than from a log dive.
         "artifacts": _artifact_ingest_stats(),
-        # Session attribution for the audit store. `not started` means kernel
-        # events can only be tied to a session by the time window they
-        # happened in; a rising `dropped` means attribution is being lost and
-        # the timeline will be quietly incomplete.
-        # Reported from the PLUGIN module, which starts one forwarder per
-        # process. This route answers from the dashboard, so these are the
-        # dashboard's own counters; a profile gateway's forwarder has its own
-        # and is not visible here.
         "audit_attribution": _audit_forwarder_stats(),
     }
 
@@ -642,23 +448,12 @@ def _sandbox_fs_mode() -> Any:
     return describe_backend(getattr(app, "state", None))
 
 
-# --------------------------------------------------------------------------
-# The event stream the app holds open.
-# --------------------------------------------------------------------------
-
 _WS_CORE_CANDIDATES = ("hermes_cli.web_server_chat", "hermes_cli.web_server")
 _ws_rejections: list[dict] = []
 
 
 def _resolve_ws_core():
-    """Find Hermes's WebSocket auth helpers.
-
-    These are PRIVATE and they MOVE: 0.20.5 had them in `hermes_cli.web_server`,
-    0.21.3 has them in `hermes_cli.web_server_chat`. Resolution failure must be
-    its own state -- during the probe round a swallowed `AttributeError` made a
-    correctly-ticketed connection indistinguishable from a rejected credential,
-    which reads as "plugin WebSockets do not work". `GET /health` reports this.
-    """
+    """Find Hermes's WebSocket auth helpers."""
     import importlib
 
     tried: list[str] = []
@@ -675,16 +470,7 @@ def _resolve_ws_core():
 
 
 def _ws_authorized(socket: WebSocket) -> tuple[bool, str]:
-    """Authorize a WS upgrade using Hermes's own gate. FAILS CLOSED.
-
-    Hermes's auth gates are all `@app.middleware("http")` and Starlette never
-    runs HTTP middleware for a websocket scope, so without this a plugin socket
-    is reachable with no credential, no Host/Origin rebinding guard and no
-    peer-IP check -- on a `--host 0.0.0.0` dashboard, an open door.
-
-    The bundled kanban plugin does the same thing but returns True when the
-    import fails. That is fail-OPEN and is deliberately not copied.
-    """
+    """Authorize a WS upgrade using Hermes's own gate. FAILS CLOSED."""
     mod, mod_name, tried = _resolve_ws_core()
     if mod is None:
         return False, f"core-unresolved: {tried}"
@@ -705,17 +491,9 @@ def _ws_authorized(socket: WebSocket) -> tuple[bool, str]:
 
 @router.websocket("/ws/events")
 async def ws_events(websocket: WebSocket) -> None:
-    """The same stream `api/main.py` serves, authenticated Hermes's way.
-
-    The client mints a ticket with `POST /api/auth/ws-ticket` and appends it as
-    `?ticket=` (30 s TTL, single use) exactly as it would for Hermes's own
-    `/api/ws`. Everything after the auth decision is `stream_events()`, shared
-    with the standalone app.
-    """
+    """The same stream `api/main.py` serves, authenticated Hermes's way."""
     allowed, reason = _ws_authorized(websocket)
     if not allowed:
-        # Closing before accept() makes Starlette answer the handshake with a
-        # bare 403, so the reason never reaches the client -- record it.
         _ws_rejections.append({"wall": time.time(), "reason": reason})
         del _ws_rejections[:-10]
         await websocket.close(code=1008)

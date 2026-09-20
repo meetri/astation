@@ -1,34 +1,4 @@
-"""Put captured tool results back onto a reloaded transcript.
-
-Hermes's stored transcript (`session.resume` / `session.history`) keeps every
-tool call's ARGUMENTS and never its RESULT -- measured 2026-09-06 on the
-owner's `gpt` session: 27 tool rows, 0 with a `result` key. The result is
-where the diff, the exit code, the error and the written-bytes count live, so
-after a reload every file-change row lost its diff stat and coloured lines
-and every failed command looked like it had succeeded. Live, the same rows had
-all of it, because `tool.completed` carries `result` -- and `ChatStore`
-captured that frame, per profile, for exactly this session (91 rows for the
-one above).
-
-`attach_captured_results` marries the two: for each transcript tool row that
-has no `result`, the first not-yet-used captured row with the same tool name
-whose arguments are consistent with the transcript's is taken as that call's
-completion, and its result is attached under `result` (bounded -- see
-`_bounded_result`) with `_result_source: "gateway_capture"` so a reader can
-tell it from a result Hermes itself sent.
-
-**Matching is by content, not by position.** Both sequences are
-chronological, but the capture can have gaps (a desynchronized subscriber, a
-gateway restart mid-turn), and matching the Nth transcript call to the Nth
-captured row would then attach the wrong output to a row -- a corrupted
-transcript, silently. So a captured row is only used when every argument it
-recorded is present with the same value on the transcript row (Hermes persists
-a superset: the call's arguments plus the tool's defaults), scanning forward
-from the last match so an unmatched capture is skipped rather than forced.
-No match means no result, which is exactly what the row had before.
-
-Pure: no I/O. The routes fetch the captured rows and hand them in.
-"""
+"""Put captured tool results back onto a reloaded transcript."""
 
 from __future__ import annotations
 
@@ -37,8 +7,6 @@ from typing import Any
 RESULT_SOURCE_FIELD = "_result_source"
 RESULT_SOURCE_CAPTURE = "gateway_capture"
 
-#: Result string fields worth carrying whole are short by nature; these two
-#: are the ones that can be a whole file or a whole build log.
 _LONG_TEXT_FIELDS = ("output", "content", "stdout", "stderr")
 _LONG_TEXT_LIMIT = 4_000
 

@@ -1,29 +1,4 @@
-"""Direct filesystem access, replacing Hermes's undocumented file routes.
-
-`docs/PLUGIN_V2_PLAN.md` §4.4. The sidecar reached the Hermes sandbox over five
-routes that were found by PROBING and are documented nowhere upstream:
-`/api/files`, `/api/files/download`, `/api/fs/read-text`, `/api/fs/write-text`
-and `/api/files/mkdir`. Nothing guarantees their shape survives a Hermes
-upgrade, and two of them (`/api/fs/*`) enforce **no path confinement at all**.
-
-Running inside Hermes, the same files are simply on disk. These overrides do
-the I/O directly and return `httpx.Response` objects in exactly the shapes the
-callers already parse, so `api/sandbox.py`, `api/sandbox_text.py`,
-`domain/prompt_files.py`, `domain/project_workspace.py` and
-`domain/artifact_ingest.py` are untouched.
-
-**`files_download` is deliberately NOT overridden.** It is the one file route
-Hermes confines server-side (`/api/files*` enforces its own `locked_root`), and
-it streams with native Range support that a naive in-memory replacement would
-lose. Moving it would trade a real safety net and a streaming path for a
-latency win that does not matter -- so it keeps using the HTTP route.
-
-Confinement here is defence in depth, not decoration: the gateway's own
-`validate_sandbox_path` is what the callers apply, and this refuses anything
-outside the root a second time. Direct `open()` on an attacker-influenced path
-is a different risk class from an HTTP call that at least had a server-side
-root, so the check is repeated at the point of I/O.
-"""
+"""Direct filesystem access, replacing Hermes's undocumented file routes."""
 
 from __future__ import annotations
 
@@ -35,8 +10,6 @@ from typing import Any
 
 import httpx
 
-# Text files above this are returned truncated, matching the upstream route's
-# own `truncated` flag rather than streaming an unbounded file into memory.
 MAX_TEXT_BYTES = 2_000_000
 
 
@@ -45,11 +18,7 @@ class SandboxConfinementError(Exception):
 
 
 def _resolve_within(raw_path: str, root: str) -> Path:
-    """Resolve `raw_path` and refuse anything outside `root`.
-
-    `os.path.realpath` on BOTH sides, so a symlink pointing out of the sandbox
-    is caught too -- a lexical check alone would accept it.
-    """
+    """Resolve `raw_path` and refuse anything outside `root`."""
     root_real = Path(os.path.realpath(root))
     target = Path(os.path.realpath(raw_path))
     if target != root_real and root_real not in target.parents:
@@ -87,7 +56,7 @@ def list_directory(raw_path: str, root: str) -> httpx.Response:
             try:
                 stat = child.stat()
             except OSError:
-                continue  # a broken symlink or a file that vanished mid-scan
+                continue
             entries.append({
                 "name": child.name,
                 "path": str(child),
@@ -129,8 +98,6 @@ def read_text(raw_path: str, root: str) -> httpx.Response:
         text = head.decode("utf-8")
         binary = False
     except UnicodeDecodeError:
-        # Same answer the upstream route gives: say it is binary rather than
-        # returning mojibake the editor would happily save back.
         text = ""
         binary = True
 
@@ -146,11 +113,7 @@ def read_text(raw_path: str, root: str) -> httpx.Response:
 
 
 def write_text(raw_path: str, content: str, root: str) -> httpx.Response:
-    """`POST /api/fs/write-text` — the measured shape, verbatim.
-
-    Written to a temporary file in the same directory and renamed, so a
-    crash mid-write cannot leave a half-written file where a whole one was.
-    """
+    """`POST /api/fs/write-text` — the measured shape, verbatim."""
     try:
         target = _resolve_within(raw_path, root)
     except SandboxConfinementError as exc:
@@ -182,18 +145,7 @@ def make_directory(raw_path: str, root: str) -> httpx.Response:
 def deliver_attachment(
     sandbox_path: str, source_path: str, root: str, expected_checksum: str | None = None
 ) -> tuple[bool, str]:
-    """Put an uploaded file into the sandbox directly.
-
-    Replaces the sidecar's whole delivery chain: a capability URL the sandbox
-    host had to reach, a priming turn telling the AGENT to `curl` it, and a
-    poll that streamed the file back for a sha256 comparison under a
-    15-minute ceiling. All of that existed only because the gateway was in a
-    different container.
-
-    The checksum is still verified after the copy. It is cheap, and it is the
-    one check that was actually earning its keep: it proves what landed is
-    what was uploaded, whoever wrote it.
-    """
+    """Put an uploaded file into the sandbox directly."""
     import hashlib
     import shutil
 

@@ -1,14 +1,4 @@
-"""Reading and writing tags, for both owners.
-
-`docs/ARTIFACT_ORGANIZATION_PLAN.md` §4.2/§5.2. One vocabulary, two join
-tables, and one module so the two owners cannot drift: an artifact and a
-project attach a tag by the same rules, and the day a third owner appears it
-gets the same ones.
-
-**Every write normalizes.** Nothing here takes a raw name on trust, because
-the whole value of a tag vocabulary is that `Results` and `results` are one
-tag (`domain/tags.py`).
-"""
+"""Reading and writing tags, for both owners."""
 
 from __future__ import annotations
 
@@ -21,9 +11,6 @@ from sqlalchemy.orm import Session as OrmSession
 from domain.models import Artifact, ArtifactTag, ProjectTag, Tag, new_id, utcnow
 from domain.tags import normalize_tag_name
 
-#: The join table for each owner kind, and the column naming the operator. One
-#: table rather than a branch at every call site: adding an owner is a row
-#: here, not an `if` in six functions.
 _JOINS: dict[str, tuple[Any, Any]] = {
     "artifact": (ArtifactTag, ArtifactTag.artifact_id),
     "project": (ProjectTag, ProjectTag.project_id),
@@ -38,12 +25,7 @@ def _join_for(owner: str) -> tuple[Any, Any]:
 
 
 def get_or_create(db: OrmSession, name: str) -> Tag:
-    """The tag called `name`, created if new. Idempotent by the unique index.
-
-    Normalizing first is what makes it idempotent: without it "Results" would
-    create a second row that renders identically to "results" in every chip
-    and filters to a different set.
-    """
+    """The tag called `name`, created if new. Idempotent by the unique index."""
     normalized = normalize_tag_name(name)
     existing = db.execute(select(Tag).where(Tag.name == normalized)).scalar_one_or_none()
     if existing is not None:
@@ -55,13 +37,7 @@ def get_or_create(db: OrmSession, name: str) -> Tag:
 
 
 def names_for(db: OrmSession, owner: str, owner_ids: list[str]) -> dict[str, list[str]]:
-    """`{owner_id: [tag names]}`, sorted, for many owners in one query.
-
-    Batched because the alternative is a query per row in a 200-row listing.
-    An owner with no tags is simply absent; the caller renders `[]`, which is
-    always present on the wire so a client never has to treat absence as a
-    special case.
-    """
+    """`{owner_id: [tag names]}`, sorted, for many owners in one query."""
     if not owner_ids:
         return {}
     join, owner_column = _join_for(owner)
@@ -84,12 +60,7 @@ def names_of(db: OrmSession, owner: str, owner_id: str) -> list[str]:
 
 
 def attach(db: OrmSession, owner: str, owner_id: str, name: str) -> bool:
-    """Give `owner_id` the tag `name`. `True` when it was not already there.
-
-    Idempotent: re-tagging is not an error, and unlike a bookmark it does not
-    refresh a timestamp -- a tag has no ordering that a re-tag could mean
-    anything about.
-    """
+    """Give `owner_id` the tag `name`. `True` when it was not already there."""
     join, owner_column = _join_for(owner)
     tag = get_or_create(db, name)
     existing = db.execute(
@@ -104,12 +75,7 @@ def attach(db: OrmSession, owner: str, owner_id: str, name: str) -> bool:
 
 
 def detach(db: OrmSession, owner: str, owner_id: str, name: str) -> bool:
-    """Take the tag off. `True` when it was there.
-
-    The TAG itself survives an empty detach: it is a vocabulary entry the
-    owner typed, and deleting it because its last artifact lost it would make
-    the tag list flicker with their own work.
-    """
+    """Take the tag off. `True` when it was there."""
     normalized = normalize_tag_name(name)
     join, owner_column = _join_for(owner)
     tag = db.execute(select(Tag).where(Tag.name == normalized)).scalar_one_or_none()
@@ -122,12 +88,7 @@ def detach(db: OrmSession, owner: str, owner_id: str, name: str) -> bool:
 def apply_bulk(
     db: OrmSession, owner: str, owner_ids: list[str], *, add: list[str], remove: list[str]
 ) -> int:
-    """Add and remove tags across many owners. Returns how many owners changed.
-
-    One transaction, and **adds run before removes** so a request carrying the
-    same name in both lists ends with it removed. Arbitrary either way, but it
-    has to be decided somewhere rather than left to dictionary order.
-    """
+    """Add and remove tags across many owners. Returns how many owners changed."""
     changed: set[str] = set()
     for owner_id in owner_ids:
         for name in add:
@@ -140,12 +101,7 @@ def apply_bulk(
 
 
 def owner_ids_with_all(db: OrmSession, owner: str, names: list[str]) -> list[str]:
-    """Owners carrying EVERY one of `names` (AND, not OR).
-
-    AND because tags narrow: an owner filtering by `l328` and `results` is
-    asking for the intersection, and OR would hand back more rows the more
-    precisely they asked.
-    """
+    """Owners carrying EVERY one of `names` (AND, not OR)."""
     if not names:
         return []
     join, owner_column = _join_for(owner)
@@ -163,19 +119,7 @@ def owner_ids_with_all(db: OrmSession, owner: str, names: list[str]) -> list[str
 def catalog(
     db: OrmSession, *, project_id: str | None = None, unfiled: bool = False
 ) -> list[dict[str, Any]]:
-    """Every tag with its two counts, most used first, ties alphabetical.
-
-    Counts come from the joins rather than being stored, so they cannot drift
-    from the rows they describe.
-
-    **Scoped on request.** `project_id` (or `unfiled=True`)
-    narrows to the tags that scope's artifacts actually carry, with that
-    scope's counts, and drops the rest of the vocabulary entirely. The operator's
-    report was about stars, but the same complaint applies here: a brand-new
-    project offering forty tags that match nothing in it is a menu of dead
-    ends. The vocabulary itself stays shared -- this only changes which part
-    of it a scope is shown.
-    """
+    """Every tag with its two counts, most used first, ties alphabetical."""
     scoped = project_id is not None or unfiled
     artifact_query = select(ArtifactTag.tag_id, func.count()).group_by(ArtifactTag.tag_id)
     if scoped:
@@ -186,12 +130,8 @@ def catalog(
 
     project_query = select(ProjectTag.tag_id, func.count()).group_by(ProjectTag.tag_id)
     if project_id is not None:
-        # In a project, "1 project carries this" can only mean this one.
         project_query = project_query.where(ProjectTag.project_id == project_id)
     elif unfiled:
-        # The unfiled scope has no project, so no project can carry a tag in
-        # it -- reporting the workspace's project counts there would be a
-        # count of something the operator is not looking at.
         project_query = project_query.where(sa_false())
     project_counts = dict(db.execute(project_query).all())
 
@@ -206,17 +146,13 @@ def catalog(
         for tag in tags
     ]
     if scoped:
-        # A tag nothing here carries is not part of this scope's vocabulary.
         rows = [row for row in rows if row["artifact_count"] or row["project_count"]]
     rows.sort(key=lambda row: (-(row["artifact_count"] + row["project_count"]), row["name"]))
     return rows
 
 
 def delete_tag(db: OrmSession, tag_id: str) -> tuple[bool, int]:
-    """Remove a tag from the vocabulary. `(deleted, how many owners lost it)`.
-
-    Never deletes an artifact or a project; the cascade only clears the joins.
-    """
+    """Remove a tag from the vocabulary. `(deleted, how many owners lost it)`."""
     tag = db.get(Tag, tag_id)
     if tag is None:
         return False, 0
@@ -238,12 +174,7 @@ def delete_tag(db: OrmSession, tag_id: str) -> tuple[bool, int]:
 
 
 def rename(db: OrmSession, tag_id: str, name: str) -> Tag | None:
-    """Rename a tag, merging into an existing one if the new name is taken.
-
-    Merging rather than refusing: the operator asking to rename `fig` to
-    `figure` when `figure` exists means "these are the same thing", and a 409
-    would leave them to do it by hand across every artifact.
-    """
+    """Rename a tag, merging into an existing one if the new name is taken."""
     tag = db.get(Tag, tag_id)
     if tag is None:
         return None

@@ -1,20 +1,4 @@
-"""Reading and writing collections.
-
-`docs/ARTIFACT_ORGANIZATION_PLAN.md` §4.3/§5.3. A collection is a named,
-ordered, cross-project set the operator curates. **Ordered is the whole
-difference from a tag**: "figures for the L328 paper" has a figure 1 and a
-figure 2, and a tag has no such thing.
-
-Two rules run through everything here:
-
-* **Membership is a decision, so `position` is explicit.** Appending gives a
-  new member `max + 1`; reordering rewrites the whole set at once, because a
-  partial reorder has no meaning (the positions it does not mention are
-  ambiguous).
-* **Removing never deletes an artifact.** Deleting a collection, or dropping a
-  member, only clears the membership. There is no delete for an artifact
-  anywhere in this system.
-"""
+"""Reading and writing collections."""
 
 from __future__ import annotations
 
@@ -25,8 +9,6 @@ from sqlalchemy.orm import Session as OrmSession
 
 from domain.models import Artifact, Collection, CollectionArtifact, new_id, utcnow
 
-#: A collection name is shown as a title, not a chip, so it may hold anything
-#: printable -- but it still has to fit a row and be typed on a phone.
 MAX_COLLECTION_NAME_CHARS = 64
 MAX_COLLECTION_DESCRIPTION_CHARS = 280
 
@@ -36,13 +18,7 @@ class CollectionNameError(ValueError):
 
 
 def normalize_collection_name(raw: str) -> str:
-    """Trim and collapse whitespace; reject empty or over-long.
-
-    Deliberately lighter than `normalize_tag_name`: a collection is a title
-    someone reads, so case and spaces are theirs to choose. Uniqueness is
-    still enforced by the index, which is what stops two collections whose
-    names differ only by a trailing space.
-    """
+    """Trim and collapse whitespace; reject empty or over-long."""
     if not isinstance(raw, str):
         raise CollectionNameError("a collection name must be text")
     collapsed = " ".join(raw.split())
@@ -68,12 +44,7 @@ def _counts(db: OrmSession, collection_ids: list[str]) -> dict[str, int]:
 
 
 def _first_artifact_ids(db: OrmSession, collection_ids: list[str]) -> dict[str, str]:
-    """The lowest-positioned member of each collection, for the cover.
-
-    One query for every collection rather than one per row: the list screen
-    shows a dozen of these and a per-row lookup is a dozen round trips to the
-    database for a thumbnail.
-    """
+    """The lowest-positioned member of each collection, for the cover."""
     if not collection_ids:
         return {}
     rows = db.execute(
@@ -99,18 +70,12 @@ def collection_json(
         "count": count,
         "created_at": iso_z(collection.created_at),
         "updated_at": iso_z(collection.updated_at),
-        # The first member, so the list can show what this collection is
-        # without a second request per row. `null` for an empty one.
         "cover": cover,
     }
 
 
 def listing(db: OrmSession, render: Any) -> list[dict[str, Any]]:
-    """Every collection, most recently touched first.
-
-    `render` turns an `Artifact` into its wire row; passed in rather than
-    imported so this module does not depend on the artifact API surface.
-    """
+    """Every collection, most recently touched first."""
     collections = list(
         db.execute(
             select(Collection).order_by(Collection.updated_at.desc(), Collection.name)
@@ -140,12 +105,7 @@ def listing(db: OrmSession, render: Any) -> list[dict[str, Any]]:
 
 
 def create(db: OrmSession, name: str, description: str | None) -> Collection:
-    """Make a collection. Idempotent on the name, like tag creation.
-
-    An existing name returns that collection rather than 409ing: the caller's
-    intent ("a collection called this should exist") is already true, and
-    forcing them to check first would just move the race.
-    """
+    """Make a collection. Idempotent on the name, like tag creation."""
     normalized = normalize_collection_name(name)
     existing = db.execute(
         select(Collection).where(Collection.name == normalized)
@@ -174,12 +134,7 @@ def _next_position(db: OrmSession, collection_id: str) -> int:
 
 
 def add(db: OrmSession, collection: Collection, artifact_ids: list[str]) -> int:
-    """Append artifacts to the end. Returns how many were actually added.
-
-    Already-a-member is not an error and does NOT move the row: a collection's
-    order is the operator's decision, and re-adding something should not silently
-    send it to the bottom of a list they arranged.
-    """
+    """Append artifacts to the end. Returns how many were actually added."""
     present = {
         artifact_id
         for (artifact_id,) in db.execute(
@@ -192,8 +147,6 @@ def add(db: OrmSession, collection: Collection, artifact_ids: list[str]) -> int:
         artifact_id
         for (artifact_id,) in db.execute(select(Artifact.id).where(Artifact.id.in_(artifact_ids)))
     ]
-    # The caller's order, not the database's: adding three selected rows
-    # should put them in the collection in the order they were picked.
     ordered = [artifact_id for artifact_id in artifact_ids if artifact_id in set(known)]
     position = _next_position(db, collection.id)
     added = 0
@@ -244,12 +197,6 @@ def member_ids(db: OrmSession, collection_id: str) -> list[str]:
 def reorder(db: OrmSession, collection: Collection, artifact_ids: list[str]) -> bool:
     """Rewrite the whole order. `False` when `artifact_ids` is not the
     membership.
-
-    **The full set, or nothing.** A partial reorder leaves the positions it
-    does not mention ambiguous, and the two readings -- "leave them where they
-    are" and "push them to the end" -- produce different lists from the same
-    request. Refusing is the only answer that cannot silently scramble a list
-    someone arranged by hand.
     """
     current = set(member_ids(db, collection.id))
     if set(artifact_ids) != current or len(artifact_ids) != len(current):
@@ -278,10 +225,7 @@ def containing(db: OrmSession, artifact_id: str) -> list[dict[str, str]]:
 
 
 def delete_collection(db: OrmSession, collection_id: str) -> tuple[bool, int]:
-    """Remove a collection. `(deleted, how many memberships went with it)`.
-
-    The artifacts are untouched, always.
-    """
+    """Remove a collection. `(deleted, how many memberships went with it)`."""
     collection = db.get(Collection, collection_id)
     if collection is None:
         return False, 0

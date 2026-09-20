@@ -1,33 +1,4 @@
-"""chat history: chat_messages, retiring messages/turns
-
-P1 chat-history redesign (B-136, `docs/CHAT_HISTORY_DESIGN.md` §3/§4). Two
-changes, one revision, because `tests/test_projects.py::test_alembic_chain_matches_the_models`
-requires the models and the chain to land together:
-
-* **Drops `messages` and `turns`.** Both have had 0 rows since P2-2 --
-  `events/persistence.py`'s own module docstring records why that Phase-0
-  "grow a second transcript copy in the gateway" machinery was cut rather
-  than wired up (Hermes owns the transcript; nothing ever read this copy).
-  Nothing else in the schema is FK-dependent on their *data* (both are
-  empty), but `runs.turn_id` pointed at `turns.id` at the DDL level, so that
-  column is rebuilt first, as a plain unenforced String (mirroring the
-  existing, deliberately-unenforced `context_snapshots.turn_id` back
-  -reference) -- it was never written by any code path either.
-* **Adds `chat_messages`** -- the new durable chat-history table, captured
-  from each Hermes profile's own live event stream
-  (`domain/profile_connection.py`) plus the app's own turn-submit route
-  (`domain/chat_store.py`). Schema matches `docs/CHAT_HISTORY_DESIGN.md` §4
-  exactly: uniqueness is `(profile, stored_session_id, seq)`, never
-  `stored_session_id` alone, because profiles are separate Hermes runtimes
-  with separate id spaces.
-
-Hand-written against head `9b2e4c7a1d53`.
-
-Revision ID: fefd36f63ff6
-Revises: 9b2e4c7a1d53
-Create Date: 2026-09-05 00:00:00.000000+00:00
-
-"""
+"""chat history: chat_messages, retiring messages/turns"""
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -36,7 +7,6 @@ from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
 revision: str = 'fefd36f63ff6'
 down_revision: Union[str, None] = '9b2e4c7a1d53'
 branch_labels: Union[str, Sequence[str], None] = None
@@ -44,18 +14,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # `messages` first (child of `turns` at the DDL level; both are empty).
     op.drop_table('messages')
 
-    # `runs.turn_id` pointed at `turns.id`. Drop that FK before dropping
-    # `turns` -- SQLite batch mode's recreate otherwise preserves every
-    # constraint it reflects off the existing table, FK included, even when
-    # only unrelated columns are touched. The original migration declared
-    # the FK unnamed, so `naming_convention` assigns it a deterministic name
-    # (from the reflected column/target) purely so `drop_constraint` has
-    # something to call -- verified against a real copy of this exact table:
-    # the other three FKs on `runs` (project_id/session_id/parent_run_id)
-    # survive the recreate untouched.
     _runs_fk_naming = {
         "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     }

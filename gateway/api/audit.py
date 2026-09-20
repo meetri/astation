@@ -1,46 +1,4 @@
-"""The audit surface: what actually happened on the host, for the app and for AI tooling.
-
-    GET  /api/audit/health                      is the pipeline alive, and how far behind
-    GET  /api/audit/sessions/{id}/timeline      what a session's work did on the host
-    GET  /api/audit/files                       file changes, by path prefix and time
-    GET  /api/audit/net                         connections, by time / port / address
-    POST /api/audit/query                       one read-only SELECT, capped and recorded
-    GET  /api/audit/schema                      the tables and columns, for writing queries
-
-Everything here reads `domain/audit_store.py`, which owns the connection, the
-read-only rules and the recording. This module owns the HTTP shape and the two
-decisions that are specific to it:
-
-**A 503 is an answer.** When the store is not configured or cannot be reached,
-every route says so with the reason. None of them degrades to an empty list. In
-a security surface "nothing happened" and "we could not look" must never render
-the same, so the distinction is carried all the way to the client.
-
-**A session's timeline shows that session and nothing else, in two tiers that
-are never merged.** The session's own tool calls come from `audit.agent_tool`
-and are marked as the agent's account. What the kernel independently recorded
-comes from `audit.exec_attributed`, with files and connections following the
-exec ids those processes produced, and is marked as observed. The host is doing
-other work the whole time -- other sessions, other containers, its own
-housekeeping -- and none of it appears.
-
-Both tiers are shown because they answer different questions, and they are
-labelled because collapsing them would let the weaker one borrow the authority
-of the stronger. The kernel's record cannot be forged by a compromised agent
-and is the better evidence, but it only exists where the work left a trace the
-sensor captures: the file policy records writes, so a session that only reads
-and searches produces no host rows at all. Showing only the corroborated subset
-meant such a session rendered as "nothing traced", while its full account sat
-in the store unread.
-
-This route used to fall back to a TIME WINDOW when no tool call had been
-captured, returning everything the host recorded while the session happened to
-be running. It was labelled as inferred, but a labelled wrong answer is still a
-wrong answer on a screen headed "what this session did": most of those rows
-belonged to something else. Removed 2026-09-20 at the operator's direction. Where
-there is no attribution the route now returns nothing and says why, which is
-the honest shape of "we cannot tell".
-"""
+"""The audit surface: what actually happened on the host, for the app and for AI tooling."""
 
 from __future__ import annotations
 
@@ -67,18 +25,13 @@ logger = logging.getLogger(__name__)
 
 audit_router = APIRouter(tags=["audit"])
 
-#: Same guard `api/runs.py` uses. The timeline reads the run ledger, and
-#: `runtime_session_id` is the column it correlates on, so a database that
-#: predates it must fail loudly rather than return an empty timeline.
 _audit_db = schema_checked_db(
     "audit_runs_schema_verified",
     lambda engine: columns_present(engine, "runs", "runtime_session_id"),
 )
 
-#: How far back a timeline looks when a session has no recorded runs.
 _FALLBACK_WINDOW_S = 3600
 
-#: Classes whose freshness `GET /health` reports.
 _HEALTH_CLASSES = ("host_exec", "host_file", "host_net", "host_beat")
 
 
@@ -97,13 +50,7 @@ def _recorder(request: Request) -> AuditRecorder | None:
 
 
 def _caller(request: Request) -> str:
-    """Who is asking. `agent:<profile>` for tooling, `app:<user>` for a person.
-
-    The audit profile's own login is recognised so an AI analyst's reads are
-    distinguishable from a person's in `audit.audit_query`. Anything else is
-    reported as `app`, never as an empty string -- an unattributed row in the
-    query log is the one row you would most want attributed.
-    """
+    """Who is asking. `agent:<profile>` for tooling, `app:<user>` for a person."""
     header = request.headers.get("x-trg-audit-caller", "").strip()
     if header:
         return header[:120]
@@ -158,19 +105,9 @@ async def _run_read(
     return result
 
 
-# --- health ---------------------------------------------------------------
-
-
 @audit_router.get("/audit/health")
 async def audit_health(request: Request) -> dict[str, Any]:
-    """Is the pipeline alive, and how far behind is it?
-
-    Freshness per class is the real signal. The beat is the one that matters
-    most: the shipper emits it every minute whatever else is happening, so a
-    stale beat means the pipeline is down even on a host where nothing else is
-    running. `GET /health` on a quiet host with a dead sensor otherwise looks
-    identical to a quiet host.
-    """
+    """Is the pipeline alive, and how far behind is it?"""
     store = _store(request)
     recorder = _recorder(request)
     if not store.configured:
@@ -215,8 +152,6 @@ async def audit_health(request: Request) -> dict[str, Any]:
         for row in result.rows
     ]
     beats = [c for c in classes if c["class"] == "host_beat"]
-    # 900s matches the off-box heartbeat's threshold, which was raised to sit
-    # clear of the shipper's 60s batch jitter (scripts/audit_heartbeat.py).
     stale = [c for c in beats if c["newest_age_s"] > 900]
     if not beats:
         status = "no_data"
@@ -238,19 +173,11 @@ async def audit_health(request: Request) -> dict[str, Any]:
     }
 
 
-# --- the session timeline -------------------------------------------------
-
-
 def _windows_for_session(db: OrmSession, stored_session_id: str) -> list[dict[str, Any]]:
     """The time ranges a session was working, from this gateway's run ledger."""
     runs = (
         db.execute(
             select(Run)
-            # `runtime_session_id`, NOT `session_id`: the latter is the
-            # workspace filing FK (`sess_...`), and a stored Hermes id never
-            # matches it. Getting this backwards returns an empty timeline
-            # with no error -- the exact failure CLAUDE.md calls this
-            # project's recurring bug class.
             .where(Run.runtime_session_id == stored_session_id)
             .order_by(Run.started_at.desc())
             .limit(50)
@@ -269,8 +196,6 @@ def _windows_for_session(db: OrmSession, stored_session_id: str) -> list[dict[st
                 "started_at": run.started_at.isoformat(),
                 "ended_at": ended.isoformat() if ended else None,
                 "status": run.status,
-                # An open run has no end; bound it at "now" so the query is
-                # closed, and say so rather than silently using a made-up end.
                 "open": ended is None,
             }
         )
@@ -278,20 +203,7 @@ def _windows_for_session(db: OrmSession, stored_session_id: str) -> list[dict[st
 
 
 def _profile_of_session(db: OrmSession, stored_session_id: str, rows: list[dict[str, Any]]) -> str:
-    """Which profile this session runs on.
-
-    The AUDIT STORE is asked first, not the gateway's run ledger. An
-    `agent_tool` row's profile is written by the profile's own `gateway run`
-    process, about itself, so it cannot be wrong. The ledger's column can be:
-    measured 2026-09-20, every run recorded in two hours carried `default`,
-    including those of a live `gpt-astra` session whose audit rows and whose
-    kernel exec paths both said otherwise. Keying the inference below
-    on a wrong profile would scope it to the wrong processes, which is the one
-    mistake this tier must not make.
-
-    The ledger remains the fallback, for a session whose audit rows predate
-    attribution.
-    """
+    """Which profile this session runs on."""
     for row in rows:
         profile = str(row.get("row_profile") or "").strip()
         if profile:
@@ -311,19 +223,6 @@ def _unambiguous_windows(
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Split a session's run windows by whether anything else could have caused
     the host activity inside them.
-
-    The indirect tier below attributes a process to a session because the
-    process names this profile and ran inside this session's turn. That is only
-    sound when NO OTHER SESSION of the same profile was running at the same
-    time. When one was, the two are indistinguishable by this method and the
-    rows are withheld rather than split by a guess.
-
-    Measured over the full run ledger on this host, 2026-09-20: 78.7% of 1,006
-    runs had no same-profile session overlapping them, and for most non-default
-    profiles it was every run. `default` is the crowded one at 71%. So this is
-    usually available and, crucially, its availability is CHECKED per run rather
-    than assumed -- which is what separates it from the time-window fallback
-    that was removed for returning other sessions' work.
     """
     if not profile:
         return [], {w["run_id"] for w in windows}
@@ -341,8 +240,6 @@ def _unambiguous_windows(
     for window in windows:
         start, end = window["started_at"], window["ended_at"]
         if end is None:
-            # An open run has no end. Bounding it at "now" would let anything
-            # started since count as this session's, so it is left out.
             ambiguous.add(window["run_id"])
             continue
         overlap = any(
@@ -362,56 +259,17 @@ async def session_timeline(
     limit: int = Query(500, ge=1, le=5000),
     db: OrmSession = Depends(_audit_db),
 ) -> dict[str, Any]:
-    """What THIS SESSION did on the host. Nothing else.
-
-    Every row here was produced by a process one of this session's own tool
-    calls started, or by that process's descendants. The host is busy with
-    other work at the same time -- other sessions, other containers, the
-    machine's own housekeeping -- and none of it appears.
-
-    That is a deliberate narrowing. This route previously
-    fell back to a TIME WINDOW when no tool call had been captured, returning
-    everything the host recorded while the session happened to be working.
-    It was labelled as inferred, but a labelled wrong answer is still a wrong
-    answer on a screen that says "what this session did": the rows were mostly
-    other people's work. When there is no attribution, this now returns nothing
-    and says why.
-    """
+    """What THIS SESSION did on the host. Nothing else."""
     windows = _windows_for_session(db, stored_session_id)
     if run_id:
         windows = [w for w in windows if w["run_id"] == run_id]
         if not windows:
             raise HTTPException(status_code=404, detail=f"no run {run_id} on this session")
 
-    # One query, always scoped to the session, carrying TWO KINDS OF EVIDENCE
-    # that are never merged into one undifferentiated list.
-    #
-    # `source = 'agent'` is the session's own tool call, captured in the agent's
-    # process by `pre_tool_call`. It is the agent's ACCOUNT of what it asked
-    # for. It is always available, including for tools that touch the kernel in
-    # no observable way.
-    #
-    # `source = 'host'` is what the kernel independently recorded. It is the
-    # stronger evidence and a compromised agent cannot forge it, but it only
-    # exists where the work left a trace the sensor captures.
-    #
-    # Both are shown, labelled, because they answer different questions and
-    # because collapsing them would let the weaker one borrow the authority of
-    # the stronger. Measured on this host, 2026-09-20: a real session's eight
-    # tool calls were `skill_view`, `search_files` and `read_file`, none of
-    # which runs a shell command or writes a file, so the host row count was
-    # zero and this screen showed nothing at all. The account was in the store
-    # the whole time.
     params: dict[str, Any] = {"session": stored_session_id, "limit": limit}
 
     def window_clause(column: str = "ts") -> str:
-        """The optional single-run filter, for whichever alias holds `ts`.
-
-        The tool branch joins the table to itself, so its timestamp column is
-        qualified. Emitting a bare `ts` there is ambiguous and the whole query
-        fails -- with the run filter on only, which is the path a test is least
-        likely to cover.
-        """
+        """The optional single-run filter, for whichever alias holds `ts`."""
         if not (run_id and windows):
             return ""
         if windows[0]["ended_at"] is None:
@@ -426,9 +284,6 @@ async def session_timeline(
         if windows[0]["ended_at"] is not None:
             params["end"] = windows[0]["ended_at"]
 
-    # No column is ever aliased over its own name. Casting the timestamp to a
-    # string under its own alias once shadowed the real column, and the window
-    # filter then compared a string to a timestamp. A test holds that shape.
     tool_window = window_clause("t.ts")
     host_window = window_clause()
     sql = f"""
@@ -489,22 +344,6 @@ async def session_timeline(
     """
     result = await _run_read(request, route="sessions.timeline", sql=sql, params=params)
 
-    # --- the indirect tier ------------------------------------------------
-    #
-    # A tool that runs no shell command of its own can still start processes.
-    # Measured on this host: `write_file` creating one file produced
-    # `bash -c "source .../profiles/deepseek/cache/terminal/..."` and then
-    # `mv /opt/data/.hermes-tmp.XXXX /opt/data/<target>`. The tool call has no
-    # command, so none of that joins to it, and the whole record of the write
-    # was invisible on this screen.
-    #
-    # Those processes name their profile in their own argv, cwd or parent argv,
-    # so the kernel data identifies the PROFILE by itself. A profile is not a
-    # session, which is why this is gated: the rows are included only for runs
-    # where no other session of the same profile was active, and withheld
-    # otherwise. The gateway process's own housekeeping (shared state, cron
-    # locks, the agent log) is excluded by construction, because its argv is
-    # `hermes -p <name> gateway run` and never contains the profile PATH.
     inferred_rows: list[dict[str, Any]] = []
     ambiguous: set[str] = set()
     profile = _profile_of_session(db, stored_session_id, result.rows)
@@ -544,17 +383,12 @@ async def session_timeline(
                     params=inferred_params,
                 )
             except HTTPException:
-                # The indirect tier is an ENHANCEMENT. If it cannot be read,
-                # the exact tiers above must still be returned rather than the
-                # whole screen failing.
                 break
             inferred_rows.extend(extra.rows)
 
     all_rows = list(result.rows) + inferred_rows
 
     if not all_rows:
-        # Empty is a real answer here, and its causes read differently to
-        # someone deciding whether to trust the screen.
         return {
             "session_id": stored_session_id,
             "correlation": "none",
@@ -569,9 +403,6 @@ async def session_timeline(
             ),
         }
 
-    # Group by run where the ledger knows one, so a long session reads turn by
-    # turn. Events outside every window still appear, under `attributed`, and
-    # are never dropped for failing to land in a run.
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in sorted(all_rows, key=lambda r: str(r.get("ts") or "")):
         groups.setdefault(_run_for(row.get("ts"), windows), []).append(row)
@@ -593,8 +424,6 @@ async def session_timeline(
             }
         )
 
-    # Which evidence is actually present decides how the screen must be read,
-    # so it is reported rather than left for the client to infer from counts.
     agent_rows = sum(1 for row in all_rows if row.get("source") == "agent")
     inferred_count = sum(1 for row in all_rows if row.get("source") == "inferred")
     host_rows = len(all_rows) - agent_rows - inferred_count
@@ -635,9 +464,6 @@ async def session_timeline(
             "host_observed": host_rows,
             "inferred": inferred_count,
         },
-        # Runs where another session of the same profile was active at the same
-        # time. Their indirect rows are withheld, and saying which runs those
-        # are is the difference between a gap and a silent omission.
         "ambiguous_runs": sorted(ambiguous),
         "windows": windows,
         "runs": runs_out,
@@ -645,12 +471,7 @@ async def session_timeline(
 
 
 def _run_for(timestamp: Any, windows: list[dict[str, Any]]) -> str:
-    """Which run's window contains this event, or `attributed` for none.
-
-    A bucket rather than a filter: an event that falls outside every recorded
-    run still belongs to the session, and dropping it would hide real work
-    because a separate ledger happened not to record the turn.
-    """
+    """Which run's window contains this event, or `attributed` for none."""
     stamp = _comparable(timestamp)
     for window in windows:
         start = _comparable(window.get("started_at"))
@@ -661,17 +482,8 @@ def _run_for(timestamp: Any, windows: list[dict[str, Any]]) -> str:
 
 
 def _comparable(value: Any) -> str:
-    """One string shape for the two timestamp formats that meet here.
-
-    The run ledger produces `datetime.isoformat()` -- `2026-09-20T19:07:10` --
-    and the store produces `2026-09-20 19:07:10.123`. Comparing them as written
-    always fails, because `"T"` sorts above `" "`, so every event fell into the
-    leftover bucket and a session's work was never grouped by turn. Measured on
-    a live timeline 2026-09-20: one run window, every row in `attributed`.
-    """
+    """One string shape for the two timestamp formats that meet here."""
     text = str(value or "").strip().replace("T", " ")
-    # Trailing zone markers appear on some rows and not others; they would
-    # otherwise sort after the fractional seconds and skew the comparison.
     for suffix in ("Z", "+00:00"):
         if text.endswith(suffix):
             text = text[: -len(suffix)]
@@ -685,10 +497,6 @@ def _group(rows: list[dict[str, Any]], truncated: bool) -> dict[str, Any]:
     return {"counts": counts, "events": rows, "truncated": truncated}
 
 
-#: How much of a recorded result a single call returns. Results on the operator's
-#: host average ~3,500 characters and run past 200,000; the viewer that renders
-#: this highlights up to 512 KiB, so this cap is about what crosses the network
-#: to a phone rather than about what can be displayed.
 _MAX_RESULT_CHARS = 200_000
 
 
@@ -698,24 +506,7 @@ async def tool_call_output(
     request: Request,
     stored_session_id: str = Query(..., description="the session the call belongs to"),
 ) -> dict[str, Any]:
-    """What a tool actually returned, from the CONVERSATION store.
-
-    This is the one route on the audit surface that does not read the audit
-    store, and the difference matters enough to state on the response itself.
-
-    The audit trail deliberately holds no tool output: a
-    file read returns the file, and the audit archive cannot be edited or
-    deleted for the retention window, so a secret the redaction missed would be
-    permanent. The gateway's own chat store has held these results all along,
-    as part of the conversation. It is a genuinely useful thing to reach for
-    when investigating, and it is NOT evidence in the same sense: the gateway
-    writes that database freely, so a compromised gateway could rewrite it,
-    and the text was never passed through the audit path's masking.
-
-    Every response therefore carries `source` and `evidence` saying exactly
-    that, so a client cannot render it as though it came from the audit trail
-    without ignoring a field that says otherwise.
-    """
+    """What a tool actually returned, from the CONVERSATION store."""
     store = getattr(request.app.state, "chat_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="the chat store is not available")
@@ -725,12 +516,10 @@ async def tool_call_output(
             tool_call_id=tool_call_id,
             max_chars=_MAX_RESULT_CHARS,
         )
-    except Exception as exc:  # a lookup failure is a 503, never a silent empty
+    except Exception as exc:
         logger.warning("tool output lookup failed: %s", exc)
         raise HTTPException(status_code=503, detail="could not read the chat store") from exc
     if found is None:
-        # A real answer: the call is in the audit trail but its result was
-        # never captured -- an older session, or a tool that returned nothing.
         raise HTTPException(
             status_code=404,
             detail="no recorded output for this tool call",
@@ -745,9 +534,6 @@ async def tool_call_output(
             "secret masking."
         ),
     }
-
-
-# --- direct lookups -------------------------------------------------------
 
 
 @audit_router.get("/audit/files")
@@ -822,9 +608,6 @@ async def audit_net(
     }
 
 
-# --- the open query surface ------------------------------------------------
-
-
 class AuditQueryBody(BaseModel):
     """`extra="forbid"`, like every body in this service: an unknown field is a
     422 rather than a silently ignored instruction."""
@@ -840,19 +623,7 @@ async def audit_query(
     request: Request,
     body: AuditQueryBody = Body(...),
 ) -> dict[str, Any]:
-    """One read-only SELECT against the audit schema.
-
-    This is the surface an AI analyst uses. It is deliberately SQL rather than
-    a fixed set of filters: the questions asked of an audit store are open-ended
-    ("every process that wrote outside its project directory during this run"),
-    and a fixed API would answer the ones imagined in advance and no others.
-
-    Three things make that safe, and only one of them is this process:
-    the credential is `SELECT`-only on the audit database with row and time
-    caps declared as constraints a query cannot raise; `validate_select`
-    refuses anything that is not a single read before it is sent; and every
-    call lands in `audit.audit_query` with its caller.
-    """
+    """One read-only SELECT against the audit schema."""
     result = await _run_read(request, route="query", sql=body.sql, params=dict(body.params))
     return {
         "columns": result.columns,
@@ -867,11 +638,7 @@ async def audit_query(
 
 @audit_router.get("/audit/schema")
 async def audit_schema(request: Request) -> dict[str, Any]:
-    """The tables and columns a query may use.
-
-    Served rather than documented so the analyst reads the schema that is
-    actually deployed. A doc drifts; this cannot.
-    """
+    """The tables and columns a query may use."""
     names = ", ".join(f"'{t}'" for t in READABLE_TABLES)
     sql = f"""
         SELECT table, name, type
@@ -883,9 +650,6 @@ async def audit_schema(request: Request) -> dict[str, Any]:
         result = await _run_read(request, route="schema", sql=sql)
     except HTTPException as exc:
         if exc.status_code == 422:
-            # `system.columns` is outside the granted database on a tightly
-            # scoped credential. Fall back to the list this build knows rather
-            # than failing the route.
             return {
                 "tables": [{"table": t, "columns": []} for t in READABLE_TABLES],
                 "note": (

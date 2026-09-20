@@ -1,9 +1,4 @@
-"""Tests for the hook enrichment layer.
-
-These exercise the two hazards the capture analysis surfaced, because both are
-silent in production: a usage event with no session id is dropped by the
-consumers without a word, and a duplicate close mints a phantom run.
-"""
+"""Tests for the hook enrichment layer."""
 
 from __future__ import annotations
 
@@ -50,9 +45,6 @@ def drain_for(recorder) -> capture.HookDrain:
     return capture.HookDrain(queue.Queue(), FakeState(recorder), profile="default")
 
 
-# -- TurnMap ---------------------------------------------------------------
-
-
 def test_turn_map_carries_session_and_model_forward():
     """post_api_request has neither; both must come from pre_llm_call."""
     m = capture.TurnMap()
@@ -80,9 +72,6 @@ def test_turn_map_ignores_a_missing_turn_id():
     m.remember(None, session_id="s")
     assert len(m) == 0
     assert m.get(None) == {}
-
-
-# -- usage translation -----------------------------------------------------
 
 
 def test_usage_payload_maps_both_key_spellings_profile_stats_reads():
@@ -119,9 +108,6 @@ def test_usage_payload_keeps_cache_tokens_the_wire_never_reported():
 def test_usage_payload_omits_model_when_unknown_rather_than_guessing():
     out = capture.usage_payload({"input_tokens": 1, "output_tokens": 1}, None)
     assert "model" not in out
-
-
-# -- post_api_request ------------------------------------------------------
 
 
 def test_usage_is_attributed_through_the_turn_map():
@@ -177,9 +163,6 @@ def test_empty_usage_records_nothing():
     d.handle({"hook": "pre_llm_call", "kwargs": {"turn_id": "t1", "session_id": "S1"}})
     d.handle({"hook": "post_api_request", "kwargs": {"turn_id": "t1", "usage": {}}})
     assert rec.events == []
-
-
-# -- on_session_end --------------------------------------------------------
 
 
 def test_session_end_closes_a_run_that_is_still_open():
@@ -251,9 +234,6 @@ def test_session_end_without_a_session_id_is_ignored():
     assert rec.events == []
 
 
-# -- robustness ------------------------------------------------------------
-
-
 def test_an_unknown_hook_is_ignored_not_an_error():
     rec = FakeRecorder()
     d = drain_for(rec)
@@ -275,7 +255,6 @@ def test_drain_survives_a_recorder_that_raises():
                 "kwargs": {"session_id": "S1", "turn_id": "t1", "completed": True},
             }
         )
-    # _run() is what converts that into a counted error rather than a crash.
     assert d.stats["errors"] == 0
 
 
@@ -290,8 +269,6 @@ def test_missing_recorder_is_tolerated():
     )
     assert d.stats["usage_recorded"] == 1
 
-
-# -- the foreign-prompt source --------------------------------------------
 
 def test_prompt_source_returns_the_text_pre_llm_call_carried():
     """This is what replaces a whole session.resume per foreign turn."""

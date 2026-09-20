@@ -1,30 +1,4 @@
-"""Slash-command routes (P2-4): catalog (cached) + resolve + dispatch.
-
-Shaped by the P2-0a verdict (PV "Phase 2a probes", measured live 2026-08-30):
-**there is no remote execution surface for slash commands.** `command.resolve`
-knows only the 178 core commands and returns metadata; `command.dispatch`
-knows only the quick/plugin/bundle/skill class and is an *expansion fetch* --
-it returns the full skill prompt for the client to submit as an ordinary
-turn, and never starts anything itself. The two classes are disjoint. So:
-
-* **Core commands** (`/help`, `/status`, `/model`, ...) get catalog +
-  resolve only. They are TUI verbs; Hermes offers no way to run one
-  remotely, and this gateway does not pretend otherwise.
-* **Skill commands** get dispatch: the returned `message` is the prompt the
-  app then sends via the existing `POST /turns`. The dispatch route is
-  therefore live (not the 501 the task reserved for "dispatch proved
-  unusable") -- it is usable, as exactly what it is: a lookup.
-
-The catalog is one ~34 KB result that changes only when skills/plugins are
-installed, so it is cached here with a short TTL (5 min). The cached body is
-Hermes's result **verbatim** -- in particular `categories` (the app sections
-its command sheet by them) and the per-skill `usage` counts (the app sorts
-skills by them, P2-9) pass through untouched. If Hermes is unreachable when
-the TTL has lapsed, the stale copy is served (marked `stale: true`) rather
-than failing the sheet: a command list from five minutes ago beats none.
-
-Mounted on the authenticated `/api` router like everything else.
-"""
+"""Slash-command routes (P2-4): catalog (cached) + resolve + dispatch."""
 
 from __future__ import annotations
 
@@ -42,29 +16,16 @@ logger = logging.getLogger(__name__)
 
 commands_router = APIRouter(tags=["commands"])
 
-#: Catalog cache TTL. The catalog moves when a skill/plugin is installed --
-#: an hours-to-weeks timescale -- so five minutes trades staleness nobody
-#: will notice for not paying 34 KB per composer keystroke session.
 CATALOG_TTL_S = 300.0
 
-#: `command.resolve`'s "unknown command" / `command.dispatch`'s "not
-#: dispatchable" RPC error codes, measured live (PV "Phase 2 probe" /
-#: "Phase 2a probes").
 _UNKNOWN_COMMAND_CODE = 4011
 _NOT_DISPATCHABLE_CODE = 4018
 
-# Injectable monotonic clock (tests age the cache without sleeping).
 _now = time.monotonic
 
 
 class CommandName(BaseModel):
-    """Body for resolve/dispatch: `name` is the only field Hermes reads.
-
-    Closed schema like every other body in this service -- `command.resolve`
-    silently parses `None` from any other field name (measured: the `[4011]`
-    error echoes `None`), so accepting extra fields here would turn a client
-    typo into a confusing upstream error instead of a 422.
-    """
+    """Body for resolve/dispatch: `name` is the only field Hermes reads."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -84,17 +45,7 @@ def _http_502(exc: HermesError) -> HTTPException:
 
 @commands_router.get("/commands")
 async def get_catalog(request: Request, refresh: bool = False) -> dict:
-    """The command catalog, verbatim, cached ~5 min.
-
-    Response: `{"catalog": <Hermes's commands.catalog result, untouched>,
-    "cached": bool, "age_seconds": float, "stale": bool}`. `catalog` keeps
-    all seven measured keys -- notably `categories` and `skills` (with each
-    skill's `usage`), which the app surfaces depend on. `stale` is only ever
-    true when the TTL lapsed AND the refetch failed; the copy served is then
-    the last good one, with its real age. `?refresh=true` bypasses the TTL
-    (but still serves stale on a failed fetch rather than 502ing while a
-    copy exists).
-    """
+    """The command catalog, verbatim, cached ~5 min."""
     state = request.app.state
     cached: tuple[float, dict[str, Any]] | None = getattr(state, "commands_catalog_cache", None)
     now = _now()
@@ -131,15 +82,7 @@ async def get_catalog(request: Request, refresh: bool = False) -> dict:
 
 @commands_router.post("/commands/resolve")
 async def resolve_command(body: CommandName, request: Request) -> dict:
-    """Resolve one CORE command name -- Hermes's answer, verbatim.
-
-    Success: `{"canonical", "description", "category"}` (canonical comes
-    back without the slash; aliases canonicalize; no prefix matching --
-    measured). 404 for `[4011] unknown command` -- which includes every
-    *skill* name, since resolve and dispatch cover disjoint classes; a
-    client resolving a skill should use the catalog's `skills` dict and
-    dispatch instead.
-    """
+    """Resolve one CORE command name -- Hermes's answer, verbatim."""
     adapter: HermesAdapter = request.app.state.hermes_adapter
     try:
         result = await _with_reconnect(
@@ -166,19 +109,7 @@ async def resolve_command(body: CommandName, request: Request) -> dict:
 
 @commands_router.post("/commands/dispatch")
 async def dispatch_command(body: CommandName, request: Request) -> dict:
-    """Fetch a SKILL command's expansion. **Never executes anything** (P2-0a).
-
-    Success: `{"dispatched": {"type": "skill", "name", "display",
-    "message"}}` verbatim -- `message` is the full skill prompt, and it is
-    the CLIENT's job to submit it as an ordinary turn
-    (`POST /api/sessions/{id}/turns`); no agent turn starts here and nothing
-    is written to any session.
-
-    400 for `[4018]`: the name is either a core command (Hermes cannot
-    dispatch those at all -- there is no remote execution surface) or does
-    not exist; the wire error genuinely does not distinguish the two, and
-    neither does this route, honestly.
-    """
+    """Fetch a SKILL command's expansion. **Never executes anything** (P2-0a)."""
     adapter: HermesAdapter = request.app.state.hermes_adapter
     try:
         result = await _with_reconnect(

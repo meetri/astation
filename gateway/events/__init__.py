@@ -1,11 +1,4 @@
-"""Event normalization + persistence for the Research Gateway (P0-3, P2-2).
-
-Maps raw Hermes JSON-RPC events onto the canonical workspace event shape
-from `docs/ARCHITECTURE.md` §7/§7.1, and persists the run-relevant ones into
-`run_events` (`domain/models.py`) -- see `events/persistence.py` for the
-persistence policy and `api/runs.py` for the caller that wires it into the
-broadcast path.
-"""
+"""Event normalization + persistence for the Research Gateway (P0-3, P2-2)."""
 
 from __future__ import annotations
 

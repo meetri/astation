@@ -1,8 +1,4 @@
-"""Small, shape-tolerant coercions for values that came off the wire or the DB.
-
-`int_or_none` was copied into `api/snapshots.py` and `api/snapshot_sweep.py`
-before it lived here (CLEANUP_PLAN step 3.3).
-"""
+"""Small, shape-tolerant coercions for values that came off the wire or the DB."""
 
 from __future__ import annotations
 

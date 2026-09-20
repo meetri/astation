@@ -1,56 +1,4 @@
-"""Capture the prompt of a turn that was started outside this gateway.
-
-## The gap
-
-`chat_messages` gets its `user` rows from exactly one writer: the gateway's
-own turn-submit route (`ChatStore.capture_submitted_user_row`). A prompt typed
-in Hermes's own TUI, or sent by any other client, never passes through that
-route -- so the store holds the whole of such a turn (segments, tool rows,
-the final answer, all captured live off the event stream) and not the one
-line that started it. `RUN_EVENT_UX_AUDIT.md` §6.2 lists this as the first
-thing only Hermes's transcript has, and prerequisite 2 for reading the chat
-from `GET /chat`. There is no `state.db` mount in `deploy/` (the backfill
-reader in `domain/hermes_state_reader.py` needs the file), so the transcript
-is read through the Hermes connection this gateway already holds.
-
-## The rule
-
-When `RunRecorder` opens a run it reports `(profile, stored_id, run_id)`
-. `ChatStore.attach_turn` runs first and links the user row the
-submit route wrote before the turn opened. **If it attached nothing, no
-prompt was waiting, and the turn was started elsewhere** -- that is the
-whole test, and it is decided from the store alone with no Hermes call. Only
-then is a capture scheduled:
-
-1. resolve the profile's adapter (`resolve_profile_adapter`) and go through
-   `_with_reconnect`, like every other Hermes-touching path;
-2. `session.resume(stored_id)` -- idempotent within a connection, returns
-   the transcript rows with `role` / `row_id` / `text` / `timestamp`
-. The freshly
-   resolved live handle goes into the profile's `LiveHandleCache` as a side
-   effect, exactly as a route's resume would;
-3. take the NEWEST `role == "user"` row that is a real prompt: not a
-   compaction summary (Hermes serves those as user rows -- B-176 -- with a
-   text that begins with one of `SUMMARY_MARKERS`), not a display-only row
-   (`display_kind`), with an integer `row_id` and non-blank text;
-4. write it through `ChatStore.capture_backfilled_user_row` as `role=user`,
-   `source=backfill`, `hermes_row_id=<row_id>`, `turn_id=<run id>`. The
-   store's `hermes_row_id` dedup makes a repeat a no-op.
-
-## Why it is scheduled, and what it costs
-
-The run-open hook runs synchronously inside the event pump (both
-`EventBroadcaster._forward_one` and `ProfileConnectionManager._forward_one`),
-and a `session.resume` is a network round trip that can carry a 1.6 MB
-transcript. The pump is never blocked on it: the capture is an
-`asyncio` task on the pump's own loop, one per foreign-started run, and it
-costs one resume per such turn. A gateway-started turn costs nothing here.
-
-Best-effort throughout: every failure (no loop, profile not connected,
-Hermes error, unreadable transcript, DB error) is logged at info/warning and
-swallowed. A miss costs one prompt row; it never costs the run, the frame,
-or the pump.
-"""
+"""Capture the prompt of a turn that was started outside this gateway."""
 
 from __future__ import annotations
 
@@ -69,9 +17,6 @@ from domain.hermes_runtime import (
 
 logger = logging.getLogger(__name__)
 
-#: Text prefixes of the `role: user` rows Hermes serves after a compaction
-#:. They are Hermes's summary
-#: of the conversation, not something the operator typed, and never a prompt.
 SUMMARY_MARKERS: tuple[str, ...] = (
     "[Durable Summary",
     "[Session Arc Summary",
@@ -79,7 +24,6 @@ SUMMARY_MARKERS: tuple[str, ...] = (
     "[Current user objective preserved from compacted history]",
 )
 
-#: `source` on every row this module writes.
 BACKFILL_SOURCE = "backfill"
 
 
@@ -90,14 +34,7 @@ def is_summary_text(text: str) -> bool:
 
 
 def newest_foreign_prompt(messages: Any) -> tuple[int, str] | None:
-    """`(row_id, text)` of the newest real user prompt in a transcript, or None.
-
-    Walks `session.resume`'s `messages` from the end. A row counts only if
-    it is a dict with `role == "user"`, no `display_kind`, an integer
-    `row_id`, and non-blank text that is not a compaction summary. Every
-    access is a `.get()` on a key allowed to be missing -- B-34's rule: the
-    only guaranteed key on a transcript row is `role`.
-    """
+    """`(row_id, text)` of the newest real user prompt in a transcript, or None."""
     if not isinstance(messages, list | tuple):
         return None
     for row in reversed(messages):
@@ -118,19 +55,7 @@ def newest_foreign_prompt(messages: Any) -> tuple[int, str] | None:
 
 
 class ForeignPromptCapture:
-    """The run-opened hook: attach the waiting user row, else fetch the prompt.
-
-    Built once in `api/bootstrap.py::build_run_recorder` and handed to
-    `RunRecorder` as `on_run_opened`. `app_state` is read at capture time,
-    not at construction (the adapter, connect lock and profile manager are
-    all set on it later in the same startup, and the profile manager's
-    connections come and go).
-
-    `schedule` is injectable for tests; the default puts the coroutine on
-    the running loop. The pump coroutines that call the hook always have
-    one; a caller with no loop (a synchronous test driving `RunRecorder`
-    directly) gets the capture skipped with an info line, not an error.
-    """
+    """The run-opened hook: attach the waiting user row, else fetch the prompt."""
 
     def __init__(
         self,
@@ -143,35 +68,18 @@ class ForeignPromptCapture:
         self._app_state = app_state
         self._chat_store = chat_store
         self._schedule = schedule
-        # Optional in-process source of the same text this class otherwise
-        # pays a `session.resume` to recover. The Hermes plugin supplies one
-        # backed by `pre_llm_call`, which carries `user_message` for free.
-        # Returns `(text, hermes_turn_id)` or None; on None the resume path
-        # below runs exactly as before, so this is additive and reversible.
         self._prompt_source = prompt_source
-        # Strong references so a scheduled capture is not garbage-collected
-        # mid-flight (asyncio keeps only weak references to tasks).
         self._tasks: set[Any] = set()
 
     def set_prompt_source(
         self, source: Callable[[str, str], tuple[str, str] | None] | None
     ) -> None:
-        """Install (or clear) the in-process prompt source after construction.
-
-        The Hermes plugin builds its hook drain after `startup()` has already
-        constructed this object, so the source arrives late. Public rather than
-        a private poke, and clearable, so a caller can fall back to the resume
-        path deliberately.
-        """
+        """Install (or clear) the in-process prompt source after construction."""
         self._prompt_source = source
 
-    # -- the hook -----------------------------------------------------------
 
     def handle_run_opened(self, profile: str, stored_id: str, run_id: str) -> bool:
-        """`RunRecorder.on_run_opened`: attach first, capture only on a miss.
-
-        Returns True when a capture was scheduled. Never raises.
-        """
+        """`RunRecorder.on_run_opened`: attach first, capture only on a miss."""
         try:
             attached = self._chat_store.attach_turn(profile, stored_id, run_id)
         except Exception:  # pragma: no cover - attach_turn guards itself
@@ -202,15 +110,9 @@ class ForeignPromptCapture:
         task.add_done_callback(self._tasks.discard)
         return True
 
-    # -- the capture ---------------------------------------------------------
 
     async def capture(self, profile: str, stored_id: str, run_id: str) -> str | None:
-        """Read the newest real user prompt for `stored_id` and store it.
-
-        Returns the new `chat_messages` row id, or None when nothing was
-        written (no usable prompt, already stored, or any failure -- all
-        logged, none raised).
-        """
+        """Read the newest real user prompt for `stored_id` and store it."""
         try:
             return await self._capture(profile, stored_id, run_id)
         except Exception:
@@ -225,9 +127,6 @@ class ForeignPromptCapture:
             return None
 
     async def _capture(self, profile: str, stored_id: str, run_id: str) -> str | None:
-        # In-process first. A `pre_llm_call` hook already carried this turn's
-        # prompt into the gateway, so when it is available the whole
-        # resume-per-foreign-turn round trip is skipped.
         if self._prompt_source is not None:
             try:
                 found = self._prompt_source(profile, stored_id)
@@ -294,7 +193,6 @@ class ForeignPromptCapture:
             )
         return new_id
 
-    # -- shutdown ------------------------------------------------------------
 
     async def close(self) -> None:
         """Cancel any capture still in flight (lifespan teardown)."""
@@ -306,7 +204,6 @@ class ForeignPromptCapture:
                 await task
         self._tasks.clear()
 
-    # -- introspection (tests) ---------------------------------------------
 
     @property
     def pending_count(self) -> int:

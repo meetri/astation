@@ -1,10 +1,4 @@
-"""Compatibility shim: the runtime edge lives in `domain/hermes_runtime.py`.
-
-Moved there in CLEANUP_PLAN step 3.5 so the stateful services under `domain/`
-can reconnect and resolve live handles without importing a router package.
-Every name is re-exported here so `from api.hermes_runtime import ...` keeps
-resolving; new code should import from `domain.hermes_runtime`.
-"""
+"""Compatibility shim: the runtime edge lives in `domain/hermes_runtime.py`."""
 
 from domain.hermes_runtime import (  # noqa: F401
     _HERMES_LIVE_SESSION_NOT_FOUND_CODE,

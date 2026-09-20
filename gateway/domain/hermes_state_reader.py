@@ -1,30 +1,4 @@
-"""Read-only backfill reader for a Hermes profile's own `state.db`.
-
-Context: `docs/CHAT_HISTORY_DESIGN.md` §3/§4. Continuous capture off each
-`ProfileConnection`'s live events is the primary mechanism; this module is the
-**safety net** — a one-time sweep at first deploy (§3: "covering the 26,080
-messages that already exist today") and a periodic catch-up sweep afterward
-(covering anything missed during a `ProfileConnection` outage). It never
-writes to Hermes's own database and never assumes there is only one of them:
-"each Hermes profile has its own separate file at this same schema" (default
-at one path, others at `profiles/<name>/state.db`), so every function here
-takes a `db_path` and a `profile` name as a pair, never a single global path.
-
-**Schema guard (§8 risk row: "`state.db`'s schema changes on a Hermes
-upgrade").** `PINNED_MESSAGES_COLUMNS` is the `messages` table's column list
-measured live against the deployed Hermes 0.20.5 on 2026-09-04 (see the task
-that produced this module). `assert_messages_schema` fails loudly
-(`HermesSchemaDriftError`) the moment a real `state.db`'s columns disagree —
-by design, before any row is misread rather than after.
-
-The gateway's own `ChatStore` (§4's `chat_messages` table) is deliberately
-not imported here — `ChatStoreProtocol` names the two operations this module
-needs from it (read the high-water mark, append one row) so this reader can
-be built and tested against a fake before the real store exists. Whatever
-implements `ChatStoreProtocol` owns `seq` assignment, `created_at`, and the
-`(profile, stored_session_id, seq)` uniqueness constraint; this module never
-invents a `seq` of its own.
-"""
+"""Read-only backfill reader for a Hermes profile's own `state.db`."""
 
 from __future__ import annotations
 
@@ -35,12 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-#: The `messages` table's column list, in order, measured live against the
-#: deployed Hermes 0.20.5. Pinned verbatim
-#: from the CREATE TABLE handed down for this task -- do not "helpfully"
-#: re-sort or re-derive this from a live introspection; the whole point of
-#: `assert_messages_schema` is to notice when a real db disagrees with this
-#: fixed list.
 PINNED_MESSAGES_COLUMNS: tuple[str, ...] = (
     "id",
     "session_id",
@@ -81,21 +49,6 @@ class BackfillMessage:
     """One `state.db` `messages` row, mapped onto `chat_messages` (§4) field
     names. `seq`, `profile`, `stored_session_id`, and `created_at` are not
     here -- those are the receiving `ChatStore`'s job, not the reader's.
-
-    Ambiguity flagged rather than silently resolved: Hermes's `messages` table
-    carries **two** reasoning columns (`reasoning`, `reasoning_content`) but
-    `chat_messages` (§4) has exactly one `reasoning` column, and the design
-    doc does not say how to combine them. This reader prefers `reasoning` and
-    falls back to `reasoning_content` only when `reasoning` is empty/NULL --
-    neither is ever truncated (D-3), so no information is dropped, but if the
-    two columns can validly both be present and distinct on one row, that
-    would need a real `state.db` sample to confirm; not observed in this
-    dataset. Similarly, `chat_messages` has both `tool_args_json` and
-    `tool_result_json`, but Hermes's `messages` table has only one JSON-ish
-    tool column (`tool_calls`) alongside `tool_name`/`tool_call_id` -- there is
-    no separate result column, so `tool_calls` maps to `tool_args_json` and
-    `tool_result_json` is always `None` from backfill. A `role="tool"` row's
-    result text still round-trips via `text` (`content`).
     """
 
     hermes_row_id: int
@@ -110,11 +63,7 @@ class BackfillMessage:
 
 
 class ChatStoreProtocol(Protocol):
-    """The two operations the sweep needs from a `ChatStore`-shaped object.
-
-    Deliberately narrow and keyword-only so a fake in tests (or the real
-    store, once built) can implement exactly this and nothing more.
-    """
+    """The two operations the sweep needs from a `ChatStore`-shaped object."""
 
     def max_hermes_row_id(self, *, profile: str, stored_session_id: str) -> int | None:
         """Highest `hermes_row_id` already captured for this (profile,
@@ -174,14 +123,7 @@ def list_session_ids(conn: sqlite3.Connection) -> list[str]:
 def fetch_new_rows(
     conn: sqlite3.Connection, session_id: str, since_hermes_row_id: int
 ) -> list[sqlite3.Row]:
-    """Rows for `session_id` newer than `since_hermes_row_id`, oldest first.
-
-    Exactly the query named in the task: `WHERE session_id = ? AND id > ?
-    ORDER BY id`. Soft-archived pre-compaction rows (`active=0, compacted=1`)
-    are never filtered out here -- they are "kept, searchable, never removed"
-    (§1.4) and belong in `ChatStore` like any other row, just carrying
-    `compacted=True`.
-    """
+    """Rows for `session_id` newer than `since_hermes_row_id`, oldest first."""
     return conn.execute(
         "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
         (session_id, since_hermes_row_id),
@@ -213,16 +155,7 @@ class SweepResult:
 def sweep_profile_state_db(
     db_path: str | Path, profile: str, chat_store: ChatStoreProtocol
 ) -> SweepResult:
-    """Backfill sweep for one profile's `state.db` (§3, §4's "Backfill" row).
-
-    For every session in this db, find the highest `hermes_row_id` already
-    captured for it (via `chat_store.max_hermes_row_id`) and append anything
-    newer, oldest first. Running this twice against an unchanged db is a
-    no-op the second time: the first run's appends raise the high-water mark
-    `chat_store` reports, so the second run's `fetch_new_rows` returns
-    nothing for every session. Idempotency lives in that contract between
-    this function and `chat_store`, not in any dedupe logic here.
-    """
+    """Backfill sweep for one profile's `state.db` (§3, §4's "Backfill" row)."""
     with open_state_db_readonly(db_path) as conn:
         assert_messages_schema(conn)
         session_ids = list_session_ids(conn)

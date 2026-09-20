@@ -1,27 +1,4 @@
-"""collections, the pinned deliverable, and filing at promotion
-
-A collection is a named, ORDERED, cross-project set of artifacts the operator
-curates: "figures for the L328 paper". Ordered because a curated set has an
-order -- figure 1 before figure 2 -- which is the whole difference between a
-collection and a tag. Cross-project because the operator's corpus is one project
-holding 95% of everything, so "which project" answers nothing.
-
-`projects.pinned_artifact_id` is the one deliverable a project is currently
-about. Deliberately NOT a foreign key: `artifacts.project_id` already points
-at `projects`, and a key pointing back makes the two tables circular, which
-SQLAlchemy cannot order for `create_all`/`drop_all`. The constraint would buy
-little -- there is no delete for an artifact anywhere in this system, and the
-read path renders `null` for a row it cannot find.
-
-**Starred is deliberately NOT migrated into this.** `bookmarked_at` shipped
-this week and works; the app presents it as a built-in collection. Doing two
-data models' worth of churn to remove one column is not worth it, and the
-column can fold in later if collections prove out
-.
-
-Revision ID: e2a91f4d6b83
-Revises: d4b8e6c1729f
-"""
+"""collections, the pinned deliverable, and filing at promotion"""
 
 from __future__ import annotations
 
@@ -60,9 +37,6 @@ def upgrade() -> None:
             sa.ForeignKey("artifacts.id", ondelete="CASCADE"),
             primary_key=True,
         ),
-        # The curated order. Not a timestamp: "figure 1 before figure 2" is a
-        # decision, not a chronology, and appending would otherwise be the
-        # only order a collection could have.
         sa.Column("position", sa.Integer(), nullable=False),
         sa.Column("added_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -70,10 +44,6 @@ def upgrade() -> None:
         "ix_collection_artifacts_order", "collection_artifacts", ["collection_id", "position"]
     )
 
-    # No foreign key: `artifacts.project_id` already points at this table, and
-    # a key pointing back makes the two circular -- which SQLAlchemy cannot
-    # order for `create_all`/`drop_all`. There is no delete for an artifact in
-    # this system, and the read path renders `null` for a row it cannot find.
     op.add_column("projects", sa.Column("pinned_artifact_id", sa.String(), nullable=True))
 
 

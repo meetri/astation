@@ -1,94 +1,4 @@
-"""Answering Hermes's human-in-the-loop prompts, and cancelling a running turn.
-
-This is B-37. The gateway already *forwards* `approval.requested` /
-`clarify.requested` / `sudo.requested` / `secret.requested` to the phone and
-`HermesAdapter` already knows how to answer each one -- but until this module
-existed no HTTP route reached any of them, so a prompt that arrived on the
-phone was unanswerable and the turn simply blocked until Hermes gave up. A
-long or runaway turn could not be stopped either.
-
-Five routes, and they do not all have the same shape, because the four
-upstream RPCs do not (`docs/PROTOCOL_VERIFIED.md`, "The four human-in-the-loop
-prompts"):
-
-| Route | Upstream | Keyed on | Verified? |
-|---|---|---|---|
-| `POST /api/sessions/{stored}/approvals/{request_id}` | `approval.respond` | **session** (live handle) + request_id | live |
-| `POST /api/prompts/{request_id}/clarify` | `clarify.respond` | request_id | live |
-| `POST /api/prompts/{request_id}/sudo` | `sudo.respond` | request_id | **source-read only** |
-| `POST /api/prompts/{request_id}/secret` | `secret.respond` | request_id | **source-read only** |
-| `POST /api/sessions/{stored}/interrupt` | `session.interrupt` | session (live handle) | live |
-
-Three properties this module is responsible for:
-
-**A 200 must mean the answer landed.** Hermes reports "there was nothing to
-answer" as an ordinary success -- `{"resolved": 0}` from `approval.respond`,
-`{"status": "expired"}` from the other three. Both are the *normal* outcome of
-a race the phone cannot avoid: the operator taps just after Hermes gave up
-waiting, or a second device answered first. That is a 409 here with a plain
-explanation, never a silent 200 telling the operator their tap landed when it did
-not, and never a 500 -- it is not an error, it is a race.
-
-**Two of these carry a credential, not a decision.** `sudo.request` is not
-"approve running sudo", it is "type your sudo password", and `secret.request`
-asks the user to supply a secret outright. Both fall under
-`docs/ARCHITECTURE.md` §14: the value is ephemeral and request-scoped. It is
-never written to the event log, never persisted, never logged, never echoed in
-a response body, and never placed in a URL or query string. See
-"The secret path" below -- the guarantees are structural, not conventions.
-
-**Stored ids in, live handles resolved per call.** The two session-scoped
-routes take the **STORED / durable** session id, exactly like every other
-route, and resolve the live handle through the one shared
-`_with_live_handle()`. A live handle is process-local to the current Hermes
-connection and is never accepted from a client, never persisted, and never
-cached beyond that connection (`LiveHandleCache` keys on the adapter's
-connection generation). The other three routes need no session at all: Hermes
-keys them on `request_id` alone.
-
-## The secret path
-
-`SudoResponse.password` and `SecretResponse.value` are `SecretStr`, so the
-model's own `repr()` -- the thing that would show up in a traceback, a log
-record built from `%r`, or an error rendered by a framework -- is
-`SecretStr('**********')` and not the credential.
-
-Beyond that:
-
-* **Never in a URL.** The value is a JSON body field. `request_id` is the only
-  thing in the path, and it is an opaque identifier, not a credential.
-* **Never logged.** `HermesAdapter.request()` logs no parameters, and the
-  audit line these routes emit names the `request_id` and nothing else --
-  enough to prove the prompt was answered, carrying nothing worth stealing.
-* **Never persisted.** Neither route emits an event, so the value cannot
-  reach the `/ws/events` fan-out. The one thing either route writes to the
-  workspace database is the B-189 resolution row below, whose payload is
-  built from the `request_id` and fixed strings only -- the value is not in
-  scope where that payload is assembled.
-
-## Recording that a prompt was answered
-
-An answered prompt produces no `*.resolved` frame on the wire (Hermes emits
-one only for a sudo/secret expiry), so before this the run ledger saw a turn
-block on `<kind>.requested` and never saw it unblock. Each route, once
-Hermes has confirmed the answer landed, asks `RunRecorder.record_synthetic`
-to append a `<kind>.resolved` row (`resolution: answered`, `by: app`) to the
-session's OPEN run. Best-effort and after the fact: a recorder problem is
-logged and the 200 stands, because the answer *did* land. The three
-session-less routes find their run through the recorder's own memory of
-which open run carried that `request_id` (`stored_id_for_request`).
-* **Never echoed.** The success body is `{"request_id", "status"}`. Unlike
-  `POST /turns`, Hermes's raw result is deliberately *not* forwarded, and the
-  upstream error text is passed through `_redacted()` before it becomes a 502
-  detail, so even a Hermes that quoted the value back cannot bounce it to the
-  client.
-* **Never echoed by a 422 either.** Pydantic puts the rejected value in
-  `input` (and sometimes `ctx`) on every validation error, and FastAPI's
-  default handler serializes those straight into the response body -- so a
-  mistyped secret would come back in the 422. `scrub_prompt_validation_errors`
-  is installed on the app for exactly this and strips both keys for every path
-  under `PROMPTS_PATH_PREFIX`.
-"""
+"""Answering Hermes's human-in-the-loop prompts, and cancelling a running turn."""
 
 from __future__ import annotations
 
@@ -120,33 +30,17 @@ logger = logging.getLogger(__name__)
 
 prompts_router = APIRouter(tags=["prompts"])
 
-# Every request-id-keyed route lives under this prefix, and the validation-error
-# scrubber keys off it. `test_prompts.py` asserts the registered routes really
-# do, so renaming one without renaming the other is a test failure rather than a
-# silently unscrubbed 422 carrying somebody's password.
 PROMPTS_PATH_PREFIX = "/api/prompts"
 
-# Hermes's own answers, verified live where marked in PROTOCOL_VERIFIED.md.
-# `ok` is the only one that means the value was accepted.
 _STATUS_OK = "ok"
-# Returned (as a normal result, not an error) for an unknown, stale or
-# already-answered request_id. Hermes does this deliberately -- `allow_expired
-# =True` -- because a prompt can time out server-side while its card is still
-# on the phone's screen.
 _STATUS_EXPIRED = "expired"
 
-# The `{"resolved": n}` count `approval.respond` returns. Zero means nothing
-# was pending: a no-op, not a success.
 _RESOLVED_KEY = "resolved"
 
-# `session.interrupt` -> `{"status": "interrupted"}`, verified live mid-turn.
 _INTERRUPT_STATUS = "interrupted"
 
 _MAX_REQUEST_ID_LEN = 128
 
-# What the client is told for the "there was nothing to answer" race. Shared so
-# all four responders phrase it the same way and the phone can match on the
-# status code alone.
 _ALREADY_RESOLVED_DETAIL = (
     "no prompt is pending for request_id {request_id!r}: it was already "
     "answered, superseded by a newer prompt, or it expired while the card was "
@@ -155,18 +49,8 @@ _ALREADY_RESOLVED_DETAIL = (
 )
 
 
-# ----------------------------------------------------------------------
-# Shared helpers
-# ----------------------------------------------------------------------
-
-
 def _validate_request_id(request_id: str) -> str:
-    """Reject an obviously-unusable request id before any Hermes round trip.
-
-    Observed shapes differ per prompt type -- 32 hex for an approval, 8 hex for
-    a clarify -- so this deliberately does *not* enforce a format. It only
-    refuses what cannot possibly be one: empty/whitespace, or absurdly long.
-    """
+    """Reject an obviously-unusable request id before any Hermes round trip."""
     cleaned = request_id.strip()
     if not cleaned:
         raise HTTPException(
@@ -182,27 +66,14 @@ def _validate_request_id(request_id: str) -> str:
 
 
 def _already_resolved(request_id: str) -> HTTPException:
-    """409 for the answer-arrived-too-late race. Deliberately not a 404.
-
-    404 would say "there is no such thing", which is a claim this gateway
-    cannot make: Hermes returns the identical answer for an id it never had and
-    for one it had and has since retired, so the two are indistinguishable from
-    here. 409 says what is actually known -- the prompt is not in a state where
-    it can be answered -- and the detail spells out both possibilities.
-    """
+    """409 for the answer-arrived-too-late race. Deliberately not a 404."""
     return HTTPException(
         status_code=409, detail=_ALREADY_RESOLVED_DETAIL.format(request_id=request_id)
     )
 
 
 def _unrecognized_upstream_answer(method: str, answer: Any) -> HTTPException:
-    """502 for a reply this gateway cannot read as success *or* as expired.
-
-    The alternative is guessing, and guessing here means telling the operator
-    their approval landed when nothing is known about whether it did. Same
-    discipline as `_normalize_submit_status()` in `api/main.py`: an
-    unrecognized status is reported, never quietly promoted to success.
-    """
+    """502 for a reply this gateway cannot read as success *or* as expired."""
     return HTTPException(
         status_code=502,
         detail=(
@@ -214,38 +85,19 @@ def _unrecognized_upstream_answer(method: str, answer: Any) -> HTTPException:
 
 
 def _upstream_failure(exc: HermesError, *, redact: str | None = None) -> HTTPException:
-    """Map a `HermesError` from a request-id-keyed responder onto a 502.
-
-    These three RPCs take no session, so the 404 branch of
-    `_http_error_from_hermes()` cannot apply -- there is no session id to name.
-
-    `redact` is the credential the call carried, when it carried one. Hermes's
-    error messages are not believed to quote parameters back, but "not believed
-    to" is not a guarantee worth resting a password on, so the text is scrubbed
-    before it is allowed into a response body.
-    """
+    """Map a `HermesError` from a request-id-keyed responder onto a 502."""
     return HTTPException(status_code=502, detail=_redacted(str(exc), redact))
 
 
 def _redacted(text: str, secret: str | None) -> str:
-    """`text` with every occurrence of `secret` replaced by a marker.
-
-    A no-op when there is no secret (the approval/clarify paths). Never logs,
-    never returns the secret, and does nothing clever: a plain replace, so an
-    empty or absent secret cannot turn into a match-everything pattern.
-    """
+    """`text` with every occurrence of `secret` replaced by a marker."""
     if not secret:
         return text
     return text.replace(secret, "[redacted]")
 
 
 def _respond_status(result: Any, method: str, request_id: str, *, redact: str | None = None) -> str:
-    """Read the `{"status": ...}` reply shared by clarify/sudo/secret.respond.
-
-    Returns `"ok"`; raises 409 for `expired`, 502 for anything else. Never puts
-    Hermes's raw result in the exception, so an unexpected shape cannot carry a
-    credential back out through the 502 either.
-    """
+    """Read the `{"status": ...}` reply shared by clarify/sudo/secret.respond."""
     status = result.get("status") if isinstance(result, dict) else None
     if isinstance(status, str):
         cleaned = status.strip().lower()
@@ -256,8 +108,6 @@ def _respond_status(result: Any, method: str, request_id: str, *, redact: str | 
     raise _unrecognized_upstream_answer(method, _redacted(repr(status), redact))
 
 
-#: `payload.resolution` / `payload.by` on every synthesized row. The
-#: wire's own expiry rows carry `resolution: "expired"` and no `by`.
 _RESOLUTION_ANSWERED = "answered"
 _RESOLVED_BY_APP = "app"
 
@@ -271,15 +121,7 @@ def _record_resolution(
     stored_id: str | None = None,
     **detail: Any,
 ) -> bool:
-    """Append `<kind>.resolved` to the open run this answer belongs to.
-
-    `stored_id` is known on the session-keyed approval route; the other three
-    resolve it from the recorder's request-id memory. `detail` is what the
-    route may say about the answer -- the approval `decision`, the clarify
-    `answer` -- and is NEVER a credential: the sudo/secret routes pass none.
-    Returns whether a row was written; never raises, since the Hermes call
-    that matters has already succeeded by the time this runs.
-    """
+    """Append `<kind>.resolved` to the open run this answer belongs to."""
     recorder = getattr(app_state, "run_recorder", None)
     if recorder is None:
         return False
@@ -310,28 +152,8 @@ def _record_resolution(
         return False
 
 
-# ----------------------------------------------------------------------
-# Request bodies
-# ----------------------------------------------------------------------
-
-
 class ApprovalResponse(BaseModel):
-    """Body for `POST /api/sessions/{stored_session_id}/approvals/{request_id}`.
-
-    **An approval is not a boolean.** Hermes offers four answers -- `once`,
-    `session`, `always`, `deny` -- and the two middle ones are what stop the
-    owner being asked the same question forever. `choice` is therefore the
-    real field.
-
-    `approved` exists only so a client that genuinely can express nothing but
-    yes/no still has a correct way to say it: `true` maps to `once` (the
-    *narrowest* yes -- a client that cannot say which yes it means must not be
-    granted the permanent one) and `false` maps to `deny`. Exactly one of the
-    two fields must be present; sending both, or neither, is a 422 rather than
-    a silent precedence rule.
-
-    `extra="forbid"`, so nothing else from the wire can reach the adapter.
-    """
+    """Body for `POST /api/sessions/{stored_session_id}/approvals/{request_id}`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -370,25 +192,11 @@ class ApprovalResponse(BaseModel):
 
 
 class ClarifyResponse(BaseModel):
-    """Body for `POST /api/prompts/{request_id}/clarify`.
-
-    The answer is **free text**, not an index into the event's `choices`: the
-    list Hermes puts on `clarify.request` is presentation (it appends things
-    like " (Recommended)"), so echoing a choice string back verbatim is the
-    client's job and any other text is equally valid.
-
-    Blank is refused for the same reason `POST /turns` refuses it: a
-    whitespace answer resumes the agent with nothing, which looks to it like
-    the user said nothing at all.
-    """
+    """Body for `POST /api/prompts/{request_id}/clarify`."""
 
     model_config = ConfigDict(extra="forbid")
 
     answer: str | None = Field(default=None, min_length=1)
-    #: a **batch** clarify asks several questions under one request,
-    #: each with its own `qid`, and answering it with a single string would
-    #: resolve the whole set with every other question blank -- the same
-    #: silent discard B-39 was. `{qid: answer}` for the whole set.
     answers: dict[str, str] | None = None
 
     @field_validator("answer")
@@ -420,12 +228,7 @@ class ClarifyResponse(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one_shape(self) -> ClarifyResponse:
-        """One form or the other, never both and never neither.
-
-        Accepting both would leave which one wins to `clarify_respond`'s
-        argument order, and a caller that sent a batch plus a stray `answer`
-        would silently get whichever the adapter preferred.
-        """
+        """One form or the other, never both and never neither."""
         if (self.answer is None) == (self.answers is None):
             raise ValueError(
                 "send exactly one of `answer` (a single question) or `answers` "
@@ -435,18 +238,7 @@ class ClarifyResponse(BaseModel):
 
 
 class SudoResponse(BaseModel):
-    """Body for `POST /api/prompts/{request_id}/sudo` -- **carries a password**.
-
-    `sudo.request` asks the user to *type their sudo password*; it is not an
-    approve/deny. `password` is a `SecretStr` so this model's `repr()` cannot
-    leak it into a traceback or a log record, and §14 handling applies to it
-    end to end -- see this module's docstring.
-
-    An empty password is refused rather than forwarded: Hermes would accept it
-    as the answer, and "the user submitted nothing" and "the user submitted an
-    empty password" are not the same event. Cancelling/denying a sudo prompt is
-    a distinct upstream path that has not been verified and is not exposed here.
-    """
+    """Body for `POST /api/prompts/{request_id}/sudo` -- **carries a password**."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -455,20 +247,13 @@ class SudoResponse(BaseModel):
     @field_validator("password")
     @classmethod
     def _reject_empty(cls, value: SecretStr) -> SecretStr:
-        # Note what this does NOT do: it never interpolates the value into the
-        # message. A validator that said "password {value!r} is invalid" would
-        # put the credential straight into a 422 body.
         if not value.get_secret_value():
             raise ValueError("password must not be empty")
         return value
 
 
 class SecretResponse(BaseModel):
-    """Body for `POST /api/prompts/{request_id}/secret` -- **carries a secret**.
-
-    `secret.request` asks the user to supply a credential the agent needs. Same
-    `SecretStr` handling and same §14 rules as `SudoResponse`.
-    """
+    """Body for `POST /api/prompts/{request_id}/secret` -- **carries a secret**."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -482,32 +267,13 @@ class SecretResponse(BaseModel):
         return value
 
 
-# ----------------------------------------------------------------------
-# 422 scrubbing -- installed on the app in `api/main.py`
-# ----------------------------------------------------------------------
-
-# Pydantic attaches the rejected input to every validation error, and FastAPI's
-# default handler serializes it into the 422 body. For `/api/prompts/*` that
-# input can be the operator's password.
 _VALUE_BEARING_ERROR_KEYS = ("input", "ctx")
 
 
 async def scrub_prompt_validation_errors(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """FastAPI's 422 handler, with the rejected value removed on prompt routes.
-
-    Behaviour is unchanged for every other path in the service -- `input` is
-    genuinely useful when debugging a malformed projects or turns request, and
-    quietly changing the error shape everywhere would be a worse trade than
-    scrubbing the two routes that need it.
-
-    Under `PROMPTS_PATH_PREFIX` the `input` and `ctx` keys are dropped from
-    every error entry. `loc`, `msg` and `type` remain, so a client still learns
-    *which* field was wrong and *why* -- it just is not told its own secret
-    back. The scrub is by path prefix rather than per-route because a
-    `RequestValidationError` is raised before the route function exists to ask.
-    """
+    """FastAPI's 422 handler, with the rejected value removed on prompt routes."""
     errors: list[dict[str, Any]] = jsonable_encoder(exc.errors())
     if request.url.path.startswith(PROMPTS_PATH_PREFIX):
         errors = [
@@ -515,11 +281,6 @@ async def scrub_prompt_validation_errors(
             for error in errors
         ]
     return JSONResponse(status_code=422, content={"detail": errors})
-
-
-# ----------------------------------------------------------------------
-# Routes
-# ----------------------------------------------------------------------
 
 
 @prompts_router.post("/sessions/{stored_session_id}/approvals/{request_id}")
@@ -530,46 +291,7 @@ async def respond_to_approval(
     request: Request,
     profile: str = Query(default="default"),
 ) -> dict:
-    """Answer an `approval.requested` prompt -- allow or refuse a gated action.
-
-    `{stored_session_id}` is the **STORED / durable** id, the same one the
-    event stream stamps on every frame as `_stored_session_id`, so the phone
-    already has it when the approval card appears. `{request_id}` is the id
-    carried on the `approval.request` payload.
-
-    Unlike the other three prompts, `approval.respond` is *session*-keyed:
-    Hermes resolves the session before it looks at the choice, so a request id
-    on its own fails `[4001] session not found`. The live handle is resolved
-    here through the same `_with_live_handle()` every other session route uses
-    -- from the current connection's cache when known, otherwise a fresh
-    `session.resume` (which works fine on a session with an approval
-    outstanding; the resume reply even carries `pending_approval`). It is never
-    accepted from the client and never persisted.
-
-    `request_id` is always sent even though Hermes would default to the oldest
-    pending approval without it: the phone may be answering a card that has
-    since been superseded, and resolving the wrong one would allow an action
-    the operator never saw.
-
-    Body: `{"choice": "once"|"session"|"always"|"deny"}`, or `{"approved":
-    true|false}` for a client that can only express yes/no (mapping to
-    `once`/`deny`). Exactly one of the two.
-
-    Responses:
-
-    * **200** -- `resolved` is Hermes's own count and is `>= 1`. The approval
-      landed.
-    * **409** -- Hermes answered `{"resolved": 0}`: nothing was pending under
-      that id. Normal race, not an error (see `_already_resolved`).
-    * **404** -- no session with that stored id.
-    * **502** -- any other Hermes failure, or an answer this gateway cannot
-      read.
-
-    Nothing announces an approval's resolution on the event stream -- Hermes
-    emits no `approval.resolved` at all -- so this response is the only signal
-    that it landed, and a second device holding the same card open must
-    reconcile from `session.resume`'s `pending_approval`.
-    """
+    """Answer an `approval.requested` prompt -- allow or refuse a gated action."""
     stored_id = _validate_stored_session_id(stored_session_id)
     rid = _validate_request_id(request_id)
     choice = body.resolved_choice()
@@ -596,8 +318,6 @@ async def respond_to_approval(
     if resolved < 1:
         raise _already_resolved(rid)
 
-    # Audit-safe on purpose: an approval is a policy decision, not a
-    # credential, and §14 asks for a lightweight audit trail of exactly this.
     logger.info(
         "approval %s on session %s answered %r (resolved=%d)", rid, stored_id, choice, resolved
     )
@@ -625,29 +345,7 @@ async def respond_to_clarify(
     request: Request,
     profile: str = Query(default="default"),
 ) -> dict:
-    """Answer a clarify prompt: one free-text answer, or a whole batch.
-
-    Body is `{"answer": "..."}` for a single question, or
-    `{"answers": {"<qid>": "..."}}` for a batch -- a clarify that
-    asked several questions at once, each carrying its own `qid`. Exactly one
-    of the two.
-
-    Keyed on `request_id` alone -- no session, no live handle. Hermes looks the
-    pending request up directly. `?profile=` says which *connection*
-    to look it up on, since `request_id`'s namespace is per-Hermes-process,
-    not global: a prompt raised on `kimi25` is unknown to `default`.
-
-    The answer goes on the wire under `answer` (or `answers`). That matters
-    more than it looks: sending a single answer under `response` instead was
-    accepted with `{"status": "ok"}` and the clarify tool then completed with
-    `user_response: ""`, so the agent resumed having discarded what the operator
-    typed. That was B-39, observed live; `HermesAdapter.clarify_respond()`
-    owns the correct field names and tests pin both shapes.
-
-    Responses: **200** answered; **409** unknown/stale/already answered
-    (Hermes's `{"status": "expired"}`); **502** upstream failure or an
-    unrecognized reply.
-    """
+    """Answer a clarify prompt: one free-text answer, or a whole batch."""
     rid = _validate_request_id(request_id)
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     try:
@@ -660,9 +358,6 @@ async def respond_to_clarify(
         raise _upstream_failure(exc) from exc
 
     status = _respond_status(result, "clarify.respond", rid)
-    # The answer itself is the operator's words, not a credential -- but there is
-    # no reason to put it in the log either, so this records only that the
-    # prompt was answered.
     logger.info("clarify %s answered", rid)
     _record_resolution(
         request.app.state,
@@ -681,35 +376,9 @@ async def respond_to_sudo(
     request: Request,
     profile: str = Query(default="default"),
 ) -> dict:
-    """Supply the sudo password a `sudo.requested` prompt asked for.
-
-    **This is not an approve/deny.** `sudo.request` asks the user to type their
-    sudo password, so the body carries a real credential and every §14 rule in
-    this module's docstring applies: not logged, not persisted, not in an
-    event, not in the URL, not echoed back, and scrubbed out of a 422.
-
-    **The wire field (`password`) is source-read, not measured.** Provoking a
-    real `sudo.request` means producing a real credential on the operator's
-    machine, so it was deliberately never captured live -- see
-    `docs/PROTOCOL_VERIFIED.md`, "`sudo.request` / `secret.request` -- NOT
-    captured, and why". B-39 is the standing warning about what that costs:
-    a wrong field name here would come back `{"status": "ok"}` with the
-    password silently dropped. Verify against a live instance with a throwaway
-    credential before trusting a 200 from this route.
-
-    A matching `sudo.expire` event carries this same `request_id` and clears
-    only this prompt -- never every pending prompt.
-
-    Responses: **200** `{"request_id", "status": "ok"}` and nothing else --
-    the raw Hermes result is deliberately not forwarded; **409** expired or
-    already answered; **502** upstream failure (with the password scrubbed out
-    of the message).
-    """
+    """Supply the sudo password a `sudo.requested` prompt asked for."""
     rid = _validate_request_id(request_id)
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
-    # Held in a local for the length of one request and nothing longer. It is
-    # not stored on `request.state`, not returned, and not closed over by
-    # anything that outlives the call.
     password = body.password.get_secret_value()
     try:
         result = await _with_reconnect(
@@ -719,10 +388,7 @@ async def respond_to_sudo(
         raise _upstream_failure(exc, redact=password) from exc
 
     status = _respond_status(result, "sudo.respond", rid, redact=password)
-    # request_id only. Enough to prove the prompt was answered; carries nothing.
     logger.info("sudo prompt %s answered", rid)
-    # The fact, never the value: `_record_resolution` is handed the request
-    # id and nothing else from this scope.
     _record_resolution(
         request.app.state, event_type="sudo.resolved", request_id=rid, profile=profile
     )
@@ -736,23 +402,7 @@ async def respond_to_secret(
     request: Request,
     profile: str = Query(default="default"),
 ) -> dict:
-    """Supply the secret a `secret.requested` prompt asked the user for.
-
-    Same handling as the sudo route above in every respect -- the value is a
-    real credential under `docs/ARCHITECTURE.md` §14 and is ephemeral and
-    request-scoped.
-
-    **The wire field (`value`) is source-read, not measured**, for the same
-    reason: answering one live requires a real secret. Hermes's
-    `{"status": "expired"}` reply for an unknown `request_id` *was* confirmed
-    live, using an obviously-fake placeholder.
-
-    A matching `secret.expire` event carries this same `request_id` and clears
-    only this prompt.
-
-    Responses: **200** `{"request_id", "status": "ok"}`; **409** expired or
-    already answered; **502** upstream failure (value scrubbed).
-    """
+    """Supply the secret a `secret.requested` prompt asked the user for."""
     rid = _validate_request_id(request_id)
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     value = body.value.get_secret_value()
@@ -775,36 +425,7 @@ async def respond_to_secret(
 async def interrupt_session(
     stored_session_id: str, request: Request, profile: str = Query(default="default")
 ) -> dict:
-    """Stop the turn currently running on a session -- the cancel button.
-
-    `{stored_session_id}` is the **STORED / durable** id. `session.interrupt`
-    needs the **LIVE** handle, which is resolved here through the shared
-    `_with_live_handle()`: cache hit on the current Hermes connection, else a
-    `session.resume`. A handle from an earlier connection is unreachable by
-    construction (`LiveHandleCache` is keyed on the adapter's connection
-    generation) and one Hermes has forgotten self-heals with a single
-    re-resolve. No live handle is ever accepted from the client or persisted --
-    `[4001] session not found` is exactly what a stored id passed here would
-    get, which is the recurring bug this route must not reintroduce.
-
-    Verified live 2026-08-30, mid-turn while tokens were streaming:
-    `{"session_id": <LIVE>}` -> `{"status": "interrupted"}`.
-
-    Takes no body -- there is nothing to say beyond "stop".
-
-    `ARCHITECTURE.md` §11.1 sketches this as `POST /api/turns/{id}/interrupt`.
-    It is session-scoped instead because that is what Hermes implements: there
-    is no turn id in the protocol, and a session runs one turn at a time.
-
-    Responses: **200** always carries `interrupt_status` (Hermes's own string,
-    verbatim) plus `interrupt_status_known`, which is False for anything other
-    than `interrupted` -- the same rule `POST /turns` follows, so an
-    unrecognized answer is reported rather than read as success. **404** for an
-    unknown stored id, **502** for any other Hermes failure.
-
-    Interrupting a session with nothing running has not been measured; whatever
-    Hermes answers is reported as-is rather than guessed at.
-    """
+    """Stop the turn currently running on a session -- the cancel button."""
     stored_id = _validate_stored_session_id(stored_session_id)
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     cache = resolve_live_handle_cache(request.app.state, profile)

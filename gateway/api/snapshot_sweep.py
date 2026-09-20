@@ -1,11 +1,4 @@
-"""The snapshot sweep routes (P6-3, Stream B): run a pass by hand, read the last one.
-
-`SnapshotSweeper` itself -- the timer, the candidate rules, the footprint
-rule -- is `domain/snapshot_sweeper.py` (CLEANUP_PLAN step 3.5), re-exported
-here with its constants. `POST /api/snapshot-sweeps` runs the same pass by
-hand; `GET /api/snapshot-sweeps/latest` reports the last one. The contract is
-`docs/SESSION_ARCHIVE_DESIGN.md` §6.5 (routes §6.4, Stream B rows).
-"""
+"""The snapshot sweep routes (P6-3, Stream B): run a pass by hand, read the last one."""
 
 from __future__ import annotations
 
@@ -33,10 +26,6 @@ logger = logging.getLogger(__name__)
 
 snapshot_sweep_router = APIRouter(tags=["snapshot-sweeps"])
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 
 def _sweeper(request: Request) -> SnapshotSweeper:
     sweeper = getattr(request.app.state, "snapshot_sweeper", None)
@@ -47,13 +36,7 @@ def _sweeper(request: Request) -> SnapshotSweeper:
 
 @snapshot_sweep_router.post("/snapshot-sweeps", status_code=202)
 async def run_snapshot_sweep(request: Request) -> dict:
-    """Run one sweep pass now and return its summary once it has finished.
-
-    **202** with `{"started_at", "finished_at", "considered", "snapshotted",
-    "skipped", "errors"}`; **409** while a pass (timer or another POST) is
-    running; **502** when Hermes could not answer the two list calls, in which
-    case nothing was decided and `latest` is unchanged.
-    """
+    """Run one sweep pass now and return its summary once it has finished."""
     sweeper = _sweeper(request)
     if sweeper.running:
         raise HTTPException(status_code=409, detail="a snapshot sweep pass is already running")

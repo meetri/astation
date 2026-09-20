@@ -1,41 +1,4 @@
-"""Building, indexing and reading back session snapshots (P6-3).
-
-The write path (`take_snapshot` and the document it builds), the index
-queries the project listings and the sweep read, and `read_snapshot_document`.
-Moved out of `api/snapshots.py` (CLEANUP_PLAN step 3.5), which keeps the
-routes and re-exports every name here; the contract is
-`docs/SESSION_ARCHIVE_DESIGN.md` §6 and the concept is explained in that
-module's docstring.
-
-**Measured facts this rests on**:
-
-* Rows come from **one real `session.resume`**, the same call `POST /resume`
-  makes, via `_resume_for_live_id`. Not `session.history` -- on a cache miss
-  that would download the transcript twice, and it carries neither
-  `messages_omitted`, `info` nor `pending_*`. Resume result keys measured on
-  the 3.96 MB B-86 session: `inflight, info, message_count,
-  messages, messages_omitted, resumed, running, session_id, session_key,
-  started_at, status`. Cold resume of that session: 1.84 s, and it did not
-  stall a concurrent stream.
-* **A transcript row has exactly one guaranteed key, `role`** (B-34, measured
-  over all 16,572 rows on the instance). Every access into a row here is a
-  `.get()`; no key is required and **no row is reshaped at rest** -- the
-  document keeps the `reasoning_content` duplicates that B-86 drops on the
-  wire (41% of the payload, but gzip folds an exact copy to almost nothing,
-  and an archive is storage, not bandwidth). Only `GET /snapshots/{id}`
-  applies B-86, through the very same `_project_transcript()` the live
-  routes use, so the app's decoder renders a snapshot unchanged.
-* **`session.list.message_count` is a change flag, not a size** (104 vs 1,379
-  resume rows vs 1,622 history count for one session). It is recorded as
-  `list_message_count` so the sweep can compare "differs"; `message_rows` is
-  `len(messages) + len(background_results)` and is the positional truth.
-* `hermes sessions pin <id>` exists on the deployed CLI and exempts a session
-  from the stale sweep (round-tripped on a spike). It is attempted
-  best-effort on archive and **never on unarchive**: the flag is shared with
-  Hermes Desktop's Pinned sidebar and the gateway cannot know who set it.
-* `cli.exec` output is capped at 48,000 bytes with `code: 0`, which is why
-  `sessions export` is NOT the transcript path and the wire is.
-"""
+"""Building, indexing and reading back session snapshots (P6-3)."""
 
 from __future__ import annotations
 
@@ -71,40 +34,21 @@ from domain.timeutil import iso_z
 
 logger = logging.getLogger(__name__)
 
-#: The document format tag. Bump only for an incompatible change of shape.
 SNAPSHOT_FORMAT = "trg-session-snapshot/1"
 
-#: Who wrote the document -- so a reader of a file found on disk in a year
-#: knows what produced it without the database.
 SNAPSHOT_PRODUCER_SERVICE = "astation/research-gateway"
 
-#: Why a snapshot was taken. `manual` is the only one a client may request;
-#: the others are minted by the gateway itself (`DELETE`, the sweep, compress).
 SNAPSHOT_REASONS: tuple[str, ...] = ("manual", "pre_delete", "sweep", "pre_compress")
 
-#: Where the transcript rows came from. One value today; recorded per document
-#: so a future `session.history`- or file-export-sourced snapshot is honest
-#: about it.
 SNAPSHOT_SOURCE_RESUME = "session.resume"
 
 
 class SnapshotStorageError(Exception):
-    """A snapshot could not be serialized or written locally.
-
-    Distinct from `HermesError` on purpose: `DELETE /api/sessions/{id}` maps
-    "Hermes has no such session" to 404 and *everything else* that stops the
-    pre-delete snapshot to 409, and the route needs to tell a local disk/DB
-    failure from an upstream one without string-matching.
-    """
+    """A snapshot could not be serialized or written locally."""
 
 
 def _git_sha() -> str | None:
-    """`git rev-parse --short HEAD` at import time, or None.
-
-    Best-effort provenance for the document's `producer` block. Null in a
-    Docker image without `.git`, on a machine without `git`, or if the command
-    fails for any reason -- never an exception at import.
-    """
+    """`git rev-parse --short HEAD` at import time, or None."""
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -122,18 +66,12 @@ def _git_sha() -> str | None:
     return sha or None
 
 
-#: Resolved once per process. A snapshot names the code that wrote it.
 PRODUCER_GIT_SHA: str | None = _git_sha()
 
 
 def _hermes_endpoint() -> str:
     settings = get_settings()
     return f"{settings.hermes_host}:{settings.hermes_port}"
-
-
-# ---------------------------------------------------------------------------
-# Writing a snapshot
-# ---------------------------------------------------------------------------
 
 
 def _list_row_for(list_result: Any, stored_id: str) -> dict[str, Any] | None:
@@ -232,8 +170,6 @@ def _build_document(
             "source": "workspace" if parent_stored_id is not None else None,
         },
         "runs": runs,
-        # VERBATIM. No B-86 dedup, no light projection, no reshaping. A
-        # non-list here is stored as Hermes sent it (B-34's forwarding rule).
         "messages": messages if messages is not None else [],
         "background_results": background_results,
         "background_tasks": background_tasks,
@@ -246,7 +182,7 @@ def _content_checksum(messages: Any, background_results: list[dict[str, Any]]) -
     rows = list(messages) if isinstance(messages, list) else []
     payload = json.dumps(
         rows + background_results, sort_keys=True
-    )  # exactly the §6.1 recipe
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -260,8 +196,6 @@ async def _store_document(store: ArtifactStore, document_bytes: bytes) -> tuple[
         raise SnapshotStorageError(
             f"snapshot document is {len(document_bytes)} B, over the {MAX_INGEST_BYTES} B store cap"
         )
-    # mtime=0 so identical documents gzip to identical bytes -- the store is
-    # content-addressed and a timestamp in the header would defeat that.
     compressed = gzip.compress(document_bytes, mtime=0)
     try:
         _checksum, size, storage_key = await store.write_stream(_one_chunk(compressed))
@@ -275,14 +209,7 @@ async def _store_document(store: ArtifactStore, document_bytes: bytes) -> tuple[
 
 
 def _profile_for(stored_id: str, db: OrmSession | None) -> str:
-    """Which profile a session belongs to, from its filing row.
-
-    `default` when the session is unfiled or the lookup cannot run: an unfiled
-    session has no row to record a profile on, and that is exactly the case
-    where the caller (a route) is the one that knows and should pass it
-    explicitly. Never raises -- a snapshot must not fail because a metadata
-    lookup did.
-    """
+    """Which profile a session belongs to, from its filing row."""
     if db is None:
         return "default"
     try:
@@ -308,42 +235,10 @@ async def take_snapshot(
     db: OrmSession | None = None,
     profile: str | None = None,
 ) -> SessionSnapshot:
-    """Take one snapshot of `stored_id` now and return its committed index row.
-
-    Order, and why: **one real `session.resume`** (through `_with_reconnect`
-    and `_resume_for_live_id`, exactly like `POST /resume`, so the handle it
-    mints is cached for this connection and no second transcript download
-    follows) -> `session.list` only when the caller did not hand a row in (the
-    sweep passes its one list per pass) -> read the workspace (filing row,
-    project, lineage, runs, background ledger) -> build the document -> write
-    the gzipped bytes to the store **first** -> insert the index row **last**.
-    A failure anywhere before the insert leaves no row at all; a failure at
-    the insert leaves content-addressed bytes nobody references, which is
-    harmless. There is never a row without its bytes.
-
-    Raises `HermesError` (upstream: unknown session, unreachable, protocol) or
-    `SnapshotStorageError` (local: serialize/write/insert). `ValueError` for a
-    reason outside `SNAPSHOT_REASONS` -- a programming error, not a client one.
-
-    `db`: when None this function opens and commits its own session; when
-    given, the row is added and committed on the caller's so a route can keep
-    "snapshot then flag" in one connection. Either way the returned object is
-    fully loaded (`expire_on_commit=False`).
-    """
+    """Take one snapshot of `stored_id` now and return its committed index row."""
     if reason not in SNAPSHOT_REASONS:
         raise ValueError(f"unknown snapshot reason {reason!r}; expected one of {SNAPSHOT_REASONS}")
 
-    # on the session's OWN connection, not whichever one is default.
-    # A snapshot begins with a real `session.resume`, and resuming a
-    # `kimi25`/`qwen38-flash` session against the default connection answers
-    # `[4007] session not found` -- which surfaced as archiving simply failing
-    # for every non-default session (owner-reported, caught live).
-    #
-    # `profile=None` means "look it up": a filed session records its profile
-    # on its `Session` row, which is the honest source and needs no caller to
-    # remember. That is what fixes the callers that cannot know it -- the
-    # snapshot sweep, the pre-delete snapshot, pre-compress -- rather than
-    # only the routes that were told.
     resolved_profile = profile if profile is not None else _profile_for(stored_id, db)
     adapter: HermesAdapter = resolve_profile_adapter(app_state, resolved_profile)
     cache = resolve_live_handle_cache(app_state, resolved_profile)
@@ -356,9 +251,6 @@ async def take_snapshot(
         try:
             list_result = await _with_reconnect(app_state, adapter, adapter.session_list)
         except HermesError as exc:
-            # The transcript is the durable thing and it is already in hand;
-            # the list row is metadata (title, source, change flag). Losing it
-            # on a flaky second call must not lose the copy.
             logger.warning(
                 "session.list failed while snapshotting %s; recording no list row (%s)",
                 stored_id,
@@ -416,7 +308,6 @@ async def take_snapshot(
             messages_omitted=omitted if isinstance(omitted, bool) else None,
             content_checksum=_content_checksum(messages, background_results),
             hermes_meta_json=list_row,
-            # Filled after the bytes are written.
             raw_bytes=0,
             size_bytes=0,
             checksum="",
@@ -456,11 +347,6 @@ async def take_snapshot(
         return await _finish(db)
     with app_state.db_sessions() as own:
         return await _finish(own)
-
-
-# ---------------------------------------------------------------------------
-# Reading the index
-# ---------------------------------------------------------------------------
 
 
 def snapshot_row(snapshot: SessionSnapshot) -> dict[str, Any]:
@@ -504,14 +390,7 @@ def _newest_first(stmt):
 def latest_snapshots_by_stored_id(
     db: OrmSession, stored_ids: list[str], *, project_id: str | None = None
 ) -> dict[str, SessionSnapshot]:
-    """`{stored_id: its newest snapshot}` for the ids that have one. One query.
-
-    `project_id` scopes the answer to snapshots taken under that project. The
-    project-sessions route passes it so a project's Archived row names *its*
-    copy: a session snapshotted in A, moved to B and snapshotted again must not
-    make A's row open B's transcript (found by the Stream A tester, 2026-09-03).
-    The sweep calls this unscoped -- it wants the newest copy anywhere.
-    """
+    """`{stored_id: its newest snapshot}` for the ids that have one. One query."""
     if not stored_ids:
         return {}
     stmt = select(SessionSnapshot).where(SessionSnapshot.stored_session_id.in_(stored_ids))
@@ -565,14 +444,7 @@ def snapshot_candidates(db: OrmSession) -> set[str]:
 def is_archived(
     *, archived_at: Any, has_filing: bool, missing: bool | None, snapshot_count: int
 ) -> bool:
-    """The one predicate both the gateway and the app use for the Archived section.
-
-    Archived when the user said so (`archived_at`), when the row is
-    snapshot-only (no filing row -- the session was removed from the project
-    or deleted, and only the copy remains), or when Hermes no longer lists a
-    filed session that has a copy (`missing is True` -- a `None` is "Hermes
-    unreachable", which is not "gone").
-    """
+    """The one predicate both the gateway and the app use for the Archived section."""
     return archived_at is not None or not has_filing or (missing is True and snapshot_count > 0)
 
 

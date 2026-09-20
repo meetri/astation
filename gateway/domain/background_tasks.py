@@ -1,36 +1,4 @@
-"""Pure state-machine operations on the `background_tasks` ledger (P2-1, B-42).
-
-Every function here takes an open SQLAlchemy session and does no I/O beyond
-it -- no network, no clock it does not accept as a parameter, and **no
-`commit()`**: the caller owns transaction boundaries, exactly like
-`events/persistence.py`. That is what keeps these unit-testable against an
-in-memory database and lets the event-pump hook batch its write with the
-frame it is handling.
-
-The state machine, and why it is shaped this way (PV "Phase 2 probe" +
-"Phase 2a probes", both measured live 2026-08-30):
-
-    running --(background.complete observed)------------> finished
-    running --(gateway restart / Hermes reconnect)------> orphaned
-    orphaned --(background.complete observed anyway)----> finished
-
-* `running -> orphaned` on every gateway restart and on every
-  Hermes-connection-generation change, because the probe proved the
-  completion event does **not** survive a reconnect by default: it is
-  delivered only to connections attached to the session at the instant it
-  fires, never buffered, never replayed (3/3 lost on a bare reconnect).
-  "Orphaned" is honest copy for "submitted before a reconnect; the work
-  likely completed, but the outcome is unknown".
-* `orphaned -> finished` is deliberately legal, because the same probe
-  proved the loss is rescuable: re-resuming the session on the new
-  connection *before* the task completes re-attaches it, and the completion
-  then arrives normally (2/2). The rescue lives in
-  `api/background.py`'s ledger orchestration; this module only has to
-  accept the late good news.
-* `finished` is terminal. A second completion for the same task id is
-  logged and ignored rather than overwriting a result the operator may have
-  already read.
-"""
+"""Pure state-machine operations on the `background_tasks` ledger (P2-1, B-42)."""
 
 from __future__ import annotations
 
@@ -58,14 +26,7 @@ def record_submitted(
     connection_generation: int | None,
     now: datetime | None = None,
 ) -> BackgroundTask:
-    """Write the submit-side ledger row -- the task's only durable record.
-
-    Upserts rather than inserting blindly: `task_id` is `bg_` + 6 hex, a
-    small space Hermes could re-mint across restarts, and a PK collision must
-    not turn a successful submit into a 500 after the task is already
-    running. A collision overwrites the stale row (it can no longer complete
-    -- its announcement window is gone) and is logged loudly.
-    """
+    """Write the submit-side ledger row -- the task's only durable record."""
     existing = db.get(BackgroundTask, task_id)
     if existing is not None:
         logger.warning(
@@ -76,8 +37,6 @@ def record_submitted(
             existing.submitted_at,
         )
         db.delete(existing)
-        # The delete must land before the insert of the same PK in the same
-        # flush, or SQLAlchemy's unit of work may order them insert-first.
         db.flush()
     row = BackgroundTask(
         task_id=task_id,
@@ -99,18 +58,7 @@ def record_completed(
     stored_session_id_hint: str | None = None,
     now: datetime | None = None,
 ) -> BackgroundTask:
-    """Apply one observed `background.complete` to the ledger.
-
-    `running -> finished` is the normal path; `orphaned -> finished` is the
-    rescued-reconnect path (see module docstring). A completion with no
-    matching submit row still gets a row -- the event is the only copy of the
-    result anywhere, and discarding it because *we* never saw the submit
-    would re-create B-42 for tasks submitted outside this gateway.
-    `stored_session_id_hint` is the broadcaster's live-handle attribution for
-    that case; the ledger's own submit-time record always wins, because the
-    completion frame's live handle can be unmapped or re-minted by the time
-    it fires.
-    """
+    """Apply one observed `background.complete` to the ledger."""
     finished_at = now if now is not None else utcnow()
     row = db.get(BackgroundTask, task_id)
     if row is None:
@@ -148,14 +96,7 @@ def record_completed(
 
 
 def orphan_all_running(db: OrmSession) -> list[BackgroundTask]:
-    """`running -> orphaned` for every running row; returns the rows touched.
-
-    Called on gateway startup (a completion that fired while the process was
-    down is unrecoverable) and on every Hermes connection-generation change
-    (the completion is delivered only to attached connections -- P2-0b). The
-    caller is expected to follow the generation-change case with the
-    re-resume rescue, which can still upgrade these rows to `finished`.
-    """
+    """`running -> orphaned` for every running row; returns the rows touched."""
     rows = list(db.scalars(select(BackgroundTask).where(BackgroundTask.state == STATE_RUNNING)))
     for row in rows:
         row.state = STATE_ORPHANED
@@ -163,15 +104,7 @@ def orphan_all_running(db: OrmSession) -> list[BackgroundTask]:
 
 
 def stored_session_ids_with_unfinished_tasks(db: OrmSession) -> list[str]:
-    """Distinct stored session ids that have a running or orphaned task.
-
-    This is the rescue's target list: re-resuming these sessions on the new
-    connection is what lets a still-running task's completion arrive at all
-    (PV "Phase 2a probes": delivered 2/2 with a pre-completion re-resume,
-    0/3 without). Orphaned rows are included on purpose -- orphaning happens
-    *at* the reconnect, so the rows the rescue exists for are already
-    orphaned by the time it runs.
-    """
+    """Distinct stored session ids that have a running or orphaned task."""
     stmt = (
         select(BackgroundTask.stored_session_id)
         .where(BackgroundTask.state.in_((STATE_RUNNING, STATE_ORPHANED)))
@@ -202,11 +135,7 @@ def all_tasks(db: OrmSession, *, limit: int = 500) -> list[BackgroundTask]:
 
 
 def finished_results_for_session(db: OrmSession, stored_session_id: str) -> list[BackgroundTask]:
-    """Finished rows with a result, oldest first -- the transcript-injection feed.
-
-    Oldest-first because these are appended to the end of a transcript in the
-    order the results arrived.
-    """
+    """Finished rows with a result, oldest first -- the transcript-injection feed."""
     stmt = (
         select(BackgroundTask)
         .where(

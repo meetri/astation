@@ -1,30 +1,4 @@
-"""Background tasks: submit route, ledger lists, and the completion pipeline (P2-1, fixes B-42).
-
-Why a ledger at all: `prompt.background` is fire-and-forget and **Hermes
-keeps no trace of it** (PV "Phase 2 probe", measured live 2026-08-30). The
-submit returns `{"task_id": "bg_..."}` and then the wire is silent -- no
-events, no pollable status, no transcript row, and a background-only session
-is never persisted. Completion is exactly one `background.complete`
-`{task_id, text}` event, delivered only to connections attached to the
-session at that instant. Until P2-1 the gateway dropped that event unmapped
-, so the app could never learn a task finished. The `background_tasks`
-table (written at submit, updated on completion) plus that one event are the
-background pill's entire data source.
-
-Three cooperating pieces; the first lives here, the other two in
-`domain/background_ledger.py` (CLEANUP_PLAN step 3.5) and are re-exported from
-this module with their constants:
-
-1. **Routes** (`background_router`, mounted on the authenticated `/api`
-   router in `api.main`): submit a task, list a session's tasks, list all
-   tasks. Same conventions as every other route -- stored ids in, live
-   handles resolved per call via the shared `_with_live_handle()`, 404/502
-   mapping via `_http_error_from_hermes`, 503 for an unmigrated DB.
-2. **`BackgroundLedger`** -- the event-side orchestration, wired to
-   `EventBroadcaster` by `api.main.lifespan`.
-3. **Transcript injection** (`append_finished_background_results`) on every
-   transcript read.
-"""
+"""Background tasks: submit route, ledger lists, and the completion pipeline (P2-1, fixes B-42)."""
 
 from __future__ import annotations
 
@@ -62,21 +36,9 @@ logger = logging.getLogger(__name__)
 
 background_router = APIRouter(tags=["background"])
 
-# ---------------------------------------------------------------------------
-# Request/response shapes
-# ---------------------------------------------------------------------------
-
 
 class BackgroundSubmission(BaseModel):
-    """Body for `POST /api/sessions/{stored_session_id}/background`.
-
-    Same closed schema and blank-text rules as `TurnSubmission`
-    (`api.main`), for the same reasons: `text` is the only thing a client
-    can put on the wire, a whitespace-only prompt must never start a real
-    task, and the rewind/truncate fields are rejected by name even
-    though `prompt.background` is not known to read them -- "not known to"
-    is not "does not", and the guard costs nothing.
-    """
+    """Body for `POST /api/sessions/{stored_session_id}/background`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,24 +61,9 @@ class BackgroundSubmission(BaseModel):
         return reject_rewind_fields(data, submission="background")
 
 
-# ---------------------------------------------------------------------------
-# DB dependency
-# ---------------------------------------------------------------------------
-
-
-#: A DB session, with "you never ran the migration" turned into a 503
-#: (`domain.db.schema_checked_db`). Mirrors `api.projects.workspace_db` but
-#: verifies the *ledger* table: `schema_is_present` predates this feature and
-#: only checks the Phase 1 tables, so a database migrated to the previous head
-#: would pass it and then 500 on the first ledger query.
 _background_db = schema_checked_db(
     "background_schema_verified", lambda engine: table_present(engine, "background_tasks")
 )
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 
 @background_router.post("/sessions/{stored_session_id}/background")
@@ -126,26 +73,7 @@ async def submit_background_task(
     request: Request,
     db: OrmSession = Depends(_background_db),
 ) -> dict:
-    """Submit a `prompt.background` task and write its ledger row.
-
-    `{stored_session_id}` is the **STORED / durable** id, resolved to a live
-    handle through the shared `_with_live_handle()` exactly like
-    `POST /turns`. The ledger row is written *before* the response goes out,
-    against the STORED id -- the completion event carries only a live handle
-    (which may be re-minted by then), so the submit-time record here is the
-    only reliable session attribution the task will ever have.
-
-    Returns 502 if Hermes acknowledges without a usable `task_id`: without
-    one, the completion event could never be matched, which is B-42 with
-    extra steps -- the task may be running, but this gateway cannot track it
-    and says so instead of pretending.
-
-    NOTE: a 200 here means *accepted*, and
-    that is all the wire can ever say. No progress events will follow; the
-    next observable fact about this task is its single
-    `background.complete` event, surfaced via the ledger as
-    `state: finished` and injected into the session timeline.
-    """
+    """Submit a `prompt.background` task and write its ledger row."""
     stored_id = _validate_stored_session_id(stored_session_id)
     adapter: HermesAdapter = request.app.state.hermes_adapter
     cache = request.app.state.live_handle_cache
@@ -199,13 +127,7 @@ async def list_session_background_tasks(
     stored_session_id: str,
     db: OrmSession = Depends(_background_db),
 ) -> dict:
-    """This session's ledger, newest submit first -- the per-session pill/sheet feed.
-
-    Served entirely from the gateway's own ledger: Hermes has nothing to ask
-    (no status surface exists for background tasks -- measured). No Hermes
-    round trip, so this works even while Hermes is unreachable, which is
-    exactly when the operator wants to know what was in flight.
-    """
+    """This session's ledger, newest submit first -- the per-session pill/sheet feed."""
     stored_id = _validate_stored_session_id(stored_session_id)
     tasks = ledger_ops.tasks_for_session(db, stored_id)
     return {

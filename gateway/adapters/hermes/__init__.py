@@ -1,8 +1,4 @@
-"""Hermes TUI Gateway adapter.
-
-See `docs/PROTOCOL_VERIFIED.md` for the verified wire protocol this
-implements, and `client.HermesAdapter`'s docstring for the public interface.
-"""
+"""Hermes TUI Gateway adapter."""
 
 from __future__ import annotations
 

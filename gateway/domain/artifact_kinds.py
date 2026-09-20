@@ -1,31 +1,12 @@
-"""Grouping artifacts by what they ARE, for filtering a listing.
-
-The store records a `mime_type` and often a `source_path`, but neither is what
-a person filters by: nobody looks for `application/vnd.oasis…`, they look for
-"documents". This maps both signals onto a short vocabulary the app can show
-as chips.
-
-Two rules, and the order matters:
-
-1. **The extension wins over the MIME type when they disagree.** The ingest
-   path guesses a MIME from the filename and falls back to
-   `application/octet-stream`, so a `.py` file routinely arrives as
-   `text/x-python`, `text/plain` or octet-stream depending on the platform.
-   The extension is the thing the user actually sees in the file browser.
-2. **Unknown is its own answer, never a wrong one.** Anything unrecognised is
-   `other`, which is filterable in its own right — guessing would quietly hide
-   files from a filter that claims to be complete.
-"""
+"""Grouping artifacts by what they ARE, for filtering a listing."""
 
 from __future__ import annotations
 
 import os
 
-#: The filter vocabulary, in the order a UI should offer it.
 KINDS: tuple[str, ...] = ("image", "document", "code", "data", "audio", "video", "archive", "other")
 
 _EXTENSIONS: dict[str, str] = {
-    # image
     "png": "image",
     "jpg": "image",
     "jpeg": "image",
@@ -36,7 +17,6 @@ _EXTENSIONS: dict[str, str] = {
     "tif": "image",
     "heic": "image",
     "svg": "image",
-    # document
     "pdf": "document",
     "md": "document",
     "markdown": "document",
@@ -47,7 +27,6 @@ _EXTENSIONS: dict[str, str] = {
     "odt": "document",
     "qmd": "document",
     "tex": "document",
-    # code
     "py": "code",
     "js": "code",
     "ts": "code",
@@ -72,7 +51,6 @@ _EXTENSIONS: dict[str, str] = {
     "diff": "code",
     "patch": "code",
     "ipynb": "code",
-    # data
     "json": "data",
     "yaml": "data",
     "yml": "data",
@@ -86,7 +64,6 @@ _EXTENSIONS: dict[str, str] = {
     "db": "data",
     "sqlite": "data",
     "xlsx": "data",
-    # audio / video
     "wav": "audio",
     "mp3": "audio",
     "ogg": "audio",
@@ -99,7 +76,6 @@ _EXTENSIONS: dict[str, str] = {
     "webm": "video",
     "mkv": "video",
     "avi": "video",
-    # archive
     "zip": "archive",
     "tar": "archive",
     "gz": "archive",
@@ -136,11 +112,7 @@ def extension_of(source_path: str | None) -> str:
 
 
 def kind_for(mime_type: str | None, source_path: str | None = None) -> str:
-    """Which `KINDS` bucket this artifact belongs to.
-
-    Extension first (see the module docstring), then the MIME type, then
-    `other` — which is a real answer, not a failure.
-    """
+    """Which `KINDS` bucket this artifact belongs to."""
     extension = extension_of(source_path)
     if extension in _EXTENSIONS:
         return _EXTENSIONS[extension]
@@ -151,8 +123,6 @@ def kind_for(mime_type: str | None, source_path: str | None = None) -> str:
     for prefix, kind in _MIME_PREFIXES:
         if mime.startswith(prefix):
             return kind
-    # `text/*` that is not one of the exact matches above is source more often
-    # than prose in this workspace (`text/x-python`, `text/x-shellscript`).
     if mime.startswith("text/"):
         return "code"
     return "other"
@@ -162,25 +132,8 @@ def is_valid_kind(kind: str) -> bool:
     return kind in KINDS
 
 
-# ---------------------------------------------------------------------------
-# Folders
-#
-# **Folders are a VIEW over `source_path`, never a stored column.** The agent
-# already organizes its output into directories that mean something
-# (`scratch/2026-09-19-kink-rung-refinement/out/…`) and the library threw all
-# of it away, flattening 2,443 distinct files into one newest-first list. A
-# stored folder column would be a second copy of that truth, free to drift
-# from the path it was derived from the first time a file moves.
-# ---------------------------------------------------------------------------
-
-
 def source_dir_of(source_path: str | None) -> str | None:
-    """The directory an artifact was fetched from, or `None`.
-
-    `None` for a row with no path (a promoted blob, a failed fetch) and for a
-    bare root-level name: neither has a directory, and inventing `"/"` for
-    them would file unrelated rows together under a folder nobody created.
-    """
+    """The directory an artifact was fetched from, or `None`."""
     cleaned = (source_path or "").strip()
     if not cleaned or not cleaned.startswith("/"):
         return None
@@ -189,12 +142,7 @@ def source_dir_of(source_path: str | None) -> str | None:
 
 
 def folder_components(source_path: str | None) -> tuple[str, ...]:
-    """The directory components of `source_path`, root first, no leading slash.
-
-    `("opt", "data", "tg-repos")` for `/opt/data/tg-repos/run.py`. Empty when
-    the row has no directory, which is what keeps such rows out of the folder
-    tree rather than under a fabricated root.
-    """
+    """The directory components of `source_path`, root first, no leading slash."""
     parent = source_dir_of(source_path)
     if parent is None:
         return ()
@@ -202,11 +150,7 @@ def folder_components(source_path: str | None) -> tuple[str, ...]:
 
 
 def is_within(source_path: str | None, prefix: str) -> bool:
-    """Whether `source_path` sits at or under directory `prefix`.
-
-    Compared component-wise rather than with `str.startswith`, which would put
-    `/opt/data-old/x` under `/opt/data`.
-    """
+    """Whether `source_path` sits at or under directory `prefix`."""
     cleaned = (source_path or "").strip()
     wanted = (prefix or "").strip().rstrip("/")
     if not cleaned or not wanted:

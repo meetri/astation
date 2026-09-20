@@ -1,17 +1,4 @@
-"""Stars, per project.
-
-Owner ask 2026-09-19: *"I just created a new project and I see bookmarked
-artifacts from other projects."* A star used to be a column on the artifact,
-so there was one shelf and every scope showed it. It is now a decision taken
-**inside a scope**, so the same file can be starred in the project that
-produced it and not in the one that is merely reading it.
-
-One rule runs through everything here: **the scope in the request is the
-scope the stars are read in.** A project listing shows that project's stars;
-the unfiled listing shows the unfiled scope's; a request that names no scope
-is asking "starred anywhere", and gets the union. There is no second rule for
-writes -- starring while standing somewhere records the star there.
-"""
+"""Stars, per project."""
 
 from __future__ import annotations
 
@@ -23,10 +10,6 @@ from sqlalchemy.orm import Session as OrmSession
 
 from domain.models import ArtifactBookmark, utcnow
 
-#: The scope an unfiled artifact's star lives in. Empty string rather than
-#: NULL so the composite primary key actually enforces one star per scope --
-#: SQLite treats NULLs as distinct, so a nullable scope would let the same row
-#: be starred twice and the shelf would show it twice.
 UNFILED_SCOPE = ""
 
 
@@ -36,13 +19,7 @@ def scope_of(project_id: str | None) -> str:
 
 
 def set_bookmark(db: OrmSession, artifact_id: str, scope: str, *, starred: bool) -> datetime | None:
-    """Star or un-star one artifact in one scope. Returns the new timestamp.
-
-    Starring is idempotent but DOES refresh the timestamp: it records when the
-    owner last said this matters, which is the order they expect to find it
-    in. Un-starring what was never starred is not an error -- the caller's
-    intent is already true.
-    """
+    """Star or un-star one artifact in one scope. Returns the new timestamp."""
     existing = db.get(ArtifactBookmark, (artifact_id, scope))
     if not starred:
         if existing is not None:
@@ -61,13 +38,7 @@ def is_bookmarked(db: OrmSession, artifact_id: str, scope: str) -> bool:
 
 
 def starred_at(db: OrmSession, artifact_ids: list[str], scope: str | None) -> dict[str, datetime]:
-    """When each of these was starred in `scope`, for the rows that were.
-
-    One query for a whole page rather than one per row: a 200-row listing that
-    asked per row would be 200 queries for a glyph. `scope=None` means "any
-    scope", and then the newest star wins -- the honest answer to "is this
-    starred anywhere".
-    """
+    """When each of these was starred in `scope`, for the rows that were."""
     if not artifact_ids:
         return {}
     query = select(ArtifactBookmark.artifact_id, ArtifactBookmark.bookmarked_at).where(
@@ -83,11 +54,7 @@ def starred_at(db: OrmSession, artifact_ids: list[str], scope: str | None) -> di
 
 
 def scoped_ids(db: OrmSession, scope: str | None) -> list[str]:
-    """Every artifact starred in `scope`, newest star first.
-
-    `scope=None` is "starred anywhere", deduplicated to one entry per
-    artifact -- a file starred in two projects is still one file.
-    """
+    """Every artifact starred in `scope`, newest star first."""
     query = select(ArtifactBookmark.artifact_id, ArtifactBookmark.bookmarked_at)
     if scope is not None:
         query = query.where(ArtifactBookmark.scope == scope)
@@ -102,12 +69,7 @@ def scoped_ids(db: OrmSession, scope: str | None) -> list[str]:
 
 
 def scopes_of(db: OrmSession, artifact_id: str) -> list[dict[str, Any]]:
-    """Which scopes hold a star on this artifact, for its detail screen.
-
-    `project_id` is `null` for the unfiled scope, because that is what the
-    artifact's own `project_id` says and two spellings of "no project" on one
-    screen is one too many.
-    """
+    """Which scopes hold a star on this artifact, for its detail screen."""
     from domain.timeutil import iso_z
 
     rows = db.execute(

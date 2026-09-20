@@ -1,59 +1,4 @@
-"""Measured latency and spend per profile, from the gateway's own history (P6).
-
-`docs/AGENT_MODEL_DESIGN.md` §1: *"Latency and spend are not in any catalog.
-Nothing upstream gives them a priori."* What the gateway does have is every
-turn it observed (`runs`, one row per turn with `profile`, `started_at`,
-`ended_at`) and every `session.usage` frame it persisted (`run_events`). Owner
-decision 5 (§6): latency is measured from this history, never a paid live
-test. This module turns those rows into the §8 `stats` block:
-
-    {"window_days": 7, "turns": 41,
-     "first_response_s": {"median": 1.8, "p90": 6.2} | null,
-     "turn_s":           {"median": 52.0, "p90": 410.0} | null,
-     "tokens": {"prompt": 2598126, "completion": 16693},
-     "spend_usd": 3.40 | null,
-     "spend_note": "..."}
-
-**Three measured facts shape the arithmetic (§7, deployed DB):**
-
-1. **First response** is the earliest persisted `tool.generating` /
-   `tool.started` / `message.interim` / `message.completed` after the run's
-   `started_at`. **Not** `message.started` and **not** `status.update`:
-   measured on the deployed DB, a run's `started_at` IS
-   the timestamp of its own `message.started` (seq 1) and a `status.update`
-   follows within ~15 ms, so counting either yields a flat `0.0` for every
-   turn. The first frame that means "the model produced something" is the
-   first tool call or the first sealed segment -- measured gaps of 12.3 s,
-   13.9 s and 46.8 s on the same profile. It is "first thing the operator could
-   see", not a vendor time-to-first-token: `reasoning.delta` is not
-   persisted, so a reasoning-first model's first response is when its
-   reasoning *ends*. A run with none of those four frames contributes
-   nothing to the distribution.
-2. **`session.usage` is CUMULATIVE per session**, ~15 frames per turn, one per
-   model call: `{usage: {model, prompt, completion, input, output, reasoning,
-   total, calls, context_used, context_max}}`. A turn's own tokens are
-   therefore a **delta**: the last usage frame in this run minus the last
-   usage frame of the previous run *in the same session* (zero baseline for a
-   session's first turn). Runs are grouped by `runtime_session_id` (the
-   stored id) and ordered by `started_at` for that subtraction. A negative
-   delta means the counter reset underneath us (Hermes restarted; the session
-   was re-resumed into a fresh process) and the run's own last value is taken
-   as-is rather than reported as negative tokens.
-3. **Spend uses each turn's own `usage.model`**, not the profile's current
-   one: the operator may have switched the profile's model mid-week, and the
-   turns before the switch cost what *that* model cost. The price comes from
-   the injected `price_lookup(model_id) -> (input, output) | None` (per 1M
-   tokens; `domain/model_catalog.py::price_lookup_from_catalog`). `spend_usd`
-   is `null` when no run in the window had a known price -- never a
-   reassuring `0.0` for "we could not price it".
-
-The window boundary is handled so the first in-window turn of a session is
-not charged the whole session's cumulative count: for each session the last
-usage frame of the most recent run *before* the window is loaded as that
-session's baseline.
-
-Medians and p90 are plain `statistics`; `null` when there is no data.
-"""
+"""Measured latency and spend per profile, from the gateway's own history (P6)."""
 
 from __future__ import annotations
 
@@ -72,30 +17,18 @@ from domain.runs import RUN_KIND_TURN
 
 logger = logging.getLogger(__name__)
 
-#: The persisted event types that count as "the agent produced something the
-#: owner can see". `message.started` is deliberately absent -- it is the
-#: frame that opens the run, so its gap to `started_at` is zero by
-#: construction -- and so is `status.update`
-#: (a "recalled 32 memories" notice ~15 ms in). `reasoning.delta` and
-#: `message.delta` are not persisted (`events/persistence.py`), so they
-#: cannot be in this set.
 FIRST_RESPONSE_EVENT_TYPES: frozenset[str] = frozenset(
     {"tool.generating", "tool.started", "message.interim", "message.completed"}
 )
 
-#: The one persisted frame that carries token counts.
 USAGE_EVENT_TYPE = "session.usage"
 
-#: The §8 window default.
 DEFAULT_WINDOW_DAYS = 7
 
-#: Verbatim in the response, so the app can show where the number came from.
 SPEND_NOTE = (
     "≈ prompt × input price + completion × output price, per turn, using each turn's own model"
 )
 
-#: SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 999 on older builds;
-#: `IN (...)` lists are chunked well under it.
 _IN_CHUNK = 400
 
 PriceLookup = Callable[[str], "tuple[float, float] | None"]
@@ -112,11 +45,7 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def _percentiles(values: list[float]) -> dict[str, float] | None:
-    """`{median, p90}` rounded to 2 dp, or None for no data.
-
-    `statistics.quantiles` needs at least two points; a single observation is
-    its own median and p90 rather than an error.
-    """
+    """`{median, p90}` rounded to 2 dp, or None for no data."""
     if not values:
         return None
     if len(values) == 1:
@@ -193,18 +122,10 @@ def compute_profile_stats(
     price_lookup: PriceLookup | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """The §8 `stats` block for `profile` over the last `days` days.
-
-    `price_lookup(model_id)` answers `(input_per_million, output_per_million)`
-    or None; `None` for the whole callable means nothing can be priced and
-    `spend_usd` is `null`. `now` is injectable for the tests.
-    """
+    """The §8 `stats` block for `profile` over the last `days` days."""
     now_utc = _aware(now) or datetime.now(UTC)
     window_start = now_utc - timedelta(days=days)
 
-    # Every turn for this profile, oldest first. The whole history is read
-    # (rows are small) because the previous run of each in-window session --
-    # possibly outside the window -- is the baseline for its cumulative usage.
     runs = list(
         db.execute(
             select(Run)
@@ -236,7 +157,6 @@ def compute_profile_stats(
         db, [run.id for run in predecessor_by_session.values()], frozenset({USAGE_EVENT_TYPE})
     )
 
-    # Baseline per session: the last usage of the most recent pre-window run.
     baseline: dict[str, tuple[int, int]] = {}
     for key, run in predecessor_by_session.items():
         usage = _last_usage(baseline_events.get(run.id, []))
@@ -253,10 +173,10 @@ def compute_profile_stats(
     spend = 0.0
     priced_any = False
 
-    for run in in_window:  # already oldest-first, so per-session deltas chain correctly
+    for run in in_window:
         started = _aware(run.started_at)
         ended = _aware(run.ended_at)
-        assert started is not None  # filtered above
+        assert started is not None
         if ended is not None:
             turn_seconds.append(max((ended - started).total_seconds(), 0.0))
 
@@ -282,8 +202,6 @@ def compute_profile_stats(
         prompt_delta = last_prompt - prev_prompt
         completion_delta = last_completion - prev_completion
         if prompt_delta < 0 or completion_delta < 0:
-            # Counter reset under us (fresh Hermes process): the run's own
-            # cumulative value is the best available reading of its cost.
             prompt_delta, completion_delta = last_prompt, last_completion
         baseline[key] = (last_prompt, last_completion)
         prompt_total += prompt_delta

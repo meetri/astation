@@ -1,87 +1,4 @@
-"""Agent (profile) model management: detail, catalog, model write, lifecycle (P6).
-
-The operator's ask, verbatim: *"I need a way to
-manage each profile. I want to be able to select which model is used for each
-profile if it's local, openrouter, etc... which models I can choose from, how
-much it costs, latency, etc."* Six routes, the §8 contract exactly:
-
-    GET    /api/profiles/{name}            one agent: row + model facts + measured stats
-    GET    /api/models/catalog             every configured provider's models, with facts
-    PUT    /api/profiles/{name}/model      {provider, model} -> profiles.configure -> read back
-    POST   /api/profiles                   create (201) -> profiles.create -> reconcile
-    PATCH  /api/profiles/{name}            rename (cli.exec) and/or description (profiles.configure)
-    DELETE /api/profiles/{name}?confirm=   delete (204) -> cli.exec ["profile","delete","-y",name]
-
-`GET /api/profiles` (`api/instance.py`) is untouched: still `profiles.list`
-verbatim plus `connected`.
-
-**The unit of model choice is the profile, not the session.** Measured (PV
-"Profiles"): `session.create` ignores `model`, and `/model` is a core TUI
-command `command.dispatch` refuses. `profiles.configure` is the one write that
-exists and it is verified live 2026-09-06 (§7). A model written here applies
-to the profile's **next new session**; an open session keeps the model it was
-spawned with. The app says so beside the picker.
-
-**All Hermes calls here go over the default connection.** §7 measured that
-`profiles.configure` works from the default connection -- the write is by
-profile directory, not by which dashboard process took it -- and `cli.exec`
-has always run on the default connection. So every call is
-`_with_reconnect(request.app.state, request.app.state.hermes_adapter, ...)`,
-and nothing here needs `resolve_profile_adapter`.
-
-**A user-defined provider is mirrored into the profile's own config.** After a
-successful `profiles.create` / `profiles.configure` naming a provider that
-`model.options` marks `is_user_defined` (a `providers.<slug>` entry in the
-default profile's config.yaml, e.g. the operator's second local llama.cpp box),
-the route runs `hermes -p <profile> config set providers.<slug>.{name,base_url,
-discover_models}` through `cli.exec`. Measured 2026-09-06: without it the write
-lands but the agent's first turn answers `Unknown provider '<slug>'`, because a
-profile's process loads its own config.yaml. `docs/AGENT_MODEL_DESIGN.md` §9.
-
-**Validation before any write.** `PUT .../model` and `POST /profiles` check
-`provider` against `model.options` and `model` against that provider's list,
-and a miss is a 422 naming the provider and how many models it lists -- a
-typo'd model id that reached `profiles.configure` would be written verbatim
-into the profile's `config.yaml`, and the first sign would be the next
-session failing to start. For OpenRouter the check also takes any id on
-OpenRouter's public list (the app lets the operator paste one, 2026-09-10); a
-public list that cannot be read is a 422 saying so, never a pass.
-
-**Names that become process arguments are gated by a regex.** Rename and
-delete have no RPC (§7) and go through `cli.exec` as
-`["profile","rename",old,new]` / `["profile","delete","-y",name]`, where every
-element is a real argv token parsed by the CLI's own argparse (see
-`api/instance.py`'s `_ARGV_SAFE_STORED_ID` for the full reasoning). A name
-matching `PROFILE_NAME_PATTERN` (`^[a-z0-9][a-z0-9-]{0,39}$`) cannot start
-with `-`, so it cannot be read as an option. The same rule applies on create,
-so a profile this gateway makes can always be renamed and deleted by it.
-`cli.exec` answers 200 whatever the CLI did; only `blocked: false` and
-`code == 0` is success, and anything else is a **502 carrying the CLI's own
-output** -- the `delete_session` precedent.
-
-**Lifecycle changes reconcile the connection manager right away.** A created
-profile gets its own dashboard connection (`ProfileConnectionManager`,
-`domain/profile_connection.py`) at the next reconciliation tick -- five
-minutes by default -- so after create / rename / delete the route asks for a
-pass now. Best-effort: a reconcile failure is logged and never fails the
-route, because the Hermes-side change has already happened and reporting it
-as failed would be a lie.
-
-**Two things never fail these routes.** `model_facts` and `stats` are
-decoration on the profile row: an OpenRouter fetch that fails yields
-`model_facts: null` (or facts from Hermes alone), a database problem yields
-`stats: null`, and the profile is still shown.
-
-**A profile's model need not be in Hermes's curated list.** `model.options`
-carries 44 OpenRouter ids; the operator's `kimi25` runs on `moonshotai/kimi-k2.5`,
-which is not among them and works fine. So the detail
-route's facts and spend fall back to the fetched OpenRouter index
-(`ModelCatalogCache.cached_openrouter()`) for the OpenRouter provider; the
-index itself never enters a payload.
-
-Mounted on the authenticated `/api` router in `api.main`, so Basic auth is
-inherited by construction.
-"""
+"""Agent (profile) model management: detail, catalog, model write, lifecycle (P6)."""
 
 from __future__ import annotations
 
@@ -112,49 +29,23 @@ logger = logging.getLogger(__name__)
 
 profile_admin_router = APIRouter(tags=["profile-admin"])
 
-#: The §8 slug rule. Lower-case, digits and hyphens, no leading hyphen, at
-#: most 40 characters. **Also the argv gate** (module docstring): a value
-#: that passes cannot be read as a CLI option.
 PROFILE_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,39}$"
 _PROFILE_NAME = re.compile(PROFILE_NAME_PATTERN)
 
-#: The profile that cannot be deleted and whose rename is display-only (§8).
 DEFAULT_PROFILE_NAME = "default"
 
-#: The `hermes` CLI subcommands the two RPC-less lifecycle operations use
-#: (§7: "Rename/delete: no RPC"). Constants so the tests asserting the exact
-#: argv assert against the literal the route sends.
 HERMES_PROFILE_RENAME_ARGV: tuple[str, ...] = ("profile", "rename")
 HERMES_PROFILE_DELETE_ARGV: tuple[str, ...] = ("profile", "delete", "-y")
 
-#: Description cap. Hermes's own descriptions are a sentence or two; the cap
-#: keeps a runaway client from writing an essay into `config.yaml`.
 MAX_DESCRIPTION_CHARS = 500
 
-#: `hermes -p <profile> config set providers.<slug>.<key> <value>` -- how a
-#: user-defined provider is copied into a profile's own config.yaml (measured
-#: 2026-09-06: a profile whose config lacks the `providers:` entry fails its
-#: first turn with `Unknown provider 'local-3080ti'`, because each profile
-#: process loads ITS config, not the default profile's). The keys mirrored are
-#: the ones `model.options` exposes; a keyed endpoint's `key_env` is not among
-#: them and stays a hand edit.
 HERMES_CONFIG_SET_ARGV: tuple[str, ...] = ("config", "set")
 _PROVIDER_SLUG = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _MIRRORED_PROVIDER_KEYS: tuple[str, ...] = ("name", "base_url", "discover_models")
 
 
-# ---------------------------------------------------------------------------
-# Bodies -- closed schemas, every one
-# ---------------------------------------------------------------------------
-
-
 class ModelSelection(BaseModel):
-    """Body for `PUT /api/profiles/{name}/model`. `{provider, model}` and nothing else.
-
-    `base_url` is deliberately not a field (§8: "not accepted in this
-    round") -- it is a different, unprobed Hermes write (`model.base_url`),
-    and `extra="forbid"` makes sending it a 422 rather than a silent drop.
-    """
+    """Body for `PUT /api/profiles/{name}/model`. `{provider, model}` and nothing else."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -163,13 +54,7 @@ class ModelSelection(BaseModel):
 
 
 class ProfileCreate(BaseModel):
-    """Body for `POST /api/profiles`.
-
-    `provider` and `model` come together or not at all: `profiles.create`
-    pins a model only when both are given (§7), and one without the other
-    would either be ignored or pair a provider with the launch profile's
-    model id, neither of which the caller asked for.
-    """
+    """Body for `POST /api/profiles`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -199,11 +84,6 @@ class ProfileUpdate(BaseModel):
         if self.name is None and self.description is None:
             raise ValueError("nothing to change: give name and/or description")
         return self
-
-
-# ---------------------------------------------------------------------------
-# Shared plumbing
-# ---------------------------------------------------------------------------
 
 
 def _validate_profile_name(name: str) -> str:
@@ -293,16 +173,7 @@ async def _catalog_best_effort(request: Request) -> dict[str, Any] | None:
 async def _validate_selection(
     request: Request, options: dict[str, Any], provider: str, model: str
 ) -> None:
-    """422 unless `provider` is configured and lists `model` (§8).
-
-    "Lists" is `selectable_model_ids`: Hermes's own list, or for a local
-    provider Hermes has not probed yet, what the endpoint's `/models`
-    answers -- the same fallback `GET /api/models/catalog` shows, so the
-    picker and this check never disagree. For OpenRouter it also takes any
-    id on OpenRouter's public list: Hermes curates a few dozen, the app
-    lets the operator paste the rest, and a profile on an
-    uncurated id runs fine (`kimi25`, measured 2026-09-06).
-    """
+    """422 unless `provider` is configured and lists `model` (§8)."""
     ids = await selectable_model_ids(options, provider, cache=_catalog_cache(request))
     if ids is None:
         known = [p.get("slug") for p in options.get("providers", []) if isinstance(p, dict)]
@@ -380,20 +251,7 @@ def _cli_succeeded(result: Any) -> tuple[bool, Any, str]:
 async def _mirror_provider_into_profile(
     request: Request, options: dict[str, Any], name: str, provider: str
 ) -> None:
-    """Copy a user-defined provider's definition into `name`'s own config.yaml.
-
-    Built-in providers (`openrouter`, `anthropic`, ...) need nothing. A
-    user-defined one (`is_user_defined` in `model.options`, with an `api_url`)
-    exists only in whichever config.yaml declares it -- the default profile's,
-    where the operator added it -- and a profile created or re-pointed from the
-    app has its own config.yaml, loaded by its own process. Without this the
-    model write lands and the agent's first turn fails with `Unknown provider`.
-    Idempotent: `config set` on an existing key rewrites the same value.
-
-    A CLI failure is a 502 with the CLI's output: the model is already
-    written by then, and reporting a 201/200 for an agent that cannot run
-    would be a lie; the row still exists and the next list shows it.
-    """
+    """Copy a user-defined provider's definition into `name`'s own config.yaml."""
     entry = find_provider(options, provider)
     if not isinstance(entry, dict) or entry.get("is_user_defined") is not True:
         return
@@ -453,9 +311,6 @@ def _profile_detail(
     model_id = row.get("model") if isinstance(row.get("model"), str) else None
     provider_entry = find_provider(catalog, provider) if (catalog and provider) else None
     api_url = provider_entry.get("api_url") if provider_entry else None
-    # The private OpenRouter index: a profile may run on an OpenRouter model
-    # Hermes's curated list omits (`kimi25`, measured 2026-09-06); the public
-    # list still prices and describes it. Never part of any payload.
     openrouter_index = _catalog_cache(request).cached_openrouter()
     facts = (
         model_facts_for(catalog, provider, model_id, openrouter=openrouter_index)
@@ -497,23 +352,12 @@ async def _detail_for(request: Request, db: OrmSession, name: str) -> dict[str, 
     return _profile_detail(request, db, row, catalog)
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @profile_admin_router.get("/models/catalog")
 async def get_model_catalog(
     request: Request,
     refresh: bool = Query(default=False),
 ) -> dict[str, Any]:
-    """Every configured provider's models, with facts (§8 shape; `domain/model_catalog.py`).
-
-    `model.options` is fetched live every time; the OpenRouter list and any
-    local `/models` probe are cached an hour and `?refresh=1` re-fetches
-    them. 502 only when `model.options` itself fails -- an external source
-    that fails yields nulls, not an error.
-    """
+    """Every configured provider's models, with facts (§8 shape; `domain/model_catalog.py`)."""
     return await _catalog(request, refresh=refresh)
 
 
@@ -536,15 +380,7 @@ async def set_profile_model(
     request: Request,
     db: OrmSession = Depends(workspace_db),
 ) -> dict[str, Any]:
-    """`{provider, model}` -> `profiles.configure {name, provider, model}` -> read back (§8).
-
-    Order: the profile must exist (404), the selection must be in
-    `model.options` (422), then exactly `{name, provider, model}` goes to
-    `profiles.configure`. Hermes's `applied.model` is checked -- `ok` alone
-    is not trusted -- and a write Hermes reports as not applied is a 502.
-    The response is `GET /profiles/{name}`'s shape, re-read from
-    `profiles.list` so the app shows what Hermes now holds, not what was sent.
-    """
+    """`{provider, model}` -> `profiles.configure {name, provider, model}` -> read back (§8)."""
     rows = await _profile_rows(request)
     _require_row(rows, name)
     options = await _model_options(request)
@@ -579,13 +415,7 @@ async def create_profile(
     request: Request,
     db: OrmSession = Depends(workspace_db),
 ) -> dict[str, Any]:
-    """`profiles.create`, then reconcile connections, then the new row (§8, 201).
-
-    409 if the name exists. `provider`+`model` are validated against
-    `model.options` when given; when absent the new profile inherits the
-    launch profile's model (Hermes's own behaviour, §7). Only the keys the
-    caller sent are forwarded.
-    """
+    """`profiles.create`, then reconcile connections, then the new row (§8, 201)."""
     rows = await _profile_rows(request)
     if _find_row(rows, body.name) is not None:
         raise HTTPException(status_code=409, detail=f"a profile named {body.name!r} already exists")
@@ -626,13 +456,6 @@ async def update_profile(
 ) -> dict[str, Any]:
     """Rename via `cli.exec ["profile","rename",old,new]` and/or description via
     `profiles.configure {name, description}` (§8).
-
-    Description is written first, under the old name, so a rename that then
-    fails leaves a profile that still exists under a name the caller knows.
-    Renaming `default` is a display-name change on Hermes's side: the CLI is
-    still called, the profile keeps the id `default`, the row is re-read by
-    `default`, and the response says `renamed_display_only: true`. Any other
-    rename reconciles connections and returns the row under its new name.
     """
     _validate_profile_name(name)
     rows = await _profile_rows(request)
@@ -664,7 +487,7 @@ async def update_profile(
         argv = [*HERMES_PROFILE_RENAME_ARGV, name, body.name]
         await _run_cli(request, argv, f"profile rename {name} {body.name}")
         if name == DEFAULT_PROFILE_NAME:
-            renamed_display_only = True  # `default` keeps its id; only its display name moved
+            renamed_display_only = True
         else:
             final_name = body.name
         logger.warning(
@@ -686,14 +509,7 @@ async def delete_profile(
     request: Request,
     confirm: str | None = Query(default=None),
 ) -> Response:
-    """`cli.exec ["profile","delete","-y",name]` -> reconcile -> 204 (§8).
-
-    Refuses `default` (409) and refuses without `?confirm=<name>` (422) --
-    the confirmation is the name itself, typed by the caller, so a mis-tap
-    on a list row cannot delete anything. 404 for an unknown profile. A
-    non-zero CLI `code` is a 502 carrying the CLI's output. The profile's own
-    sessions die with its directory; the app says so before asking.
-    """
+    """`cli.exec ["profile","delete","-y",name]` -> reconcile -> 204 (§8)."""
     _validate_profile_name(name)
     if name == DEFAULT_PROFILE_NAME:
         raise HTTPException(status_code=409, detail="the default profile cannot be deleted")

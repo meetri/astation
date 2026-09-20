@@ -1,81 +1,4 @@
-"""The runtime configuration overlay: the operator's own provider settings, writable.
-
-The operator's principle, verbatim: *"It shouldn't matter the logistics I use --
-what should matter is having control over the configs."* Until this module
-existed, every provider choice (which endpoint answers a rewrite, which Whisper
-runs, which key is presented) was a hand edit of the repo-root `.env` on one
-specific Mac. The operator could not change their own setup without a developer,
-and the machine or engine in use is theirs to decide and change at will.
-
-## The load order, and what "overlay" means
-
-    defaults  ->  .env  ->  overlay
-
-`.env` keeps doing exactly what it did: it is the **floor**, the hand-maintained
-gitignored file that a fresh checkout or a Docker deploy is configured from.
-This module adds a layer **above** it -- a small JSON file the gateway itself
-owns and writes -- so a value the operator sets from their phone wins over the one
-in `.env`, and dropping the overlay value (`reset`) falls straight back to it.
-
-**`.env` is never written.** It is hand-maintained, it carries comments the
-owner wrote, and it is the recovery path when the overlay is wrong; a program
-that rewrites it destroys both.
-
-## Where it lives
-
-`RESEARCH_GATEWAY_RUNTIME_CONFIG_PATH`, default `./data/runtime-config.json` --
-beside `research-gateway.db` and the artifact store, inside the
-already-gitignored `services/research-gateway/data/`. It holds secrets in
-plaintext, exactly as `.env` does, so it is written `0600` and it must never be
-committed. The file itself is written atomically (temp file in the same
-directory, then `os.replace`), so a crash mid-write leaves the previous
-configuration intact rather than a half-file.
-
-Format::
-
-    {"version": 1, "values": {"rewrite_model": "mtplx-27b", ...}}
-
-Keys are `Settings` **field names**, not env-var aliases, because that is the
-vocabulary the HTTP API and the app speak and one vocabulary is better than two.
-A hand-written file that omits the `{"version", "values"}` wrapper and is just a
-flat `{key: value}` map is read as the values map -- forgiving, and unambiguous
-because every recognised key is in `CONFIG_KEYS`.
-
-## Every failure degrades to ".env only"
-
-The same rule `SpokenRewriteCacheStore` and `OfflineCacheStores` already follow
-on the app side: a store that cannot be read is not an outage. `load_overlay()`
-**never raises**. A missing file, unreadable bytes, malformed JSON, a non-object
-payload, a key no longer in `CONFIG_KEYS`, a value that no longer validates --
-each is dropped (with a warning, once per file version, so a broken overlay is
-visible in the log without spamming it) and everything still readable is kept.
-Worst case the whole overlay is ignored and the gateway runs on `.env` exactly
-as it did before this module existed.
-
-That is the load-bearing property behind the promise that configurability must
-not create a new way to break speech: there is no overlay state that can stop
-`get_settings()` from returning a usable `Settings`.
-
-## Freshness
-
-`get_settings()` builds a fresh `Settings()` per call and every endpoint calls
-it per request, so a configuration change takes effect on the **next request**
-with no restart. This module keeps that property and does not pay for it twice:
-the parsed overlay is cached against the file's `(st_mtime_ns, st_size)`, so the
-per-request cost is one `stat()`. Any write -- ours through `write_overlay()`,
-which also invalidates explicitly, or a hand edit -- moves the stamp and the
-next call re-reads. The stamp is taken *after* the read and compared with the
-one taken before it; a file that changed underneath the read is used but not
-cached, so a torn read can never become the cached answer.
-
-## Validation happens here, not at the edge
-
-`validate_value()` is the single authority on what a key may hold, and the HTTP
-layer turns its `ConfigValueError` into a 422. It runs **before** anything is
-persisted (so an invalid value never reaches the file) and **again** on load (so
-an overlay written by an older build, or edited by hand, cannot feed `Settings`
-something that would raise during construction).
-"""
+"""The runtime configuration overlay: the operator's own provider settings, writable."""
 
 from __future__ import annotations
 
@@ -92,11 +15,8 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-#: Overlay file format version. Bumped only if the on-disk shape changes in a
-#: way a reader has to branch on; the loader tolerates its absence.
 OVERLAY_VERSION = 1
 
-#: File mode for the overlay. It carries API keys in plaintext, like `.env`.
 OVERLAY_FILE_MODE = 0o600
 
 
@@ -104,47 +24,22 @@ class ConfigValueError(ValueError):
     """A value that is not allowed for this key. Refused before it is stored."""
 
 
-# ---------------------------------------------------------------------------
-# The registry: every key the operator may change at runtime
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class ConfigKey:
-    """One runtime-changeable setting.
-
-    `key` is the `Settings` field name and is simultaneously the API key, the
-    overlay JSON key and the identifier the app sends -- deliberately one
-    vocabulary. `env_var` is the `.env` alias it shadows, reported so the operator
-    can see which line of their `.env` an overlay value is overriding.
-    """
+    """One runtime-changeable setting."""
 
     key: str
     env_var: str
     capability: str
     label: str
-    #: `url` | `text` | `secret` | `choice` | `int` | `float` | `bool`
     kind: str
     help: str = ""
     choices: tuple[str, ...] = ()
     max_chars: int = 512
     minimum: float | None = None
     maximum: float | None = None
-    #: Whether an empty string is a meaningful value rather than a mistake.
-    #: True for `rewrite_base_url` (empty disables the feature, honestly) and
-    #: for every key whose emptiness the existing code already handles.
     allow_empty: bool = True
-    #: Whether a newline is legitimate content. True for exactly the three
-    #: rewrite prompts, which are multi-line prose. **False everywhere else,
-    #: and that is a security property, not formatting**: a newline in an API
-    #: key or a model id is a header-injection shape (`Authorization: Bearer
-    #: <key>`) and a log-forging shape. Per key rather than per kind, because
-    #: `rewrite_model` and `rewrite_prompt` are both free text and only one of
-    #: them may ever contain a line break.
     multiline: bool = False
-    #: A regex a non-empty value must fullmatch. Set for `rewrite_profile`,
-    #: whose value names a Hermes profile: the same shape
-    #: `api/profile_admin.py` enforces on a name that becomes a CLI argument.
     pattern: str | None = None
 
     @property
@@ -154,14 +49,7 @@ class ConfigKey:
 
 @dataclass(frozen=True)
 class Capability:
-    """A family of settings the operator thinks about as one thing.
-
-    `writable` is False for the two capabilities this gateway does **not**
-    configure. They are listed anyway, with the reason, because "the app shows
-    nothing about TTS" and "the gateway has no TTS configuration" are different
-    facts and only the second is true -- and because leaving room for them here
-    is what makes adding one later a registry entry rather than a new surface.
-    """
+    """A family of settings the operator thinks about as one thing."""
 
     name: str
     label: str
@@ -243,14 +131,9 @@ CAPABILITIES: tuple[Capability, ...] = (
 CAPABILITIES_BY_NAME: dict[str, Capability] = {c.name: c for c in CAPABILITIES}
 
 
-#: The shape of a Hermes profile name -- `api/profile_admin.py`'s
-#: `PROFILE_NAME_PATTERN`, duplicated here rather than imported because
-#: `config/` must not depend on `api/`. `tests/test_config.py` asserts the two
-#: are the same string.
 PROFILE_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,39}$"
 
 CONFIG_KEYS: tuple[ConfigKey, ...] = (
-    # --- artifact ingest (domain/artifact_ingest.py) -----------------------
     ConfigKey(
         key="artifact_ignore_dirs",
         env_var="ARTIFACT_IGNORE_DIRS",
@@ -277,7 +160,6 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         ),
         max_chars=400,
     ),
-    # --- rewrite (api/rewrite.py) ------------------------------------------
     ConfigKey(
         key="rewrite_profile",
         env_var="REWRITE_PROFILE",
@@ -404,7 +286,6 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         max_chars=8000,
         multiline=True,
     ),
-    # --- converse (api/converse.py) ----------------------------------------
     ConfigKey(
         key="converse_base_url",
         env_var="CONVERSE_BASE_URL",
@@ -543,7 +424,6 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
             "the unknown field."
         ),
     ),
-    # --- speech to text (api/transcribe.py) --------------------------------
     ConfigKey(
         key="stt_provider",
         env_var="STT_PROVIDER",
@@ -625,13 +505,6 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         kind="text",
         max_chars=200,
     ),
-    # --- speech synthesis (api/speak.py) -----------------------------------
-    #
-    # The `tts` capability used to be listed here as `writable: False` with a
-    # note saying the gateway held no speech-synthesis configuration. That was
-    # true and is not any more: `POST /api/speak` gives the operator a choice of
-    # engine, so the choice belongs where every other provider choice does --
-    # changeable from the phone, reporting its source, with no `.env` edit.
     ConfigKey(
         key="tts_provider",
         env_var="TTS_PROVIDER",
@@ -717,7 +590,6 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
 
 CONFIG_KEYS_BY_NAME: dict[str, ConfigKey] = {spec.key: spec for spec in CONFIG_KEYS}
 
-#: Every key whose value must never leave this process.
 SECRET_CONFIG_KEYS: frozenset[str] = frozenset(spec.key for spec in CONFIG_KEYS if spec.secret)
 
 
@@ -725,24 +597,11 @@ def keys_for_capability(capability: str) -> tuple[ConfigKey, ...]:
     return tuple(spec for spec in CONFIG_KEYS if spec.capability == capability)
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-#: Characters that must never appear in a configured value. A newline in a
-#: model id or a key would be smuggled into an HTTP header (`Authorization:
-#: Bearer <key>`) or a log line; a NUL breaks both. Rejected for every kind.
 _FORBIDDEN_CHARS = ("\n", "\r", "\x00")
 
 
 def validate_value(spec: ConfigKey, raw: Any) -> Any:
-    """The normalized value for `spec`, or `ConfigValueError`.
-
-    The single authority on what a key may hold. Run before persisting, so an
-    invalid value never reaches the file, and again on load, so an overlay from
-    an older build or a hand edit cannot hand `Settings` something that would
-    raise while it is being constructed.
-    """
+    """The normalized value for `spec`, or `ConfigValueError`."""
     if spec.kind == "bool":
         return _validate_bool(spec, raw)
     if spec.kind == "int":
@@ -752,9 +611,6 @@ def validate_value(spec: ConfigKey, raw: Any) -> Any:
 
     if not isinstance(raw, str):
         raise ConfigValueError(f"{spec.key} must be a string; got {type(raw).__name__}")
-    # Only the prompts may be multi-line, and only they keep their internal
-    # whitespace. Everything else -- keys, model ids, URLs, language codes --
-    # is a single-line token, stripped, with newlines refused outright.
     value = raw if spec.multiline else raw.strip()
     forbidden = ("\x00",) if spec.multiline else _FORBIDDEN_CHARS
     if any(char in value for char in forbidden):
@@ -797,7 +653,6 @@ def _validate_bool(spec: ConfigKey, raw: Any) -> bool:
 
 
 def _validate_number(spec: ConfigKey, raw: Any, *, integer: bool) -> Any:
-    # `bool` is an `int` subclass; `True` is not a timeout.
     if isinstance(raw, bool):
         raise ConfigValueError(f"{spec.key} must be a number; got {raw!r}")
     if isinstance(raw, str):
@@ -831,14 +686,7 @@ def _pretty(value: float, integer: bool) -> str:
 
 
 def _validate_url(spec: ConfigKey, value: str) -> None:
-    """http/https, a real host, and **no credentials in the URL**.
-
-    The userinfo rule is a leak guard, not tidiness: `https://user:key@host/v1`
-    puts a secret into a value this gateway reports back over
-    `GET /api/config/providers`, logs as `provider_label()`, and shows in the
-    app. Refusing the shape is the only way the "no secret is ever returned"
-    promise can hold for a field the operator types freely into.
-    """
+    """http/https, a real host, and **no credentials in the URL**."""
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https"):
         raise ConfigValueError(f"{spec.key} must start with http:// or https://; got {value!r}")
@@ -856,30 +704,17 @@ def _validate_url(spec: ConfigKey, value: str) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# The store
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class OverlayLoad:
     """What `read_overlay()` found. Never an exception."""
 
-    #: Validated, known keys only. Safe to splat into `Settings(**values)`.
     values: dict[str, Any] = field(default_factory=dict)
-    #: True when the file exists and parsed into something usable.
     present: bool = False
-    #: Why the file (or part of it) was ignored. Never contains a value, so it
-    #: is safe to return over the API and to log.
     problems: tuple[str, ...] = ()
 
 
 _CACHE_LOCK = threading.Lock()
-#: path -> ((st_mtime_ns, st_size), OverlayLoad). One entry per path; the
-#: gateway has exactly one overlay, and a test pointing elsewhere adds one more.
 _CACHE: dict[str, tuple[tuple[int, int], OverlayLoad]] = {}
-#: Paths whose problems have already been logged, keyed by stamp, so a broken
-#: overlay warns once per version of the file instead of once per request.
 _WARNED: dict[str, tuple[int, int]] = {}
 
 
@@ -903,18 +738,10 @@ def _stamp(path: Path) -> tuple[int, int] | None:
 
 
 def read_overlay(path: str | os.PathLike[str]) -> OverlayLoad:
-    """The overlay at `path`, parsed and validated. **Never raises.**
-
-    Cached against the file's `(st_mtime_ns, st_size)`, so the per-request cost
-    is one `stat()` and any write -- ours or a hand edit -- is picked up on the
-    next call. The stamp is re-read after the parse and the result is cached
-    only if it did not move, so a file rewritten mid-read is used for this call
-    but never becomes the cached answer.
-    """
+    """The overlay at `path`, parsed and validated. **Never raises.**"""
     key = str(path)
     before = _stamp(Path(path))
     if before is None:
-        # No file is the normal state: nothing has been overridden yet.
         with _CACHE_LOCK:
             _CACHE.pop(key, None)
         return OverlayLoad()
@@ -961,8 +788,6 @@ def _parse_overlay(path: Path) -> OverlayLoad:
         return OverlayLoad(problems=(f"is a JSON {type(payload).__name__}, not an object",))
     body = payload.get("values")
     if not isinstance(body, dict):
-        # A hand-written flat `{key: value}` map is accepted too -- forgiving,
-        # and unambiguous because only `CONFIG_KEYS` names are recognised.
         body = {k: v for k, v in payload.items() if k != "version"}
 
     values: dict[str, Any] = {}
@@ -975,21 +800,12 @@ def _parse_overlay(path: Path) -> OverlayLoad:
         try:
             values[name] = validate_value(spec, raw_value)
         except ConfigValueError as exc:
-            # Deliberately the message, never the value: a rejected secret must
-            # not be echoed into a log line.
             problems.append(str(exc))
     return OverlayLoad(values=values, present=True, problems=tuple(problems))
 
 
 def write_overlay(path: str | os.PathLike[str], values: dict[str, Any]) -> None:
-    """Persist `values` as the whole overlay, atomically and `0600`.
-
-    Callers pass the complete desired map (read-modify-write), so there is one
-    place that decides what the overlay contains. The temp file is created in
-    the destination directory so `os.replace` is an atomic rename on the same
-    filesystem, and the mode is set on the temp file *before* the rename, so
-    the secrets it carries are never briefly world-readable.
-    """
+    """Persist `values` as the whole overlay, atomically and `0600`."""
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"version": OVERLAY_VERSION, "values": values}, indent=2, sort_keys=True)
@@ -1003,7 +819,6 @@ def write_overlay(path: str | os.PathLike[str], values: dict[str, Any]) -> None:
         os.chmod(temporary, OVERLAY_FILE_MODE)
         os.replace(temporary, destination)
     except BaseException:
-        # A failed write must not leave a half-file lying next to the real one.
         with contextlib.suppress(OSError):  # pragma: no cover - the rename already consumed it
             os.unlink(temporary)
         raise
@@ -1011,26 +826,13 @@ def write_overlay(path: str | os.PathLike[str], values: dict[str, Any]) -> None:
         invalidate_cache(destination)
 
 
-# ---------------------------------------------------------------------------
-# Where a value came from
-# ---------------------------------------------------------------------------
-
 SOURCE_DEFAULT = "default"
 SOURCE_ENV = "env"
 SOURCE_OVERLAY = "overlay"
 
 
 def env_provided_vars(env_file: str | os.PathLike[str] | None) -> frozenset[str]:
-    """Env-var names `.env` or the process environment actually provide.
-
-    Presence, not value: a `.env` line that happens to repeat the default is
-    still the operator having written it down, and reporting it as `default` would
-    send them looking in the wrong place. Upper-cased because pydantic-settings
-    matches env vars case-insensitively.
-
-    Never raises -- an unreadable `.env` degrades to "the process environment
-    is all we can see", which is exactly what `Settings` would then load from.
-    """
+    """Env-var names `.env` or the process environment actually provide."""
     provided = {name.upper() for name in os.environ}
     if env_file is None:
         return frozenset(provided)

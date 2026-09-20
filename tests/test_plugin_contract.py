@@ -1,15 +1,4 @@
-"""Contract tests for the astation Hermes plugin.
-
-These run WITHOUT Hermes installed. They cover the failures that are silent in
-production, which is the only reason they exist:
-
-  * A malformed `plugin.yaml` or `dashboard/manifest.json` means Hermes never
-    mounts the routes and every endpoint 404s, with one line in a log.
-  * A `plugin_api.py` that raises at import does the same.
-  * A hook callback that raises is SWALLOWED by Hermes, so a broken capture
-    path looks exactly like an idle one.
-  * A hook callback that blocks stalls the agent's turn it runs inside.
-"""
+"""Contract tests for the astation Hermes plugin."""
 
 from __future__ import annotations
 
@@ -55,22 +44,11 @@ class FakeCtx:
         self.cli.append(name)
 
 
-# --------------------------------------------------------------------------
-# Manifests
-# --------------------------------------------------------------------------
-
-
 def test_plugin_yaml_is_valid_and_declares_no_capabilities():
     data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
     assert data["name"] == "astation"
     assert data["api_version"] == 1
     assert "version" in data and "description" in data
-    # Exactly ONE capability, and it must be the LLM profile override. That
-    # one is load-bearing: without it the host refuses to run a completion on
-    # a named profile's model, and "rewrite for listening" goes back to the
-    # 503 that B-195 is. Anything MORE than this should be a deliberate
-    # decision, because each capability is a consent prompt that fails closed
-    # in a non-interactive install.
     assert data.get("capabilities") == ["llm.profile_override"], (
         "the plugin should declare exactly llm.profile_override; "
         f"got {data.get('capabilities')!r}"
@@ -86,11 +64,7 @@ def test_dashboard_manifest_points_at_an_existing_api_file():
 
 
 def test_plugin_api_exposes_a_module_level_router():
-    """Hermes does getattr(module, 'router'); anything else mounts nothing.
-
-    Parsed rather than imported: importing needs FastAPI and the gateway
-    package, and this assertion is about the module's shape, not its behaviour.
-    """
+    """Hermes does getattr(module, 'router'); anything else mounts nothing."""
     tree = ast.parse((PLUGIN_DIR / "dashboard" / "plugin_api.py").read_text())
     names = {
         t.id
@@ -102,13 +76,6 @@ def test_plugin_api_exposes_a_module_level_router():
     assert "router" in names
 
 
-#: The two scripts that publish the plugin, and where each one sends it.
-#:
-#: BOTH must ship the same modules. They drifted once and it was invisible:
-#: the deploy script carried `audit_forwarder.py` to the operator's host, so
-#: session attribution worked there, while the generator that builds the
-#: PUBLIC repo did not, so the published plugin had the audit routes and not
-#: the thing that feeds them. Testing only one script is what let that happen.
 _PUBLISH_SCRIPTS = {
     "deploy_plugin.sh": "the owner's host",
     "build_plugin_repo.sh": "the public repo",
@@ -117,10 +84,6 @@ _PUBLISH_SCRIPTS = {
 
 _SCRIPTS_DIR = PLUGIN_DIR.parent / "scripts"
 
-#: These tests check the machinery that PUBLISHES the plugin, which exists
-#: only in the development repository. The published copy runs the same suite,
-#: so they skip there rather than failing on a path that was never meant to
-#: be there.
 _upstream_only = pytest.mark.skipif(
     not _SCRIPTS_DIR.is_dir(), reason="publishing scripts are upstream-only"
 )
@@ -136,10 +99,6 @@ def test_every_publish_path_ships_every_module(script):
     """B-202's failure class, generalised to every way the plugin leaves this
     repo. A module that exists in source but not in a published bundle fails
     only at the destination, and only when it is first needed.
-
-    A glob satisfies this and a hand-written list must name every file. The
-    glob is preferred -- it cannot forget a module that exists -- but either
-    is accepted, so the assertion is about the OUTCOME rather than the style.
     """
     text = _publish_script(script)
     ships_all = "plugin/*.py" in text
@@ -177,23 +136,13 @@ def test_the_publish_paths_are_both_still_known_here():
 
 
 def test_plugin_api_has_no_import_time_side_effects_that_can_raise():
-    """Every top-level statement must be import-safe.
-
-    A raise during import means `_mount_plugin_api_routes` logs a warning and
-    moves on, leaving every route 404. Guard the shape: no bare calls at module
-    level beyond the known-safe ones.
-    """
+    """Every top-level statement must be import-safe."""
     tree = ast.parse((PLUGIN_DIR / "dashboard" / "plugin_api.py").read_text())
     for node in tree.body:
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
             func = node.value.func
             name = getattr(func, "id", None) or getattr(func, "attr", None)
             assert name in {"getLogger"}, f"unguarded module-level call: {name}"
-
-
-# --------------------------------------------------------------------------
-# register()
-# --------------------------------------------------------------------------
 
 
 def test_register_registers_every_capture_hook(tmp_path, monkeypatch):
@@ -206,11 +155,7 @@ def test_register_registers_every_capture_hook(tmp_path, monkeypatch):
 
 
 def test_register_survives_a_hook_name_this_build_rejects(tmp_path, monkeypatch):
-    """An unknown hook name must degrade, not abort registration.
-
-    Hook names have changed across Hermes versions. Losing one capture is
-    recoverable; a raised exception in register() disables the whole plugin.
-    """
+    """An unknown hook name must degrade, not abort registration."""
     mod = _load_entry(monkeypatch, tmp_path)
     ctx = FakeCtx(reject={"post_api_request"})
     mod.register(ctx)
@@ -224,11 +169,6 @@ def test_register_writes_a_status_file_readable_by_the_routes(tmp_path, monkeypa
     status = json.loads(mod.status_path().read_text())
     assert status["registered_hooks"] == list(mod.CAPTURE_HOOKS)
     assert status["failed_hooks"] == {}
-
-
-# --------------------------------------------------------------------------
-# Hook discipline: never raise, never block, never grow without bound
-# --------------------------------------------------------------------------
 
 
 def test_hook_callbacks_never_raise(tmp_path, monkeypatch):

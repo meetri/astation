@@ -1,9 +1,4 @@
-"""Tests for the direct filesystem layer, with confinement first.
-
-Direct `open()` on an attacker-influenceable path is a different risk class
-from an HTTP call that at least had a server-side root, which is why these
-lead with escape attempts rather than happy paths.
-"""
+"""Tests for the direct filesystem layer, with confinement first."""
 
 from __future__ import annotations
 
@@ -37,8 +32,6 @@ def root(tmp_path: Path) -> Path:
 def body(response) -> dict:
     return json.loads(response.content)
 
-
-# -- confinement -----------------------------------------------------------
 
 def test_a_parent_traversal_is_refused(root: Path):
     outside = root.parent / "secret.txt"
@@ -81,8 +74,6 @@ def test_the_root_itself_is_allowed(root: Path):
     r = fs.list_directory(str(root), str(root))
     assert r.status_code == 200
 
-
-# -- read / write ----------------------------------------------------------
 
 def test_read_text_returns_the_measured_shape(root: Path):
     (root / "a.py").write_text("print('hi')\n")
@@ -143,8 +134,6 @@ def test_write_replaces_atomically(root: Path):
     assert target.read_text() == "replacement"
 
 
-# -- listing ---------------------------------------------------------------
-
 def test_list_returns_the_measured_shape(root: Path):
     (root / "dir").mkdir()
     (root / "f.txt").write_text("x")
@@ -183,12 +172,6 @@ def test_mkdir_is_idempotent(root: Path):
     second = fs.make_directory(str(root / "d"), str(root))
     assert first.status_code == 200 and second.status_code == 200
 
-
-# -- attachment delivery ---------------------------------------------------
-#
-# Replaces the sidecar's priming turn + capability URL + 15-minute verify
-# poll. The checksum check survives the rewrite because it is the one part
-# that was earning its keep: it proves what landed is what was uploaded.
 
 def test_delivery_copies_the_bytes_into_the_sandbox(root: Path, tmp_path: Path):
     source = tmp_path / "upload.bin"

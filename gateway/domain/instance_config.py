@@ -1,10 +1,4 @@
-"""`InstanceConfigCache`: the two `hermes config get` values `GET /api/vitals` serves.
-
-Moved out of `api/instance.py` (CLEANUP_PLAN step 3.5); the vitals route stays
-there and re-exports these names. The cache exists because each `cli.exec`
-takes ~3-4 s and the ws `config.get` allowlist answers
-`[4002]` for both keys, so a route must never await them -- see the class.
-"""
+"""`InstanceConfigCache`: the two `hermes config get` values `GET /api/vitals` serves."""
 
 from __future__ import annotations
 
@@ -20,45 +14,13 @@ from domain.models import utcnow
 
 logger = logging.getLogger(__name__)
 
-#: The two `hermes config get` keys the vitals cache reads (P6-3). Measured
-#: 2026-09-03: the ws `config.get` answers `[4002] unknown config key` for
-#: both, while `cli.exec ["config","get","sessions.auto_prune"]` answers
-#: `false` and `["config","get","sessions.retention_days"]` answers `90` --
-#: each call taking ~3-4 s, which is why they are never awaited by a route.
 HERMES_CONFIG_GET_ARGV: tuple[str, ...] = ("config", "get")
 SESSIONS_AUTO_PRUNE_KEY = "sessions.auto_prune"
 SESSIONS_RETENTION_DAYS_KEY = "sessions.retention_days"
 
 
 class InstanceConfigCache:
-    """The two `hermes config get` values `GET /api/vitals` serves without waiting.
-
-    `sessions.auto_prune` and `sessions.retention_days` are only readable
-    through `cli.exec` (the ws `config.get` allowlist answers `[4002]` for
-    both, measured 2026-09-03) and **each `cli.exec` takes ~3-4 s**. Two of
-    them on the vitals path would turn a 200 ms Details sheet into an
-    eight-second one, so the route reads this cache and **never awaits
-    `cli.exec`**; a background task fills it and refreshes it every
-    `REFRESH_INTERVAL_S`.
-
-    **Values belong to an adapter.** The task is (re)started by
-    `ensure_running(app_state)` the first time a route asks after the
-    adapter is connected, and a *different* adapter object (a new process's,
-    or a test's fresh fake) resets the values to unknown: a number read from
-    one instance must not be reported for another. Until the first pass lands
-    both values are `null`, which the app renders as "Unknown" -- honest,
-    never a guessed "off".
-
-    Parse rules, exactly: `"true"`/`"false"` (after strip) -> bool; a bare int
-    -> int. Anything else, a non-zero `code`, `blocked: true`, or a raised
-    error -> `null` for that key. Nothing here is a number the operator has not
-    actually been told by their own Hermes.
-
-    `start()`/`close()` exist so a lifespan can own the task outright (the
-    natural home once the lifespan seams allow it); until then the lazy
-    start from the route is the whole lifecycle, and the loop shutdown
-    cancels the task like any other pending task.
-    """
+    """The two `hermes config get` values `GET /api/vitals` serves without waiting."""
 
     REFRESH_INTERVAL_S = 600.0
 
@@ -72,7 +34,6 @@ class InstanceConfigCache:
         self._adapter: Any = None
         self._task: asyncio.Task[None] | None = None
 
-    # -- what the route reads ------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -80,7 +41,6 @@ class InstanceConfigCache:
             "sessions_retention_days": self.sessions_retention_days,
         }
 
-    # -- parsing ---------------------------------------------------------------
 
     @staticmethod
     def _output_of(result: Any) -> str | None:
@@ -116,7 +76,6 @@ class InstanceConfigCache:
             return None
         return int(text)
 
-    # -- refreshing ------------------------------------------------------------
 
     async def _config_get(self, app_state: Any, key: str) -> Any:
         adapter: HermesAdapter = app_state.hermes_adapter

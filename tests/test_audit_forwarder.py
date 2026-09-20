@@ -1,18 +1,5 @@
 """The session-attribution forwarder: what turns "something ran on this
 machine" into "this session ran this".
-
-It sits in the agent's own process, fed by a hook that runs INSIDE a turn, so
-the tests are weighted towards the ways that placement goes wrong:
-
-* it must never raise, whatever it is handed, because Hermes swallows hook
-  exceptions and a crash here would be both silent and inside the user's turn;
-* it must never grow without bound, and a drop must be COUNTED, because an
-  audit channel that quietly stops is worse than one that is visibly broken;
-* it must not leak a secret into a store that is archived beyond deletion.
-
-The join key gets its own tests. `command` is what ties a tool call to a kernel
-exec record, and getting it wrong does not fail loudly -- it just produces a
-timeline that is quietly empty.
 """
 
 from __future__ import annotations
@@ -35,9 +22,6 @@ _SPEC.loader.exec_module(af)
 def forwarder(url: str = ""):
     """Never started: the sending thread is not what these tests are about."""
     return af.AuditForwarder(ingest_url=url, host_label="hermes")
-
-
-# --- the join key ---------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -69,9 +53,6 @@ def test_a_very_long_command_is_bounded():
     assert len(command) <= af.MAX_ARG_CHARS
 
 
-# --- arguments ------------------------------------------------------------
-
-
 def test_arguments_are_summarised_deterministically():
     """Sorted keys, so the same call produces the same row and a diff between
     two rows means the call really differed."""
@@ -93,9 +74,6 @@ def test_unserialisable_arguments_do_not_raise():
 
     summary, _ = af.summarize_args({"thing": Awkward()})
     assert summary
-
-
-# --- secrets --------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -127,9 +105,6 @@ def test_a_recorded_row_is_flagged_when_something_was_masked():
     row = f._drain_batch()[0]
     assert row["redacted"] == 1
     assert "ghp_" not in row["command"]
-
-
-# --- what a row carries ---------------------------------------------------
 
 
 def test_a_tool_call_carries_the_ids_that_make_the_join_possible():
@@ -165,9 +140,6 @@ def test_a_call_with_no_session_is_counted_not_silently_dropped():
     assert f._drain_batch() == []
 
 
-# --- it must never break a turn -------------------------------------------
-
-
 @pytest.mark.parametrize(
     "payload",
     [
@@ -181,7 +153,7 @@ def test_no_input_can_make_recording_raise(payload):
     """This runs inside the agent's turn and Hermes swallows hook exceptions,
     so a raise here would be both costly and invisible."""
     f = forwarder("http://ingest.invalid/ingest")
-    f.record_tool_call(payload)  # must not raise
+    f.record_tool_call(payload)
 
 
 def test_the_queue_is_bounded_and_overflow_is_counted():
@@ -195,7 +167,7 @@ def test_the_queue_is_bounded_and_overflow_is_counted():
 def test_an_unconfigured_forwarder_does_not_pretend_to_work():
     f = forwarder("")
     assert not f.configured
-    f.start()  # no thread, no error
+    f.start()
     f.close()
 
 
@@ -206,9 +178,6 @@ def test_a_session_event_is_recorded_with_its_session():
     assert row["audit_class"] == "agent_session"
     assert row["event"] == "start"
     assert row["stored_session_id"] == "s1"
-
-
-# --- which agent did this -------------------------------------------------
 
 
 def test_the_processes_own_profile_labels_rows_hermes_leaves_unlabelled():
@@ -238,9 +207,6 @@ def test_no_profile_anywhere_is_an_empty_string_not_a_crash():
     f = af.AuditForwarder(ingest_url="http://ingest.invalid/ingest")
     f.record_tool_call({"session_id": "s1", "args": {"command": "ls"}})
     assert f._drain_batch()[0]["profile"] == ""
-
-
-# --- how long it took, and nothing that could carry a payload -------------
 
 
 def test_a_result_row_carries_the_duration_and_the_outcome():

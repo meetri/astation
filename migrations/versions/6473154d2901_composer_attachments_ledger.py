@@ -1,28 +1,4 @@
-"""composer attachments ledger
-
-P3-3. New `attachments` table -- the ledger for the asynchronous two-turn
-composer attach (`domain/models.py::Attachment` carries the full rationale).
-Hermes has no upload endpoint, so an
-attachment's bytes travel gateway -> capability URL -> priming-turn `curl` ->
-sandbox -> byte-exact verify -> `image.attach`/path-reference (measured
-chain, PV "Phase 3 build probes", P3-0c). The flow takes minutes, so its
-state must be pollable and must survive honest reporting across a gateway
-restart (`orphaned`), which is exactly the `background_tasks` ledger's
-reasoning applied to attachments.
-
-Purely additive: no existing table or row is touched, so the downgrade is a
-clean drop (in-flight attachment ledgers are transient orchestration state;
-the underlying bytes remain in the content-addressed artifact store either
-way).
-
-Hand-written against head `c7d841c7d3a9`; `alembic check` reports "No new
-upgrade operations detected" with this file applied.
-
-Revision ID: 6473154d2901
-Revises: c7d841c7d3a9
-Create Date: 2026-08-31 12:00:00.000000+00:00
-
-"""
+"""composer attachments ledger"""
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -31,7 +7,6 @@ from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
 revision: str = '6473154d2901'
 down_revision: Union[str, None] = 'c7d841c7d3a9'
 branch_labels: Union[str, Sequence[str], None] = None

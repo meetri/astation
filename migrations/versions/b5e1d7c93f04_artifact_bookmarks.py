@@ -1,15 +1,4 @@
-"""artifact bookmarks
-
-Adds `artifacts.bookmarked_at` plus its index.
-
-A nullable timestamp rather than a boolean: it orders the bookmark shelf by
-when the user starred something, which is not the same as when the artifact
-was produced, and re-bookmarking reads as a fresh entry instead of quietly
-keeping an old position.
-
-Revision ID: b5e1d7c93f04
-Revises: a1c4e7f2b9d0
-"""
+"""artifact bookmarks"""
 
 from __future__ import annotations
 

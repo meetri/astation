@@ -1,46 +1,4 @@
-"""`AttachmentOrchestrator`: the asynchronous two-turn attach (P3-3).
-
-Moved out of `api/attachments.py` (CLEANUP_PLAN step 3.5); the upload / poll /
-list / serve routes stay there and re-export these names.
-
-Hermes has NO upload endpoint -- `/api/files*` is GET-only (measured,
-`OPTIONS` -> 405, PV "Phase 3 probe") and `image.attach` takes only a *path
-already on the sandbox* (P3-0b). The only measured way user-picked bytes
-reach a conversation is the P3-0c chain, verified end to end on the live
-instance (PV "Phase 3 build probes"):
-
-    1. the gateway stores the upload and serves it at an unguessable
-       capability URL the sandbox host can reach over LAN;
-    2. a PRIMING TURN asks the agent to `curl` it into the sandbox
-       (a "run EXACTLY this command" terminal one-liner -- the measured
-       low-latency turn shape);
-    3. the gateway polls `GET /api/files/download` for the sandbox copy and
-       verifies it byte-exact against the upload's own sha256;
-    4. only then: `image.attach` for an image, or -- for a PDF/document --
-       the verified sandbox path becomes the reference the app puts in the
-       user's actual message.
-
-That takes MINUTES (~2.5-3.5 min measured floor for the fetch turn; 15 min
-worst case for this instance's turns), so the whole thing is asynchronous by
-construction: `POST .../attachments` returns 202 the moment the bytes are
-stored, the orchestration runs as a background task writing ledger-style
-state onto the `attachments` row, and the app POLLS `GET
-/api/attachments/{id}` to show an honest "preparing attachment" indicator.
-There is deliberately no synchronous path and no spinner to block on -- the
-P3-0c decision forbids building one, and a prompt turn must never sit in a
-synchronous UI path.
-
-## Honesty rules
-
-Same ledger discipline as `background_tasks` (P2-1): the row is written
-before anything is sent to Hermes; every failure is a recorded state with a
-`detail`, never silence; a gateway restart mid-flow marks in-flight rows
-``orphaned`` (outcome genuinely unknown -- the curl may well have landed;
-re-upload to retry). `redirected`/`steered`/`queued` submit outcomes are
-recorded verbatim (B-05o): a redirect means the fetch command was merged
-into an in-flight turn and may never run, which the verify timeout reports
-honestly rather than the gateway guessing.
-"""
+"""`AttachmentOrchestrator`: the asynchronous two-turn attach (P3-3)."""
 
 from __future__ import annotations
 
@@ -61,21 +19,12 @@ from domain.models import Attachment
 
 logger = logging.getLogger(__name__)
 
-#: How long the orchestrator waits for the sandbox copy to verify byte-exact
-#: before declaring failure. 15 minutes = the worst turn latency ever
-#: measured on this instance (PV, the queued-blocking pathology); the
-#: measured floor is ~2.5-3.5 min of model time-to-tool.
 VERIFY_TIMEOUT_S = 15 * 60
 
-#: Poll cadence for the verify loop. Each miss costs one cheap upstream 404;
-#: each hit streams the file once for the sha256 comparison.
 VERIFY_POLL_INTERVAL_S = 10.0
 
-#: `--max-time` for the priming turn's curl. LAN transfer of <=25MB is
-#: sub-second measured at 12KB and low seconds worst-case; 120s is generous.
 _CURL_MAX_TIME_S = 120
 
-#: Row states (`domain/models.py::Attachment` docstring).
 STATE_UPLOADED = "uploaded"
 STATE_PRIMING = "priming"
 STATE_ATTACHING = "attaching"
@@ -83,14 +32,11 @@ STATE_ATTACHED = "attached"
 STATE_FAILED = "failed"
 STATE_ORPHANED = "orphaned"
 
-#: Terminal states: the serve token is dead, the poller can stop.
 TERMINAL_STATES = frozenset({STATE_ATTACHED, STATE_FAILED, STATE_ORPHANED})
 
-#: Non-terminal states a previous process may have left behind.
 _IN_FLIGHT_STATES = (STATE_UPLOADED, STATE_PRIMING, STATE_ATTACHING)
 
 
-#: Chunk size when reading the inbound upload stream and the verify stream.
 _UPLOAD_CHUNK_BYTES = 64 * 1024
 
 
@@ -120,46 +66,19 @@ def build_prime_text(sandbox_path: str, serve_url: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# The orchestrator: upload -> prime -> verify -> attach, as a background task
-# ---------------------------------------------------------------------------
-
-
 class AttachmentOrchestrator:
-    """Drives one attachment row through the measured two-turn chain.
-
-    Built by `api.main.lifespan` AFTER `app.state` holds the adapter, the
-    live-handle cache, the connect lock, the sessionmaker, and the artifact
-    store -- it reads all of them off the one `app_state` it is handed, so
-    every Hermes call goes through exactly the same `_with_reconnect` /
-    `_with_live_handle` machinery as the interactive routes (two id spaces,
-    B-15/B-23 retry rules included).
-
-    Nothing here may crash its caller: `_run` contains every failure as a
-    `failed` row with a `detail`. Tasks are held in a set so they are not
-    garbage-collected mid-flight (held-task-set pattern).
-    """
+    """Drives one attachment row through the measured two-turn chain."""
 
     def __init__(self, app_state: Any) -> None:
         self._app_state = app_state
         self._tasks: set[asyncio.Task[None]] = set()
-        # Injectable timings so tests do not sleep 10s per poll.
         self.verify_timeout_s: float = VERIFY_TIMEOUT_S
-        #: See `set_direct_delivery`. None keeps the priming-turn path.
         self._direct_delivery: Callable[[str, str], tuple[bool, str]] | None = None
         self.poll_interval_s: float = VERIFY_POLL_INTERVAL_S
 
-    # -- startup sweep -----------------------------------------------------
 
     def orphan_on_startup(self) -> int:
-        """Mark rows a previous process left in flight as `orphaned`.
-
-        The orchestration task died with the old process and nothing rebuilds
-        it (unlike background tasks there is no completion event to rescue
-        with); the sandbox curl may or may not have landed -- genuinely
-        unknown, so the row says so. Best-effort: an unmigrated DB logs and
-        moves on (same as `BackgroundLedger.orphan_on_startup`).
-        """
+        """Mark rows a previous process left in flight as `orphaned`."""
         factory = getattr(self._app_state, "db_sessions", None)
         if factory is None:  # pragma: no cover - defensive
             return 0
@@ -191,7 +110,6 @@ class AttachmentOrchestrator:
             )
             return 0
 
-    # -- task scheduling ---------------------------------------------------
 
     def start_attach(self, attachment_id: str) -> None:
         task = asyncio.create_task(self._run(attachment_id))
@@ -201,19 +119,7 @@ class AttachmentOrchestrator:
     def set_direct_delivery(
         self, deliver: Callable[[str, str], tuple[bool, str]] | None
     ) -> None:
-        """Install an in-process way to put the bytes in the sandbox.
-
-        The sidecar could not write to the Hermes sandbox, so it asked the
-        AGENT to fetch the file: a priming turn telling it to `curl` a
-        capability URL, then polling `files_download` until a byte-exact copy
-        appeared, with a 15-minute ceiling. That chain exists only because of
-        the process boundary -- every part of it is a workaround.
-
-        Running inside Hermes the sandbox is a local directory, so the bytes
-        can simply be written. `deliver(sandbox_path, storage_key)` returns
-        `(ok, detail)`. When it is installed the priming turn and the poll are
-        both skipped; when it is not, the original path runs unchanged.
-        """
+        """Install an in-process way to put the bytes in the sandbox."""
         self._direct_delivery = deliver
 
     async def close(self) -> None:
@@ -223,7 +129,6 @@ class AttachmentOrchestrator:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
-    # -- row IO ------------------------------------------------------------
 
     def _load(self, attachment_id: str) -> Attachment | None:
         with self._app_state.db_sessions() as db:
@@ -247,15 +152,11 @@ class AttachmentOrchestrator:
                 row.attach_result_json = attach_result
             db.commit()
 
-    # -- the flow ----------------------------------------------------------
 
     async def _run(self, attachment_id: str) -> None:
         try:
             await self._run_inner(attachment_id)
         except asyncio.CancelledError:
-            # Process shutdown mid-flow: the startup sweep of the next
-            # process will orphan the row; write the honest state now if we
-            # still can.
             self._set_state(
                 attachment_id,
                 STATE_ORPHANED,
@@ -290,10 +191,6 @@ class AttachmentOrchestrator:
             self._set_state(attachment_id, STATE_FAILED, "no serve URL was recorded")
             return
 
-        # 0. In-process: write the bytes straight into the sandbox and skip
-        # both the priming turn and the poll. Nothing is asked of the agent,
-        # nothing has to be reachable over the LAN, and the 15-minute verify
-        # ceiling stops applying.
         if self._direct_delivery is not None:
             self._set_state(attachment_id, STATE_ATTACHING, "writing the file into the sandbox")
             ok, detail = self._direct_delivery(sandbox_path, row.storage_key)
@@ -305,7 +202,6 @@ class AttachmentOrchestrator:
             )
             return
 
-        # 1. The priming turn.
         prime_text = build_prime_text(sandbox_path, serve_url)
         self._set_state(attachment_id, STATE_PRIMING, "asking the agent to fetch the file")
         try:
@@ -328,10 +224,6 @@ class AttachmentOrchestrator:
             )
             return
         submit_status = (ack.get("status") if isinstance(ack, dict) else None) or "unknown"
-        # B-05o honesty: only `streaming` means the fetch command gets its own
-        # turn now. queued runs later (keep waiting); redirected/steered were
-        # merged into an in-flight turn and MAY never execute -- the verify
-        # timeout is what reports that outcome truthfully.
         self._set_state(
             attachment_id,
             STATE_PRIMING,
@@ -339,7 +231,6 @@ class AttachmentOrchestrator:
             "sandbox copy to verify byte-exact",
         )
 
-        # 2. Poll-verify: the sandbox copy must equal the upload, sha256.
         verified, verify_detail = await self._poll_verify(
             adapter, sandbox_path, expected_checksum, expected_size
         )
@@ -361,13 +252,7 @@ class AttachmentOrchestrator:
         sandbox_path: str,
         verify_detail: str,
     ) -> None:
-        """Everything after the bytes are known to be in the sandbox.
-
-        Shared by the priming-turn path and the in-process one, so the two
-        cannot drift in what they record or how they report a failure. A
-        document is done once the file is there; an image still needs
-        `image.attach`, which is an RPC either way.
-        """
+        """Everything after the bytes are known to be in the sandbox."""
         row = self._load(attachment_id)
         if row is None:  # pragma: no cover - deleted underneath us
             return
@@ -432,14 +317,7 @@ class AttachmentOrchestrator:
         expected_checksum: str,
         expected_size: int,
     ) -> tuple[bool, str]:
-        """Blocking poll with an explicit deadline (never an idle wait).
-
-        Each round fetches the sandbox path via the measured download route
-        and compares sha256 against the upload's. A 404 (curl not landed
-        yet), a size/checksum mismatch (partial write mid-curl), and a
-        transient transport error all mean "poll again"; only the deadline
-        ends it. Returns `(verified, human_detail)`.
-        """
+        """Blocking poll with an explicit deadline (never an idle wait)."""
         deadline = time.monotonic() + self.verify_timeout_s
         last_observation = "the sandbox copy never appeared"
         polls = 0
@@ -464,8 +342,6 @@ class AttachmentOrchestrator:
                             digest.update(chunk)
                             size += len(chunk)
                             if size > expected_size + _UPLOAD_CHUNK_BYTES:
-                                # Bigger than the upload plus slack: not our
-                                # file; stop reading, report, keep polling.
                                 stream_error = (
                                     f"sandbox copy is larger than the upload "
                                     f"({size}+ vs {expected_size} bytes)"

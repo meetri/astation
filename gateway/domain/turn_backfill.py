@@ -1,69 +1,4 @@
-"""Give pre-existing chat rows their run id, from timestamps alone.
-
-## The gap
-
-`chat_messages.turn_id` is the run a row belongs to (`runs.id` -- one run is
-one turn, `domain/runs.py`). It has been written live only since 2026-09-18
-(B-188: the recorder stamps `run_id` on the envelope before `ChatStore`
-captures it; `ChatStore.attach_turn` links the submit route's user row when
-the run opens; B-190 stamps the foreign-prompt row). Measured on the deployed
-gateway the same day: ~106 sessions of rows captured since ~2026-09-05, all
-with a null `turn_id` except the rows captured that day -- so the
-run-structured chat (RUN_EVENT_UX_AUDIT §6) has no turn boundaries for any
-history the store already holds.
-
-Both tables carry the timestamps to recover the link: every row has
-`created_at` (`utcnow()` at write time), every run has `started_at` and,
-once closed, `ended_at`. A row captured off the live stream was captured
-*while its run was open*, so the run whose window holds the row's timestamp
-is its run.
-
-## The rule (`assign_turn_ids`)
-
-For one session -- one `(profile, stored_session_id)` -- given its runs
-sorted by `started_at` and the rows with no turn yet:
-
-* A run's **window** is `[started_at - SLACK, end + SLACK]`, where `end` is
-  `ended_at`, else the next run's `started_at`, else +inf. `SLACK` (2 s)
-  absorbs the gap between the recorder's clock (the frame's timestamp) and
-  the store's (`utcnow()` at insert), which are not the same clock.
-* A **non-user row** (assistant, tool, marker) belongs to the run whose
-  window contains `created_at`. A row inside two windows (the previous run
-  ended within SLACK of the next opening) goes to the run whose *own*
-  span `[started_at, end]` holds it, else the earlier of the two: a
-  `message.completed` row is written just after its run closes, so the
-  gap after a run belongs to that run.
-* A **user row from the submit route** (`source == "submit"`) is written
-  BEFORE Hermes is called, so its run opens after it: it belongs to the
-  next run starting at or after `created_at - SLACK`, unless a window
-  already contains it (the usual case -- the first frame lands well within
-  the slack -- and the queued-behind-a-running-turn case, where the spec
-  keeps the containing run).
-* A **user row read back from Hermes** (`source == "backfill"`) belongs to
-  the containing run, else the nearest run starting after it.
-* A **compaction marker** (`role == "marker"`, `compacted`) outside every
-  window keeps null: a compaction between turns belongs to no turn, and the
-  app renders it between groups. Every other unmatched row keeps null too.
-* Runs recorded on **another profile** never match: `request_id`s, session
-  ids and turns are all per-Hermes-process, and the store keys sessions on
-  `(profile, stored_session_id)` for the same reason.
-
-Naive datetimes are read as UTC (SQLite returns `DateTime(timezone=True)`
-columns naive; both writers only ever write UTC -- `api/runs.py::
-_run_age_seconds` makes the same call).
-
-## The walker (`backfill_turn_ids`)
-
-Every session with at least one null-turn row AND at least one run gets the
-rule applied; only rows that received an id are written; one commit per
-session, so a failure mid-way keeps what was already linked. Idempotent: a
-second pass finds no null rows it can place and writes nothing. Rows that
-already have a turn are never touched. Wired into the lifespan
-(`api/bootstrap.py::run_turn_backfill`) after the chat store and recorder
-exist and before any pump starts, best-effort: the report is logged and a
-failure is logged and ignored -- a backfill can never keep the gateway from
-starting.
-"""
+"""Give pre-existing chat rows their run id, from timestamps alone."""
 
 from __future__ import annotations
 
@@ -81,10 +16,8 @@ from domain.models import ChatMessage, Run
 
 logger = logging.getLogger(__name__)
 
-#: Clock slack either side of a run's span (module docstring).
 SLACK = timedelta(seconds=2)
 
-#: `ChatMessage.source` values with their own placement rule.
 SOURCE_SUBMIT = "submit"
 SOURCE_BACKFILL = "backfill"
 ROLE_USER = "user"
@@ -143,8 +76,6 @@ class BackfillReport:
     sessions_scanned: int = 0
     rows_assigned: int = 0
     rows_left_null: int = 0
-    #: Sessions whose pass raised (logged, rolled back, skipped). Not part
-    #: of `sessions_scanned`.
     sessions_failed: int = 0
 
 
@@ -156,7 +87,7 @@ def _as_utc(value: datetime) -> datetime:
 class _Span:
     run_id: str
     start: datetime
-    end: datetime | None  # None: still open, and no later run bounds it
+    end: datetime | None
 
     def holds(self, when: datetime, slack: timedelta) -> bool:
         if when < self.start - slack:
@@ -187,7 +118,7 @@ def _containing(spans: Sequence[_Span], when: datetime, slack: timedelta) -> str
 
 
 def _next_starting_at_or_after(spans: Sequence[_Span], when: datetime) -> str | None:
-    for span in spans:  # sorted by start
+    for span in spans:
         if span.start >= when:
             return span.run_id
     return None
@@ -196,12 +127,7 @@ def _next_starting_at_or_after(spans: Sequence[_Span], when: datetime) -> str | 
 def assign_turn_ids(
     runs: Iterable[RunWindow], rows: Iterable[RowToLink], *, slack: timedelta = SLACK
 ) -> dict[str, str]:
-    """`{row id: run id}` for every row the rule can place (module docstring).
-
-    Pure: no I/O, no clock. Rows it cannot place are simply absent from the
-    result -- the caller leaves their `turn_id` null. Runs are grouped by
-    profile and a row only ever sees the runs of its own profile.
-    """
+    """`{row id: run id}` for every row the rule can place (module docstring)."""
     by_profile: dict[str, list[RunWindow]] = {}
     for run in runs:
         by_profile.setdefault(run.profile, []).append(run)
@@ -221,11 +147,6 @@ def assign_turn_ids(
         if run_id is not None:
             assigned[row.id] = run_id
     return assigned
-
-
-# ---------------------------------------------------------------------------
-# The walker
-# ---------------------------------------------------------------------------
 
 
 def _sessions_to_backfill(db: OrmSession) -> list[tuple[str, str]]:
@@ -272,13 +193,7 @@ def _backfill_session(db: OrmSession, profile: str, stored_id: str) -> tuple[int
 def backfill_turn_ids(
     session_factory: sessionmaker[OrmSession], *, limit_sessions: int | None = None
 ) -> BackfillReport:
-    """Link every null-turn chat row the rule can place, one commit per session.
-
-    `limit_sessions` caps how many sessions one pass touches (None: all).
-    Raises only if the session list itself cannot be read (an unmigrated
-    DB); a failure inside one session is logged, rolled back and skipped,
-    and the pass carries on -- the lifespan hook swallows either way.
-    """
+    """Link every null-turn chat row the rule can place, one commit per session."""
     report = BackfillReport()
     with session_factory() as db:
         sessions = _sessions_to_backfill(db)

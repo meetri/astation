@@ -1,30 +1,4 @@
-"""astation — Hermes plugin entry point.
-
-`register(ctx)` runs at plugin discovery, inside whatever process loaded the
-plugin (the dashboard, for everything the app drives). It does two things:
-
-  * registers the lifecycle hooks the gateway's capture path will consume, and
-  * registers `hermes trg` for the operator commands that used to be
-    `docker compose exec` one-liners.
-
-The HTTP routes live in `dashboard/plugin_api.py`, which Hermes imports
-separately. Nothing here imports the gateway package: `register()` may run
-before the dependencies are importable, and a raised exception at discovery
-disables the plugin.
-
-Hook discipline, measured on the deploy host (plan R3):
-
-  * Hooks are synchronous and Hermes bounds them with
-    `plugins.hook_callback_timeout` (30 s). A slow hook stalls the turn it
-    runs in, so every callback here appends to an in-memory queue and returns.
-  * Hermes swallows hook exceptions, so a bug here is silent. Callbacks
-    therefore catch their own errors and count them, and the count is
-    reported by `GET /health`.
-  * Hooks fire on a different thread from the routes, so the queue must be
-    thread-safe.
-  * Every hook carries the STORED session id, never a live handle -- which is
-    why the capture path needs no live-handle mapping at all.
-"""
+"""astation — Hermes plugin entry point."""
 
 from __future__ import annotations
 
@@ -40,31 +14,17 @@ from typing import Any
 
 log = logging.getLogger("astation.plugin")
 
-# Hooks the capture path consumes, and what each one replaces. See
-# docs/PLUGIN_V2_PLAN.md §4.3.
 CAPTURE_HOOKS = (
-    "on_session_start",  # opens a run
-    "pre_llm_call",  # the user's message, including one typed in the TUI
-    # Carries the tool RESULT Hermes's transcript drops, and also the
-    # `duration_ms`, `status` and `error_type` the audit surface reports. Only
-    # those three reach the audit store; the result does not.
+    "on_session_start",
+    "pre_llm_call",
     "post_tool_call",
-    "post_api_request",  # per-request token usage, not a cumulative total
-    "post_llm_call",  # the assistant's reply
-    "on_session_end",  # completed / interrupted, at the moment the turn ends
-    "on_session_reset",  # compaction and reset boundaries
-    # The audit join. `pre_tool_call` is the ONLY
-    # place Hermes hands out the session, turn and tool-call ids TOGETHER with
-    # the command about to run -- read off the deployed
-    # `agent_runtime_helpers._pre_tool_block_message`, which passes
-    # session_id, turn_id, tool_call_id and api_request_id alongside the args.
-    # Without it a kernel event can only be tied to a session by the time
-    # window it happened in.
+    "post_api_request",
+    "post_llm_call",
+    "on_session_end",
+    "on_session_reset",
     "pre_tool_call",
 )
 
-# Bounded: if the drain task dies, hooks must not grow the queue without limit
-# and must never block the agent's turn.
 MAX_QUEUED_EVENTS = 10_000
 
 events: queue.Queue = queue.Queue(maxsize=MAX_QUEUED_EVENTS)
@@ -90,25 +50,11 @@ def _record(hook_name: str, kwargs: dict) -> None:
             stats["errors"] += 1
 
 
-#: Ships session-attributed tool calls straight to the audit store.
-#:
-#: Built HERE, in `register()`, and not in the route module -- that is the
-#: whole point. `register()` runs in EVERY process that loads the plugin (the
-#: dashboard plus one `gateway run` per profile, 14 of them on this host);
-#: the route module's startup handler runs only where HTTP routes mount, which
-#: is the dashboard alone. The hook queue below is drained there and nowhere
-#: else, so for ten months' worth of profiles every hook event was enqueued
-#: and silently discarded. Attribution worked for `default` and no other
-#: profile, which is exactly what the operator saw.
 audit_forwarder: Any = None
 
 
 def _start_audit_forwarder(ctx=None) -> None:
-    """Build the forwarder for THIS process. Never raises.
-
-    `ctx` carries the profile this process serves, which becomes the fallback
-    label on every row it sends -- Hermes does not put one in the hook payload.
-    """
+    """Build the forwarder for THIS process. Never raises."""
     global audit_forwarder
     if audit_forwarder is not None:
         return
@@ -128,31 +74,24 @@ def _start_audit_forwarder(ctx=None) -> None:
         )
         audit_forwarder.start()
         module.INSTANCE = audit_forwarder
-    except Exception as exc:  # a broken forwarder must never break a turn
+    except Exception as exc:
         audit_forwarder = None
         log.warning("astation: audit forwarder not started: %s", exc)
 
 
 def _make(hook_name: str):
     def callback(**kwargs: Any):
-        # The audit row goes DIRECTLY to the forwarder rather than through the
-        # queue below. The forwarder is non-blocking by construction (its own
-        # bounded queue plus a background sender), and routing it through a
-        # queue that only one process drains is the bug this avoids.
         if audit_forwarder is not None and hook_name in ("pre_tool_call", "post_tool_call"):
             try:
                 if hook_name == "pre_tool_call":
                     audit_forwarder.record_tool_call(kwargs)
                 else:
-                    # Only the OUTCOME: how long, and whether it worked. The
-                    # result itself is handed to this hook and deliberately
-                    # never forwarded -- see `record_tool_result`.
                     audit_forwarder.record_tool_result(kwargs)
             except Exception:
                 with _stats_lock:
                     stats["errors"] += 1
         _record(hook_name, kwargs)
-        return None  # never block a turn, never rewrite a payload
+        return None
 
     callback.__name__ = f"trg_{hook_name}"
     return callback
@@ -161,10 +100,6 @@ def _make(hook_name: str):
 registered_hooks: list[str] = []
 failed_hooks: dict[str, str] = {}
 
-#: The PluginContext `register()` was handed. The route module reaches
-#: `ctx.llm` through this — it is the host-owned LLM facade, and the only way
-#: to run a completion on a profile whose provider has no endpoint this
-#: process could call itself.
 plugin_ctx = None
 
 
@@ -178,7 +113,7 @@ def register(ctx) -> None:
         try:
             ctx.register_hook(hook_name, _make(hook_name))
             registered_hooks.append(hook_name)
-        except Exception as exc:  # an unknown hook name on this Hermes build
+        except Exception as exc:
             failed_hooks[hook_name] = str(exc)
             log.warning("astation: hook %s did not register: %s", hook_name, exc)
 
@@ -188,7 +123,7 @@ def register(ctx) -> None:
             "Research Gateway plugin: migrate, status, backup",
             _setup_cli,
         )
-    except Exception as exc:  # older builds may not expose it
+    except Exception as exc:
         log.warning("astation: CLI command not registered: %s", exc)
 
     log.info(
@@ -206,13 +141,7 @@ def status_path() -> Path:
 
 
 def _write_status(ctx) -> None:
-    """Record what register() saw, for `GET /health` and `hermes trg status`.
-
-    register() runs in the plugin package's module namespace; the routes are a
-    separately-imported module, so they cannot read these globals directly.
-    A small file on disk is the seam, and it doubles as the only evidence that
-    register() ran at all when a hook never fires.
-    """
+    """Record what register() saw, for `GET /health` and `hermes trg status`."""
     try:
         path = status_path()
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,12 +1,4 @@
-"""Alembic environment for the Research Gateway.
-
-Lives at the repo-root `migrations/` per docs/ARCHITECTURE.md §17, but the
-gateway's `alembic.ini`/settings/models live under
-`services/research-gateway/`. We add that directory to `sys.path` explicitly
-(rather than relying on alembic.ini's `prepend_sys_path`, which is sensitive
-to the invoking cwd) so `import config.settings` / `import domain.models` work
-regardless of where `alembic` is invoked from.
-"""
+"""Alembic environment for the Research Gateway."""
 
 from __future__ import annotations
 
@@ -24,23 +16,16 @@ if str(_SERVICE_DIR) not in sys.path:
 from domain.models import Base  # noqa: E402
 from config.settings import get_settings  # noqa: E402
 
-# Alembic Config object, providing access to values in alembic.ini.
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Target metadata for autogenerate support.
 target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    """Resolve the SQLite URL from the same Settings the FastAPI app uses.
-
-    `research_gateway_db_path` is a filesystem path (relative paths are
-    resolved against the current process's cwd, matching how the app itself
-    opens the DB), turned into a `sqlite:///` URL.
-    """
+    """Resolve the SQLite URL from the same Settings the FastAPI app uses."""
     settings = get_settings()
     db_path = Path(settings.research_gateway_db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)

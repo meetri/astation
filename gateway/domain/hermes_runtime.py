@@ -63,7 +63,6 @@ async def _ensure_connected(app_state: Any, adapter: HermesAdapter) -> None:
     if adapter.is_connected:
         return
     async with app_state.hermes_connect_lock:
-        # Re-check under the lock: whoever held it may have just connected.
         if adapter.is_connected:
             return
         if not adapter.is_logged_in:
@@ -144,13 +143,6 @@ def resolve_profile_adapter(app_state: Any, profile: str | None) -> HermesAdapte
     connection = manager.get_connection(profile) if manager is not None else None
     if connection is not None:
         return connection.adapter
-    # No per-profile connection. Inside Hermes that is the NORMAL case and not
-    # an error: `session.create` and `session.resume` both accept a `profile`
-    # on 0.21.3, so one connection reaches every profile and no isolated
-    # dashboard (nor the Docker socket needed to launch one) is required.
-    # Measured: a bare resume of another profile's session answers `[4007]
-    # session not found`, which is why the profile has to be PASSED -- see
-    # `_resume_for_live_id`.
     return app_state.hermes_adapter
 
 
@@ -208,25 +200,12 @@ def resolve_live_handle_cache(app_state: Any, profile: str | None) -> Any:
             connection.live_handle_cache = LiveHandleCache(connection.adapter)
         return connection.live_handle_cache
 
-    # One shared connection serving every profile. Each profile still gets its
-    # OWN cache: a stored id is unique only within a profile
-    #, so a single cache keyed on
-    # (generation, stored_id) could alias two different sessions that happen to
-    # share an id and hand a route the wrong live handle. The caches all bind
-    # to the same adapter, so they share its generation counter and a
-    # reconnect invalidates every one of them together.
     adapter = app_state.hermes_adapter
     caches = getattr(app_state, "shared_profile_handle_caches", None)
     if caches is None:
         caches = {}
         app_state.shared_profile_handle_caches = caches
     cache = caches.get(profile)
-    # A `LiveHandleCache` is bound to ONE adapter object: it reads that
-    # object's generation counter to key its entries, so a cache built against
-    # a different adapter can hand back a handle resolved on a connection this
-    # adapter never made -- a latent `[4001] session not found`. The default
-    # cache is rebuilt with its adapter by `lifespan`; these are built lazily
-    # and would otherwise outlive a swapped adapter, so check identity.
     if cache is None or cache.adapter is not adapter:
         cache = LiveHandleCache(adapter)
         caches[profile] = cache
@@ -244,43 +223,12 @@ def _validate_stored_session_id(stored_session_id: str) -> str:
     return cleaned
 
 
-# --- Hermes's "that session isn't here" error codes ----------------
-#
-# Both are real, both were measured against the live instance on 2026-08-29,
-# and they are NOT interchangeable -- they belong to the two id spaces:
-#
-#   [4001] session not found -- a **live-handle** method was given a handle
-#          this Hermes process does not have. Probed live: `session.history`,
-#          `prompt.submit`, `session.activate` and `session.interrupt` all
-#          answer 4001 for a garbage live handle *and* for a stored id passed
-#          where a live handle belongs. This is also what a cached handle
-#          turns into when Hermes restarts under a still-open socket, which is
-#          the self-heal path in `_with_live_handle()`.
-#   [4007] session not found -- `session.resume` was given a **stored** id it
-#          cannot load: an unknown/typo'd id, or a session Hermes never
-#          persisted. Probed live: a brand-new `session.create` that has not
-#          been prompted yet has `message_count: 0`, does not appear in
-#          `session.list`, and resuming its stored id fails [4007] (its live
-#          handle still works). See `docs/PROTOCOL_VERIFIED.md`.
-#
-# A caller asking about a session that doesn't exist is a client error (404),
-# not a gateway/upstream failure (502) -- see `_http_error_from_hermes()`.
 _HERMES_LIVE_SESSION_NOT_FOUND_CODE = 4001
 _HERMES_STORED_SESSION_NOT_FOUND_CODE = 4007
 _HERMES_SESSION_NOT_FOUND_CODES: frozenset[int] = frozenset(
     {_HERMES_LIVE_SESSION_NOT_FOUND_CODE, _HERMES_STORED_SESSION_NOT_FOUND_CODE}
 )
 
-# Narrow text fallback, for a *third* code this gateway has not catalogued
-# yet. Deliberately the whole observed phrase and not the bare words "not
-# found": every 4001/4007 seen live carries exactly `session not found`, while
-# "not found" on its own also matches ordinary upstream failures -- a tool
-# reporting a missing file, a model name Hermes cannot resolve -- and reporting
-# one of those as `404 "Hermes has no session with stored id ..."` names the
-# wrong thing entirely and sends whoever debugs it after a session that is
-# fine. Kept only because the code list is knowledge, not a guarantee: a
-# Hermes upgrade could add a fourth code, and a session that has genuinely
-# gone missing must still 404 and must still self-heal a stale live handle.
 _HERMES_SESSION_NOT_FOUND_TEXT = "session not found"
 
 
@@ -292,7 +240,7 @@ def _rpc_error_code(exc: HermesRPCError) -> int | None:
     `"4001"` must not silently fall through to the text fallback.
     """
     code = exc.code
-    if isinstance(code, bool):  # bool is an int subclass; not a code
+    if isinstance(code, bool):
         return None
     if isinstance(code, int):
         return code
@@ -333,9 +281,6 @@ def _is_session_not_found(exc: HermesError) -> bool:
     code = _rpc_error_code(exc)
     if code is not None and code in _HERMES_SESSION_NOT_FOUND_CODES:
         return True
-    # Fallback only. Reached for an uncatalogued code, a non-numeric code, or
-    # a code we would otherwise call unrelated -- and only when Hermes said
-    # this exact thing about a session.
     return _HERMES_SESSION_NOT_FOUND_TEXT in str(exc.message).lower()
 
 
@@ -386,12 +331,6 @@ async def _resume_for_live_id(
     whole point of B-01 (the 1.6 MB transcript was being re-downloaded on
     every message fetch and every prompt submit).
     """
-    # A stored id is only unique WITHIN a profile, and a bare resume searches
-    # the connection's own profile store only -- measured: resuming another
-    # profile's session without this answers `[4007] session not found`. Naming
-    # the profile lets ONE connection reach every profile, which is what
-    # removed the need for a per-profile isolated dashboard (and the Docker
-    # socket that launching one required).
     extra = {"profile": profile} if profile and profile != "default" else {}
     result = await adapter.resume_session(stored_session_id, **extra)
     live_id = HermesAdapter.live_id_from_resume(result)
@@ -437,8 +376,6 @@ async def _with_live_handle(
         except HermesError as exc:
             if not _is_session_not_found(exc):
                 raise
-            # Stale handle: self-heal rather than surfacing a 404 for a
-            # session that does exist.
             logger.info(
                 "cached live handle for %s was rejected by Hermes; re-resolving",
                 stored_session_id,

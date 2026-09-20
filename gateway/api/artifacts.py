@@ -1,46 +1,4 @@
-"""Tier-2 durable artifact library: the artifact REST API (P3-1 / P3-2).
-
-The store (`ArtifactStore`, the PINNED on-disk layout) is
-`domain/artifact_store.py`; the three ingesting subscribers
-(`ArtifactIngestor`, `SandboxDiffIngestor` + its B-61 denylist,
-`MediaTagIngestor`) are `domain/artifact_ingest.py` -- CLEANUP_PLAN step 3.4.
-Both are re-exported here for existing importers. This module keeps the
-routes, the HTTP Range helpers and the DB dependency.
-
-Tier 1 (`api/sandbox.py`) is a live, ephemeral window onto the Hermes
-sandbox; this module is the durable half: bytes are pulled off the sandbox,
-checksummed, stored under the gateway's own `RESEARCH_GATEWAY_ARTIFACT_ROOT`,
-and recorded as `artifacts` rows with provenance -- so an audio file or PDF
-the agent produced is still playable after the sandbox is cleaned.
-
-## REST (P3-2, §11.1)
-
-* `GET  /api/projects/{id}/artifacts` -- project-scoped listing (404 for an
-  unknown project; one project's artifacts are never visible through
-  another's listing).
-* `GET  /api/artifacts` -- global listing; `?unfiled=true` restricts to
-  `project_id IS NULL`; `?session=<stored id>` restricts to the artifacts
-  produced by that Hermes session's runs (see `list_artifacts` for the join
-  and for what it can never contain).
-* `GET  /api/artifacts/{id}` -- one row.
-* `GET  /api/artifacts/{id}/content` -- bytes streamed **from the gateway's
-  own store** (the content is local now, so standard single-range HTTP Range
-  serving is implemented here -- 206/`Content-Range`, 416 with
-  `bytes */<size>` when unsatisfiable; a malformed or multi-range header is
-  ignored per RFC 9110 and the full body served). No arbitrary filesystem
-  paths: the only thing addressable is an artifact id, and the row's
-  `storage_key` is re-confined to the artifact root before any open (§14).
-* `GET  /api/artifacts/{id}/preview` -- v1 per the OPTIMIST note: a small
-  image answers with its own bytes; everything else is 204 and the client
-  renders a type glyph. Real thumbnailing is deferred.
-* `POST /api/sandbox/promote` -- the manual-promotion entrypoint: same
-  validate+fetch+store+row path as auto-ingestion, on demand.
-
-All mounted on the authenticated `/api` router in `api.main`, so Basic auth
-is inherited by construction. 503 with the migration hint when the P3-1.0
-schema (`artifacts.status`) has not been applied, same pattern as
-`api/runs.py::_runs_db`.
-"""
+"""Tier-2 durable artifact library: the artifact REST API (P3-1 / P3-2)."""
 
 from __future__ import annotations
 
@@ -122,33 +80,15 @@ logger = logging.getLogger(__name__)
 
 artifacts_router = APIRouter(tags=["artifacts"])
 
-#: Streaming chunk size for serving stored content.
 _SERVE_CHUNK_BYTES = 64 * 1024
 
-#: Preview policy (P3-2 v1): an image at/below this size answers the preview
-#: route with its own bytes; everything else is 204 and the client renders a
-#: type glyph. Real thumbnailing is deferred deliberately.
 PREVIEW_MAX_BYTES = 512 * 1024
 
-# ---------------------------------------------------------------------------
-# DB dependency (503 until the P3-1.0 migration has run)
-# ---------------------------------------------------------------------------
 
-
-#: A DB session, with "you never ran the P3-1.0 migration" as a 503
-#: (`domain.db.schema_checked_db`). The `artifacts` table has existed since
-#: the initial schema, so `has_table` proves nothing; the check is for the
-#: columns this phase added (`status`, `source_path`).
 _artifacts_db = schema_checked_db(
     "artifacts_schema_verified",
     lambda engine: columns_present(engine, "artifacts", "status", "source_path"),
 )
-
-
-# ---------------------------------------------------------------------------
-# HTTP Range serving (P3-2: the content is local, so the gateway implements
-# standard single-range serving itself -- nothing to pass through anymore)
-# ---------------------------------------------------------------------------
 
 
 class _Unsatisfiable:
@@ -162,18 +102,12 @@ UNSATISFIABLE = _Unsatisfiable()
 def parse_range_header(header: str | None, size: int):
     """`None` (serve everything), `(start, end)` inclusive (206), or
     `UNSATISFIABLE` (416).
-
-    RFC 9110 semantics, deliberately minimal: only single `bytes=` ranges are
-    honored (`a-b`, `a-`, `-n`). A malformed header, a non-bytes unit, or a
-    multi-range list is *ignored* -- the RFC allows a server to serve 200 for
-    anything it does not care to satisfy, and AVFoundation/PDFKit send simple
-    single ranges.
     """
     if not header or not header.startswith("bytes="):
         return None
     spec = header[len("bytes=") :].strip()
     if "," in spec or not spec:
-        return None  # multi-range / empty: ignored, serve 200
+        return None
     start_s, sep, end_s = spec.partition("-")
     if not sep:
         return None
@@ -181,7 +115,6 @@ def parse_range_header(header: str | None, size: int):
     end_s = end_s.strip()
     try:
         if start_s == "":
-            # Suffix range: last n bytes.
             n = int(end_s)
             if n <= 0 or size == 0:
                 return UNSATISFIABLE
@@ -196,15 +129,11 @@ def parse_range_header(header: str | None, size: int):
             return UNSATISFIABLE
         return (start, min(end, size - 1))
     except ValueError:
-        return None  # malformed: ignored, serve 200
+        return None
 
 
 def _file_slice(path: Path, start: int, end: int) -> Iterator[bytes]:
-    """Yield `[start, end]` (inclusive) of `path` in bounded chunks.
-
-    A plain sync generator: Starlette iterates it in a worker thread, and the
-    reads are chunk-sized against a local file.
-    """
+    """Yield `[start, end]` (inclusive) of `path` in bounded chunks."""
     remaining = end - start + 1
     with open(path, "rb") as handle:
         handle.seek(start)
@@ -216,25 +145,9 @@ def _file_slice(path: Path, start: int, end: int) -> Iterator[bytes]:
             yield chunk
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 def _collapse_to_latest(rows) -> list[dict]:
     """B-184: one row per `source_path`, the newest, plus how many rows it
     stands for as `versions`.
-
-    `rows` must arrive newest-first (every listing orders that way). The
-    P3-1 dedup rule is `(source_path, checksum)`, so every time the agent
-    rewrites a file the library gains a row: measured live 2026-09-13, one
-    project's listing was 500 rows for 242 distinct paths (`STATE.md` alone
-    35 times). The operator reads that as duplicates, and for a library it is
-    -- a file, not each of its saves, is the unit. A row with no
-    `source_path` (nothing to collapse on) passes through untouched. The
-    newest row wins even when it is `unavailable`: that is the file's
-    current state, and hiding it behind an older fetch would be the silent
-    substitution P3-1 forbids.
     """
     latest: dict[str, dict] = {}
     ordered: list[dict] = []
@@ -252,26 +165,14 @@ def _collapse_to_latest(rows) -> list[dict]:
 
 
 def _filter_by_kind(rows: list[dict], kind: str | None) -> list[dict]:
-    """Keep only rows of one kind.
-
-    Applied to the SERIALIZED rows rather than as SQL, because `kind` is
-    derived from mime type and extension (`domain/artifact_kinds.py`) and is
-    deliberately not a column — so improving the classification applies to
-    every existing row without a migration. The cost is that `limit` counts
-    rows before filtering, which is why the routes fetch the cap and then
-    filter rather than the other way round.
-    """
+    """Keep only rows of one kind."""
     if not kind:
         return rows
     return [row for row in rows if row.get("kind") == kind]
 
 
 def _validated_kind(kind: str | None) -> str | None:
-    """422 on an unknown kind rather than silently returning nothing.
-
-    An empty list for a typo'd filter reads as "there are none of those",
-    which is a different and wrong answer.
-    """
+    """422 on an unknown kind rather than silently returning nothing."""
     if kind is None or kind == "":
         return None
     if not is_valid_kind(kind):
@@ -285,18 +186,7 @@ def _validated_kind(kind: str | None) -> str | None:
 def _bookmark_shelf(
     db: OrmSession, *, scope: str | None, limit: int, kind: str | None
 ) -> list[dict]:
-    """One scope's starred artifacts, newest star first.
-
-    **Scoped since 2026-09-19.** A star used to live on the artifact row, so
-    there was one shelf and every project showed it -- the operator opened a
-    brand-new project onto forty files it had nothing to do with. A star is
-    now a decision taken inside a scope (`domain/bookmark_store.py`), and this
-    reads the scope it was asked for; `None` means "starred anywhere".
-
-    Returned as its own field rather than mixed into a project's list, so the
-    route's "only this project's artifacts" guarantee still holds for
-    `artifacts` -- a star made HERE may sit on a file that lives elsewhere.
-    """
+    """One scope's starred artifacts, newest star first."""
     ordered = bookmark_scoped_ids(db, scope)
     if not ordered:
         return []
@@ -304,10 +194,6 @@ def _bookmark_shelf(
         artifact.id: artifact
         for artifact in db.execute(
             select(Artifact)
-            # An archived artifact is one the operator put away; leaving it on a
-            # shelf would make "archive" mean nothing on exactly the rows they
-            # cared enough about to star. The star itself survives, so
-            # un-archiving brings it back.
             .where(Artifact.id.in_(ordered), Artifact.archived_at.is_(None))
         ).scalars()
     }
@@ -324,47 +210,21 @@ def _listing(db: OrmSession, query, *, latest: bool, limit: int) -> list[dict]:
     return _collapse_to_latest(db.execute(query).scalars())[:limit]
 
 
-# ---------------------------------------------------------------------------
-# Browsing: prefix, search, archive and keyset paging
-#
-# Measured on the deploy host 2026-09-19: 5,226 rows, 2,443 distinct files,
-# 4,955 of them in ONE project, against a listing capped at 500 rows with no
-# paging and a type filter that ran on the phone over whatever page it had.
-# Roughly three quarters of the operator's largest project could not be reached
-# from the app at all. These four parameters are what make the corpus
-# navigable; the folders route below is what gives it shape.
-# ---------------------------------------------------------------------------
-
-#: The three answers to "should archived rows be in this listing?". `all`
-#: exists because "show me everything" and "show me only what I put away" are
-#: different questions and a boolean can only ask one of them.
 ArchivedFilter = Literal["false", "true", "all"]
 
-#: Ceiling on a bulk archive/unarchive request. The app's Select mode works on
-#: a page it has loaded, so a route with no ceiling invites "select all 5,226"
-#: from a client that has seen 500 of them.
 MAX_BULK_IDS = 200
 
-#: Minimum length for `?q=`. One character matches most of the corpus and
-#: costs a full scan to say so.
 _MIN_QUERY_CHARS = 2
 _MAX_QUERY_CHARS = 80
 
 
 def _validated_prefix(prefix: str | None) -> str | None:
-    """A sandbox directory to scope a listing to, or `None`.
-
-    Validated through the same `validate_sandbox_path` every read route uses,
-    so a listing cannot be pointed outside the sandbox root or walked out of
-    it with `..` -- a filter is not a read, but a filter that accepts a path
-    the rest of the system would refuse is a seam worth not having.
-    """
+    """A sandbox directory to scope a listing to, or `None`."""
     if prefix is None:
         return None
     cleaned = prefix.strip().rstrip("/")
     if not cleaned:
         return None
-    # Raises the same 422/403 every read route raises for the same offense.
     return validate_sandbox_path(cleaned, get_settings().hermes_sandbox_root)
 
 
@@ -390,14 +250,7 @@ def _validated_query(q: str | None) -> str | None:
 
 
 def _tag_filter(db: OrmSession, query, tags: list[str]) -> tuple[list[str], Any]:
-    """`(normalized names, narrowed query)`.
-
-    **AND, not OR.** Tags narrow: someone filtering by `l328` and `results` is
-    asking for the intersection, and OR would hand back more rows the more
-    precisely they asked. An empty intersection narrows to nothing rather than
-    being ignored, because silently dropping a filter is how a listing claims
-    to have answered a question it did not.
-    """
+    """`(normalized names, narrowed query)`."""
     if not tags:
         return [], query
     wanted = _normalized_list_or_422(tags)
@@ -408,8 +261,6 @@ def _tag_filter(db: OrmSession, query, tags: list[str]) -> tuple[list[str], Any]
 def _browse_filters(query, *, prefix: str | None, q: str | None, archived: ArchivedFilter):
     """Apply the scope-independent filters both listings share."""
     if prefix is not None:
-        # Component-wise containment, not a bare prefix match: `startswith`
-        # would put `/opt/data-old/x` inside `/opt/data` (`is_within`).
         query = query.where(
             or_(
                 Artifact.source_path == prefix,
@@ -427,12 +278,7 @@ def _browse_filters(query, *, prefix: str | None, q: str | None, archived: Archi
 
 
 def _decoded_cursor(cursor: str | None) -> tuple[datetime, str] | None:
-    """`<created_at iso>|<id>` -> the keyset position, or `None`.
-
-    A malformed cursor is a 422 rather than a silent first page: a client that
-    pages with a broken cursor would otherwise loop over page one forever and
-    look like a server that never advances.
-    """
+    """`<created_at iso>|<id>` -> the keyset position, or `None`."""
     if cursor is None or not cursor.strip():
         return None
     raw_at, _, raw_id = cursor.partition("|")
@@ -450,13 +296,7 @@ def _decoded_cursor(cursor: str | None) -> tuple[datetime, str] | None:
 
 
 def _after_cursor(query, position: tuple[datetime, str] | None):
-    """Keyset, never offset.
-
-    This listing is ordered newest-first and grows at the FRONT -- the agent
-    files artifacts while the operator is scrolling -- so an offset page would
-    skip rows it had already passed and repeat others. A keyset position is
-    stable against inserts anywhere.
-    """
+    """Keyset, never offset."""
     if position is None:
         return query
     at, artifact_id = position
@@ -471,20 +311,8 @@ def _after_cursor(query, position: tuple[datetime, str] | None):
 def _page(
     db: OrmSession, query, *, latest: bool, limit: int, position: tuple[datetime, str] | None
 ) -> tuple[list[dict], str | None]:
-    """One page of rows, and the cursor for the next one (`None` when last).
-
-    With `latest=true` the collapse runs over everything after the cursor
-    before the page is cut, because the version COUNT on a row is only right
-    if every version of that path was seen -- the same reason `limit` has
-    always applied after the collapse.
-    """
+    """One page of rows, and the cursor for the next one (`None` when last)."""
     if latest:
-        # The cursor is applied AFTER the collapse, not in SQL. A collapsed
-        # row stands for every save of its path, and older saves of a path
-        # already shown sort after the cursor -- filtering in SQL would let
-        # them collapse again on the next page and hand the reader the same
-        # file twice. Collapsing reads the whole scope either way, so
-        # this costs nothing that was not already being paid.
         collapsed = _collapse_to_latest(db.execute(query).scalars())
         start = 0
         if position is not None:
@@ -506,35 +334,21 @@ def _page(
 
 
 def _artifact_json_full(db: OrmSession, artifact: Artifact) -> dict:
-    """One row with everything a DETAIL screen shows: tags and collections.
-
-    The listings deliberately do not carry collections: a page of 200 rows
-    would need a second join for something only the detail screen renders.
-    """
+    """One row with everything a DETAIL screen shows: tags and collections."""
     row = _artifact_json_with_tags(db, artifact)
     row["collections"] = collections_containing(db, artifact.id)
     return row
 
 
 def _artifact_json_with_tags(db: OrmSession, artifact: Artifact) -> dict:
-    """One row plus its tags.
-
-    Separate from `_artifact_json` (which knows nothing about the database)
-    rather than folding a query into it: that function renders rows in a loop
-    over a whole page, and a per-row query there is how a 200-row listing
-    becomes 200 queries.
-    """
+    """One row plus its tags."""
     row = _artifact_json(artifact)
     row["tags"] = tag_names_of(db, "artifact", artifact.id)
     return row
 
 
 def _with_tags(db: OrmSession, rows: list[dict]) -> list[dict]:
-    """Attach tags to a whole page in ONE query.
-
-    `tags` is always present, `[]` when there are none, so a client never has
-    to treat absence as a special case.
-    """
+    """Attach tags to a whole page in ONE query."""
     if not rows:
         return rows
     by_owner = tag_names_for(db, "artifact", [row["id"] for row in rows])
@@ -544,13 +358,7 @@ def _with_tags(db: OrmSession, rows: list[dict]) -> list[dict]:
 
 
 def _star_scope(db: OrmSession, *, project: str | None, unfiled: bool) -> str | None:
-    """Which scope's stars a request is asking about.
-
-    A named project (404 if it does not exist -- a typo must not silently
-    answer "nothing is starred"), the unfiled scope for `?unfiled=true`, or
-    `None` for "anywhere", which is what a request that names no scope at all
-    is asking.
-    """
+    """Which scope's stars a request is asking about."""
     if project is not None:
         if db.get(Project, project) is None:
             raise HTTPException(status_code=404, detail=f"no project with id {project!r}")
@@ -559,17 +367,7 @@ def _star_scope(db: OrmSession, *, project: str | None, unfiled: bool) -> str | 
 
 
 def _with_bookmarks(db: OrmSession, rows: list[dict], *, scope: str | None) -> list[dict]:
-    """Say whether each row is starred IN THIS SCOPE, in one query.
-
-    The pair to `_with_tags`, and for the same reason: a 200-row page that
-    asked per row would be 200 queries for a glyph.
-
-    `scope` is the scope the request named -- a project id, the unfiled
-    sentinel, or `None` for "starred anywhere". The rule the whole feature
-    rests on: **the scope in the request is the scope the stars are read in**,
-    so the star a row shows is the one the operator would be toggling if they
-    tapped it here.
-    """
+    """Say whether each row is starred IN THIS SCOPE, in one query."""
     if not rows:
         return rows
     starred = bookmark_starred_at(db, [row["id"] for row in rows], scope)
@@ -601,17 +399,7 @@ async def list_project_artifacts(
     cursor: str | None = Query(default=None),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """This project's artifacts, newest first (P3-2, project-scoped).
-
-    404 for an unknown project -- and the filter is strict equality on
-    `project_id`, so another project's (or an unfiled) artifact can never
-    appear here (§14 access control at the only boundary this single-user
-    gateway has).
-
-    `?latest=true`: one row per `source_path`, the newest, each
-    carrying `versions` = how many saves it stands for; `limit` then counts
-    files, not saves. See `_collapse_to_latest`.
-    """
+    """This project's artifacts, newest first (P3-2, project-scoped)."""
     project = db.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"no project with id {project_id!r}")
@@ -640,11 +428,6 @@ async def list_project_artifacts(
         "artifacts": _with_bookmarks(
             db, _with_tags(db, _filter_by_kind(rows, wanted)), scope=project_id
         ),
-        # THIS project's shelf. A star is per project since 2026-09-19, so the
-        # scope is the project in the path; it stays a SEPARATE field because
-        # a star made here may sit on a file that lives elsewhere, and this
-        # route's "only this project's artifacts" guarantee holds for
-        # `artifacts`.
         "bookmarked": (
             _bookmark_shelf(db, scope=project_id, limit=limit, kind=wanted) if bookmarks else []
         ),
@@ -667,44 +450,7 @@ async def list_artifacts(
     cursor: str | None = Query(default=None),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """Global artifact listing, newest first, with two mutually exclusive filters.
-
-    `?latest=true` collapses to the newest row per `source_path`
-    with a `versions` count, and `limit` then counts files -- the same
-    rule as the project listing (`_collapse_to_latest`).
-
-    * `?unfiled=true` -- the rows with no project (P3-2's global/unfiled
-      listing; NULL means unfiled, same convention as runs, never a synthetic
-      project).
-    * `?session=<stored id>` -- **"the files from this chat"** (2026-09-01
-      review, ask #5). Joins `artifacts.producing_run_id -> runs.id ->
-      runs.runtime_session_id`, so it answers for filed and unfiled sessions
-      alike.
-
-    Passing both is a 422: they answer different questions ("which project"
-    vs "which conversation") and silently intersecting them would quietly
-    return an empty list for a perfectly good session.
-
-    **The filter key is `runtime_session_id`, never `session_id`.**
-    `runs.session_id` is the *workspace* `sess_...` id, which is NULL for
-    every unfiled session (43 of 151 measured), so filtering on it would
-    return nothing for every spike/unfiled conversation. `runtime_session_id`
-    is the Hermes STORED id -- the one the app holds for every session --
-    which is exactly what `GET /api/runs?session=` already takes.
-
-    **What this listing can never contain, by construction:** an artifact
-    whose `producing_run_id` is NULL. That is every manual promotion
-    (`POST /api/sandbox/promote` files by project, not by run) and every row
-    whose producing run could not be resolved. Measured on the live library:
-    386 artifacts, 385 of them join (99.7%). So the response says
-    `run_attributed_only: true` for a session query rather than implying the
-    set is complete -- a client must not present it as "everything this
-    session produced".
-
-    An unknown/typo'd session id is an empty list, not a 404: this gateway's
-    artifact tables are not a session registry, and "no artifacts recorded
-    for that session" is the honest answer for both cases.
-    """
+    """Global artifact listing, newest first, with two mutually exclusive filters."""
     if session is not None and unfiled:
         raise HTTPException(
             status_code=422,
@@ -731,15 +477,9 @@ async def list_artifacts(
         )
     if unfiled:
         query = query.where(Artifact.project_id.is_(None))
-    # **The scope in the request is the scope the stars are read in.**
-    # `?project=` names it explicitly (a chat's library passes the project it
-    # was opened from); `?unfiled=true` means the unfiled scope; naming
-    # neither asks about stars anywhere.
     star_scope = _star_scope(db, project=project, unfiled=unfiled)
     if bookmarked:
         starred = bookmark_scoped_ids(db, star_scope)
-        # `in_([])` is valid SQL and matches nothing, which is the right
-        # answer for a scope with no stars yet -- a brand-new project.
         query = query.where(Artifact.id.in_(starred))
     wanted = _validated_kind(kind)
     scoped_prefix = _validated_prefix(prefix)
@@ -752,14 +492,11 @@ async def list_artifacts(
     return {
         "session": stored_session_id,
         "tags": wanted_tags,
-        # True only for a session-scoped query: see the docstring -- artifacts
-        # with no producing run (manual promotions) can never appear there.
         "run_attributed_only": stored_session_id is not None,
         "unfiled_only": unfiled,
         "latest_only": latest,
         "kind": wanted,
         "bookmarked_only": bookmarked,
-        #: Which scope's stars these rows report. `null` means "anywhere".
         "bookmark_scope": (star_scope or None) if star_scope is not None else None,
         "prefix": scoped_prefix,
         "q": search,
@@ -774,19 +511,7 @@ async def list_artifacts(
 def _folder_tree(
     rows: list[tuple[str | None, Any]], *, prefix: str | None
 ) -> tuple[list[dict], int]:
-    """`(folders, files directly in prefix)` for one level of the tree.
-
-    `rows` is `(source_path, created_at)` for every visible artifact in scope,
-    already deduplicated by path -- folder counts are DISTINCT FILES, not
-    rows, because the library's default view is one row per file and a
-    folder claiming 612 when it shows 242 is a folder nobody trusts.
-
-    **A chain of single-child directories is collapsed into one entry.** Every
-    path on the operator's instance starts `/opt/data/...`, so an uncollapsed
-    top level is a single "opt" row hiding everything behind two taps that ask
-    nothing. `a/b/c` with no content of its own in `a` or `b` shows as
-    `a/b/c`, which is what the operator would have named the folder anyway.
-    """
+    """`(folders, files directly in prefix)` for one level of the tree."""
     depth = len([part for part in (prefix or "").strip("/").split("/") if part])
     direct = 0
     buckets: dict[str, dict[str, Any]] = {}
@@ -800,8 +525,6 @@ def _folder_tree(
         bucket["files"] += 1
         if bucket["latest_at"] is None or (created_at and created_at > bucket["latest_at"]):
             bucket["latest_at"] = created_at
-        # Remember whether this subtree has content of its own at this level,
-        # which is what decides a collapse below.
         bucket["children"].add(components[depth + 1] if len(components) > depth + 1 else None)
 
     base = (prefix or "").rstrip("/")
@@ -809,8 +532,6 @@ def _folder_tree(
     for name, bucket in buckets.items():
         path = f"{base}/{name}"
         children = bucket["children"]
-        # Collapse while this level holds exactly one child directory and no
-        # file of its own.
         while len(children) == 1 and None not in children:
             only = next(iter(children))
             path = f"{path}/{only}"
@@ -854,13 +575,7 @@ async def list_project_artifact_folders(
     q: str | None = Query(default=None),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """The folder level under `prefix` for one project's artifacts.
-
-    The agent already organizes what it writes into directories that mean
-    something; until this route existed the library flattened all of it into
-    one newest-first list. Folders are derived from `source_path` and never
-    stored, so a file that moves in the sandbox moves here on the next ingest.
-    """
+    """The folder level under `prefix` for one project's artifacts."""
     project = db.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"no project with id {project_id!r}")
@@ -893,11 +608,7 @@ async def list_artifact_folders(
     q: str | None = Query(default=None),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """The folder level under `prefix` for a session, the unfiled rows, or all.
-
-    Scoped exactly like `GET /api/artifacts`, so the app can switch to the
-    Folders view without changing which artifacts it is looking at.
-    """
+    """The folder level under `prefix` for a session, the unfiled rows, or all."""
     if session is not None and unfiled:
         raise HTTPException(
             status_code=422,
@@ -945,17 +656,6 @@ async def list_artifact_folders(
     }
 
 
-# ---------------------------------------------------------------------------
-# Tags (Phase B, `docs/ARTIFACT_ORGANIZATION_PLAN.md` §5.2)
-#
-# One vocabulary shared by artifacts and projects. Every write normalizes the
-# name through `domain/tags.py`, because the whole value of a tag vocabulary
-# is that `Results` and `results` are one tag -- two rows that render
-# identically in a chip and filter to different sets is the failure this is
-# built to prevent.
-# ---------------------------------------------------------------------------
-
-
 class TagNameRequest(BaseModel):
     """Body for creating or renaming a tag. Closed schema, same rule as every
     other inbound body here."""
@@ -982,11 +682,7 @@ class TagBulkRequest(BaseModel):
 
 
 def _normalized_or_422(name: str) -> str:
-    """Normalize, turning the rule that was broken into the 422 detail.
-
-    The message names the rule rather than saying "invalid tag", because the
-    owner is typing into a field and needs to know what to type instead.
-    """
+    """Normalize, turning the rule that was broken into the 422 detail."""
     try:
         return normalize_tag_name(name)
     except TagNameError as exc:
@@ -1006,18 +702,7 @@ async def list_tags(
     unfiled: bool = Query(default=False),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """The vocabulary, most used first, ties alphabetical.
-
-    Counts are derived from the joins rather than stored, so they cannot drift
-    from the rows they describe.
-
-    `?project=` (or `?unfiled=true`) narrows to the tags that scope's
-    artifacts actually carry, with that scope's counts -- what the filter menu
-    asks for, since a brand-new project offering forty tags that match nothing
-    in it is a menu of dead ends. The vocabulary itself is still shared; this
-    only changes which part of it a scope is shown. 404 for an unknown
-    project, never an empty list: a typo must not read as "no tags here".
-    """
+    """The vocabulary, most used first, ties alphabetical."""
     if project is not None and db.get(Project, project) is None:
         raise HTTPException(status_code=404, detail=f"no project with id {project!r}")
     return {
@@ -1043,12 +728,7 @@ async def create_tag(body: TagNameRequest, db: OrmSession = Depends(_artifacts_d
 async def rename_tag(
     tag_id: str, body: TagNameRequest, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
-    """Rename a tag, **merging** when the new name already exists.
-
-    Merging rather than refusing: renaming `fig` to `figure` when `figure`
-    exists means "these are the same thing", and a 409 would leave the operator
-    to redo it by hand on every artifact.
-    """
+    """Rename a tag, **merging** when the new name already exists."""
     _normalized_or_422(body.name)
     tag = tag_rename(db, tag_id, body.name)
     if tag is None:
@@ -1097,12 +777,7 @@ async def untag_artifact(
 
 @artifacts_router.post("/artifacts/tags")
 async def tag_artifacts(body: TagBulkRequest, db: OrmSession = Depends(_artifacts_db)) -> dict:
-    """Apply tags across a selection, in one transaction.
-
-    Unknown ids are skipped rather than failing the batch, for the same reason
-    bulk archive skips them: the selection came from a page fetched a moment
-    ago, and one row deleted underneath it must not lose the other 199.
-    """
+    """Apply tags across a selection, in one transaction."""
     add = _normalized_list_or_422(body.add)
     remove = _normalized_list_or_422(body.remove)
     known = [
@@ -1112,15 +787,6 @@ async def tag_artifacts(body: TagBulkRequest, db: OrmSession = Depends(_artifact
     changed = tag_apply_bulk(db, "artifact", known, add=add, remove=remove)
     db.commit()
     return {"updated": changed}
-
-
-# ---------------------------------------------------------------------------
-# Collections (Phase C, §5.3)
-#
-# A collection is a named, ORDERED, cross-project set the operator curates.
-# Ordered is the whole difference from a tag: "figures for the L328 paper" has
-# a figure 1 and a figure 2.
-# ---------------------------------------------------------------------------
 
 
 class CollectionRequest(BaseModel):
@@ -1205,13 +871,7 @@ async def delete_collection_route(
 async def list_collection_artifacts(
     collection_id: str, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
-    """The members, in the curated order.
-
-    Not paged: a collection is something a person assembled by hand, so it is
-    tens of rows and not thousands. If one ever outgrows a screenful, paging
-    it would also have to answer what a cursor means under a reorder, which is
-    a question worth not having.
-    """
+    """The members, in the curated order."""
     collection = _load_collection(db, collection_id)
     ordered = collection_member_ids(db, collection.id)
     rows = {
@@ -1265,13 +925,7 @@ async def add_many_to_collection(
 async def reorder_collection(
     collection_id: str, body: CollectionOrderRequest, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
-    """Rewrite the order. **409 unless `ids` is exactly the membership.**
-
-    A partial reorder leaves the positions it does not mention ambiguous, and
-    the two readings -- "leave them" and "push them to the end" -- give
-    different lists from the same request. Refusing is the only answer that
-    cannot silently scramble a list someone arranged by hand.
-    """
+    """Rewrite the order. **409 unless `ids` is exactly the membership.**"""
     collection = _load_collection(db, collection_id)
     if not collection_reorder(db, collection, body.ids):
         raise HTTPException(
@@ -1299,14 +953,7 @@ async def get_artifact(
     unfiled: bool = Query(default=False),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """One row, with everything a detail screen shows.
-
-    `?project=` names the scope whose star `bookmarked` reports -- the screen
-    was opened from somewhere, and the star it shows has to be the one a tap
-    would toggle. Without it the scope is the artifact's own project.
-    `bookmarks` lists every scope holding a star, so the screen can say "also
-    starred in two other projects" rather than quietly showing one of them.
-    """
+    """One row, with everything a detail screen shows."""
     artifact = _load_artifact(db, artifact_id)
     row = _artifact_json_full(db, artifact)
     scope = _write_scope(db, artifact, project, unfiled)
@@ -1317,17 +964,7 @@ async def get_artifact(
 def _write_scope(
     db: OrmSession, artifact: Artifact, project: str | None, unfiled: bool = False
 ) -> str:
-    """Where a star written right now belongs.
-
-    The scope the caller names -- `?project=` for a project, `?unfiled=true`
-    for the unfiled view -- else **the artifact's own project**, which is
-    where someone starring from a project listing is standing and the only
-    default that cannot put a star somewhere the operator was not looking.
-
-    `unfiled` is explicit rather than implied by an absent project because the
-    two are different asks: a client browsing the unfiled view is standing in
-    the unfiled scope even when the row it taps belongs to a project.
-    """
+    """Where a star written right now belongs."""
     if unfiled:
         return UNFILED_SCOPE
     if project is not None:
@@ -1344,20 +981,7 @@ async def bookmark_artifact(
     unfiled: bool = Query(default=False),
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """Star an artifact **in one project**.
-
-    Scoped since 2026-09-19 (owner: *"I just created a new project and I see
-    bookmarked artifacts from other projects"*). `?project=` names the scope;
-    without it the star lands in the artifact's own project, or in the
-    unfiled scope for an artifact that has none.
-
-    The scope does NOT have to be the artifact's project: starring a shared
-    report while standing in the project that cites it is a legitimate thing
-    to want, and the same rule already governs the pinned deliverable.
-
-    Idempotent, but re-starring DOES move it to the top of that scope's
-    shelf: the timestamp records when the operator last said this matters.
-    """
+    """Star an artifact **in one project**."""
     artifact = _load_artifact(db, artifact_id)
     scope = _write_scope(db, artifact, project, unfiled)
     bookmark_set(db, artifact.id, scope, starred=True)
@@ -1374,9 +998,6 @@ async def unbookmark_artifact(
 ) -> dict:
     """Un-star an artifact in one scope. **Only that scope** -- a star made in
     another project is that project's, and this must not reach into it.
-
-    A no-op on an artifact that was not starred here, not a 404: the caller's
-    intent ("this should not be starred here") is already true.
     """
     artifact = _load_artifact(db, artifact_id)
     scope = _write_scope(db, artifact, project, unfiled)
@@ -1387,17 +1008,7 @@ async def unbookmark_artifact(
 
 @artifacts_router.put("/artifacts/{artifact_id}/archive")
 async def archive_artifact(artifact_id: str, db: OrmSession = Depends(_artifacts_db)) -> dict:
-    """Hide an artifact from the library's default listings.
-
-    **Not a delete.** The bytes stay in the store, the provenance stays on the
-    row, and every transcript chip that opens this artifact keeps working --
-    a link the operator followed yesterday must not break because they tidied up
-    today. Archived rows come back under `?archived=true` (or `all`), and are
-    kept off the bookmark shelf and out of folder counts meanwhile.
-
-    Idempotent, but re-archiving refreshes the timestamp: it orders "recently
-    archived", the same convention a star's timestamp follows.
-    """
+    """Hide an artifact from the library's default listings."""
     artifact = _load_artifact(db, artifact_id)
     artifact.archived_at = utcnow()
     db.commit()
@@ -1427,13 +1038,7 @@ class ArtifactIdsRequest(BaseModel):
 
 
 def _bulk_set_archived(db: OrmSession, ids: list[str], *, archived: bool) -> int:
-    """Set (or clear) `archived_at` on many rows in one transaction.
-
-    Unknown ids are skipped rather than failing the batch: bulk work runs
-    against a page the client fetched a moment ago, and one row deleted
-    underneath it must not lose the other 199 the operator selected. The count
-    returned is what actually changed, so a caller can tell.
-    """
+    """Set (or clear) `archived_at` on many rows in one transaction."""
     rows = list(db.execute(select(Artifact).where(Artifact.id.in_(ids))).scalars())
     stamp = utcnow() if archived else None
     changed = 0
@@ -1449,12 +1054,7 @@ def _bulk_set_archived(db: OrmSession, ids: list[str], *, archived: bool) -> int
 async def archive_artifacts(
     body: ArtifactIdsRequest, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
-    """Archive up to `MAX_BULK_IDS` artifacts in one request.
-
-    The cap is the point: the app's Select mode operates on a loaded page, and
-    a bulk route with no ceiling invites "select all 5,226" from a client that
-    has only ever seen 500 of them.
-    """
+    """Archive up to `MAX_BULK_IDS` artifacts in one request."""
     return {"archived": _bulk_set_archived(db, body.ids, archived=True)}
 
 
@@ -1469,17 +1069,7 @@ async def unarchive_artifacts(
 async def archive_ignored_artifacts(
     request: Request, db: OrmSession = Depends(_artifacts_db)
 ) -> dict:
-    """Archive every visible row the current ignore rules would refuse today.
-
-    The rules only gate NEW ingests; the library already holds what was filed
-    before they existed. Measured on the operator's instance 2026-09-19: npm
-    logs, curator backup blobs and profile internals, all operational trees
-    nobody asked to keep.
-
-    Archives rather than deletes, like everything else here, so a rule that
-    turns out to be too broad costs one unarchive and not a lost file.
-    Idempotent: a second call finds nothing left to do.
-    """
+    """Archive every visible row the current ignore rules would refuse today."""
     denylist = getattr(request.app.state, "artifact_ignore_rules", None)
     if denylist is None:
         ingestor = getattr(request.app.state, "artifact_ingestor", None)
@@ -1514,13 +1104,7 @@ async def artifact_content(
     request: Request,
     db: OrmSession = Depends(_artifacts_db),
 ):
-    """Stream one artifact's stored bytes, with standard Range support.
-
-    Serves from the gateway's own store -- Hermes is not consulted, so the
-    library keeps working after the sandbox is cleaned or Hermes is down.
-    409 for an `unavailable` row (the bytes were never fetched; the row's
-    `metadata.ingest_error` says why -- re-promote to retry).
-    """
+    """Stream one artifact's stored bytes, with standard Range support."""
     artifact = _load_artifact(db, artifact_id)
     if artifact.status != STATUS_AVAILABLE or not artifact.storage_key:
         raise HTTPException(
@@ -1616,11 +1200,6 @@ async def artifact_preview(
     return Response(content=path.read_bytes(), media_type=artifact.mime_type)
 
 
-# ---------------------------------------------------------------------------
-# Manual promotion (P3-1's PROMOTION entrypoint; P3-4a's "Save to project")
-# ---------------------------------------------------------------------------
-
-
 class PromoteRequest(BaseModel):
     """Body for `POST /api/sandbox/promote`. Closed schema, same rule as every
     other inbound body (`TurnSubmission`): nothing but these keys crosses."""
@@ -1629,9 +1208,6 @@ class PromoteRequest(BaseModel):
 
     path: str = Field(min_length=1)
     project_id: str | None = None
-    #: C3: file it at the same time. The producer knows what a file IS at the
-    #: moment it writes it; asking a person to classify it later, from a list
-    #: of 2,443, is the expensive way to learn the same fact.
     tags: list[str] = Field(default_factory=list)
     collection: str | None = Field(default=None, max_length=MAX_COLLECTION_NAME_CHARS)
 
@@ -1642,16 +1218,7 @@ async def promote_sandbox_file(
     request: Request,
     db: OrmSession = Depends(_artifacts_db),
 ) -> dict:
-    """Promote one sandbox file into the durable library, on demand.
-
-    The same fetch+store+row path as auto-ingestion -- this is the answer for
-    `terminal`-produced files (no structured path on the wire, P3-1) and the
-    retry path for an `unavailable` row. `producing_run_id` is NULL here:
-    a manual promotion is not a tool completion, and inventing a run would be
-    fake provenance. 422/403 for a bad path (gateway confinement, before any
-    upstream call); a fetch failure records the unavailable row AND reports
-    the failure (404/403 passthrough, else 502) -- honest twice over.
-    """
+    """Promote one sandbox file into the durable library, on demand."""
     if body.project_id is not None and db.get(Project, body.project_id) is None:
         raise HTTPException(status_code=404, detail=f"no project with id {body.project_id!r}")
     ingestor: ArtifactIngestor = request.app.state.artifact_ingestor
@@ -1665,9 +1232,6 @@ async def promote_sandbox_file(
                 f"recorded artifact {outcome.artifact.get('id')!r} as unavailable"
             ),
         )
-    # C3: file it in the same call. Tags and a collection applied here mean
-    # the agent can keep a file AND say what it is in one step, which is the
-    # only moment anyone knows that for free.
     artifact_id = outcome.artifact.get("id") if isinstance(outcome.artifact, dict) else None
     if artifact_id and (body.tags or body.collection):
         for name in _normalized_list_or_422(body.tags):

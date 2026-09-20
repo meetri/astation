@@ -1,47 +1,4 @@
-"""The merged model catalog behind `GET /api/models/catalog` (P6, agent model management).
-
-`docs/AGENT_MODEL_DESIGN.md` §7 measured three sources, none of which is
-complete on its own, and §8 fixes the merged shape the app is built against:
-
-* **Hermes `model.options`** -- the authority on *which providers are
-  configured and which model ids each serves*. Provider entries carry `slug`,
-  `name`, `authenticated`, `source`, `is_current`, `is_user_defined`,
-  `featured_models`, `capabilities {model: {fast, reasoning}}`, `models`
-  (a list of id strings), for `openrouter` a `pricing {model: {input "$2.00",
-  output "$10.00", cache "$0.20", free}}` map (per 1M tokens, **as strings**),
-  and for the `custom` provider an `api_url`. It holds no context lengths.
-* **OpenRouter's public `GET https://openrouter.ai/api/v1/models`** -- no key,
-  430 models on 2026-09-06 -- for `context_length`,
-  `top_provider.max_completion_tokens`, `pricing.{prompt,completion,
-  input_cache_read}` (**per token**, strings; multiplied by 1e6 here so the
-  app shows "$2 / $10 per M"), `architecture.input_modalities` ("image" =>
-  vision) and `supported_parameters` ("tools" => tools; "reasoning" or
-  "reasoning_effort" => reasoning).
-* **A local endpoint's `GET {api_url}/models`** -- llama.cpp answers
-  `{"data": [{"id", "meta": {n_ctx, n_ctx_train, n_params, ftype}}]}`, which
-  becomes `local {parameters, quantization, context_length}`; price 0, free.
-
-**Every external fetch is best-effort.** A failure -- offline, a timeout, a
-body that is not the expected shape -- yields `null` for the facts that source
-would have supplied and *never* a route failure: the catalog's job is to help
-the operator choose, and "OpenRouter is unreachable right now" must not take the
-local model list down with it. The two external results are cached in-process
-for `CATALOG_TTL_S` (one hour, monotonic clock) by `ModelCatalogCache`;
-`refresh=True` bypasses the cache. `model.options` itself is not cached here:
-it is one cheap RPC and it is the thing that changes when the operator configures
-a provider.
-
-**The OpenRouter fetch sends no key, ever.** The public list needs none, and a
-key sent to a public endpoint is a key on the wire for nothing. Nothing in
-this module reads a settings secret at all.
-
-`featured` (§8, owner decision 4): `custom`/local first, then `openrouter`,
-then the next *authenticated* providers in the order `anthropic`,
-`openai-api`, up to **four**. Only a provider with `authenticated: true`
-counts. Everything else is `featured: false` and the app shows it behind
-"Show all providers". Provider order in the list = featured, in that order,
-then the rest as Hermes lists them.
-"""
+"""The merged model catalog behind `GET /api/models/catalog` (P6, agent model management)."""
 
 from __future__ import annotations
 
@@ -55,51 +12,28 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-#: OpenRouter's public model list. No key required; none is sent.
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-#: How long a successful external fetch (OpenRouter list, local probe) is
-#: reused before it is fetched again. Prices and context windows change on
-#: the scale of weeks; an hour is the §8 figure.
 CATALOG_TTL_S = 3600.0
 
-#: How long a *failed* external fetch is remembered before it is retried.
-#: Short, so a transient blip heals on the next screen open, but non-zero,
-#: so an offline Mac does not pay the full HTTP timeout on every catalog or
-#: profile-detail request in the meantime. `refresh=True` ignores it.
 FAILURE_TTL_S = 60.0
 
-#: Per external fetch. Generous for a 430-entry JSON list on a home
-#: connection, short enough that an offline OpenRouter does not hold a
-#: profile-detail request hostage.
 FETCH_TIMEOUT_S = 10.0
 
-#: The featured order, after any local provider (§8). Only authenticated
-#: providers count, and at most `MAX_FEATURED` in total.
 FEATURED_ORDER: tuple[str, ...] = ("openrouter", "anthropic", "openai-api")
 MAX_FEATURED = 4
 
-#: The three `kind` values a provider can have in the catalog (§8).
 KIND_LOCAL = "local"
 KIND_OPENROUTER = "openrouter"
 KIND_OTHER = "other"
 
-#: The three `source` values `model_facts` can carry (§8): which external
-#: source supplied the facts, or `hermes` when only `model.options` did.
 SOURCE_OPENROUTER = "openrouter"
 SOURCE_LOCAL = "local-endpoint"
 SOURCE_HERMES = "hermes"
 
-#: `supported_parameters` values on an OpenRouter entry that mean the model
-#: takes tool definitions / a reasoning knob. Measured 2026-09-06 (§7).
 _OPENROUTER_TOOLS_PARAMS = frozenset({"tools"})
 _OPENROUTER_REASONING_PARAMS = frozenset({"reasoning", "reasoning_effort"})
 
-#: llama.cpp reports `ftype` as a human string on the deployed build
-#: (`"Q4_K - Medium"`, measured §7). Older builds answer the raw
-#: `llama_ftype` enum integer instead; this maps the common values so the
-#: app still gets a readable quantisation label. An unknown integer falls
-#: through as `"ftype <n>"` rather than a guess.
 _LLAMA_FTYPE_NAMES: dict[int, str] = {
     0: "F32",
     1: "F16",
@@ -121,26 +55,10 @@ _LLAMA_FTYPE_NAMES: dict[int, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# External fetches -- module-level so tests can monkeypatch them
-# ---------------------------------------------------------------------------
-
-
 async def fetch_openrouter_models(
     *, timeout_s: float = FETCH_TIMEOUT_S
 ) -> dict[str, dict[str, Any]] | None:
-    """OpenRouter's public list as `{model_id: entry}`, or None on any failure.
-
-    Module-level and injectable (`tests/test_model_catalog.py` replaces it)
-    for the same reason `api/config.py::probe_models_endpoint` is: the route
-    tests must never reach the network. No `Authorization` header is built
-    here under any circumstances -- the endpoint is public and this module
-    holds no key to send.
-
-    `None`, not `{}`, on failure: "OpenRouter answered with zero models" and
-    "OpenRouter did not answer" are different facts, and only the second
-    should be retried on the short `FAILURE_TTL_S`.
-    """
+    """OpenRouter's public list as `{model_id: entry}`, or None on any failure."""
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             response = await client.get(
@@ -165,15 +83,7 @@ async def fetch_openrouter_models(
 async def probe_local_models(
     api_url: str, *, timeout_s: float = FETCH_TIMEOUT_S
 ) -> dict[str, dict[str, Any]] | None:
-    """`GET {api_url}/models` on a local OpenAI-compatible endpoint, as `{id: entry}`.
-
-    Measured on the operator's llama.cpp (§7): `data[0].meta {n_ctx, n_ctx_train,
-    n_params, ftype}`. The whole entry is kept so `_local_facts()` can read
-    `meta` regardless of which keys a given server fills in. `None` on any
-    failure, same reasoning as `fetch_openrouter_models`. No key is sent: the
-    only local endpoints this joins against are the ones Hermes reaches
-    without one, and `api_url` comes from Hermes, not from a request.
-    """
+    """`GET {api_url}/models` on a local OpenAI-compatible endpoint, as `{id: entry}`."""
     url = f"{api_url.rstrip('/')}/models"
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -195,24 +105,8 @@ async def probe_local_models(
     return by_id
 
 
-# ---------------------------------------------------------------------------
-# The in-process cache
-# ---------------------------------------------------------------------------
-
-
 class ModelCatalogCache:
-    """One-hour memo of the two external fetches, on the monotonic clock.
-
-    One instance lives on `app.state.model_catalog_cache` (created lazily by
-    `api/profile_admin.py`), so a test can replace it with a fresh one and a
-    stale entry can never survive a process restart. Failures are memoised
-    too, for `FAILURE_TTL_S` only -- see that constant.
-
-    The two fetch functions are read off the module at call time rather
-    than bound at construction, so `monkeypatch.setattr(model_catalog,
-    "fetch_openrouter_models", fake)` in a test takes effect without
-    rebuilding the cache.
-    """
+    """One-hour memo of the two external fetches, on the monotonic clock."""
 
     def __init__(
         self, *, ttl_s: float = CATALOG_TTL_S, failure_ttl_s: float = FAILURE_TTL_S
@@ -249,16 +143,7 @@ class ModelCatalogCache:
         return value
 
     def cached_openrouter(self) -> dict[str, dict[str, Any]] | None:
-        """The last fetched OpenRouter index, **without** fetching -- or None.
-
-        The private index behind the `openrouter=` fallback in
-        `model_facts_for()` / `price_lookup_from_catalog()`: a profile can run
-        on an OpenRouter model that Hermes's curated `model.options` list (44
-        ids) does not carry -- measured 2026-09-06, `kimi25` on
-        `moonshotai/kimi-k2.5` -- while the public list (430) does. The index
-        never enters an API payload; `build_catalog()` has just populated it
-        by the time a route asks.
-        """
+        """The last fetched OpenRouter index, **without** fetching -- or None."""
         return self._openrouter[1] if self._openrouter is not None else None
 
     def clear(self) -> None:
@@ -266,17 +151,8 @@ class ModelCatalogCache:
         self._local.clear()
 
 
-# ---------------------------------------------------------------------------
-# Parsing helpers -- pure, so the tests can pin every conversion
-# ---------------------------------------------------------------------------
-
-
 def _money_string_to_float(value: Any) -> float | None:
-    """`"$2.00"` -> `2.0`; `"$0.20"` -> `0.2`; anything unparseable -> None.
-
-    Hermes's `pricing` map spells its per-1M prices as dollar strings (§7);
-    a number is accepted too in case a future build sends one.
-    """
+    """`"$2.00"` -> `2.0`; `"$0.20"` -> `0.2`; anything unparseable -> None."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -293,11 +169,7 @@ def _money_string_to_float(value: Any) -> float | None:
 
 
 def _per_token_to_per_million(value: Any) -> float | None:
-    """OpenRouter's `pricing.*` per-token strings (`"0.000002"`) -> per-1M float.
-
-    Rounded to 6 places so `0.000002 * 1e6` reads as `2.0`, not
-    `1.9999999999999998`; the app displays two decimals anyway.
-    """
+    """OpenRouter's `pricing.*` per-token strings (`"0.000002"`) -> per-1M float."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -394,12 +266,7 @@ def _quantization_label(ftype: Any) -> str | None:
 
 
 def local_facts(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """`{parameters, quantization, context_length}` from a llama.cpp `/models` entry, or None.
-
-    None when the entry carries no `meta` at all (an Ollama or MTPLX server
-    answers the OpenAI shape without one) -- the model is still listed, it
-    just has no local facts to show.
-    """
+    """`{parameters, quantization, context_length}` from a llama.cpp `/models` entry, or None."""
     meta = entry.get("meta")
     if not isinstance(meta, dict):
         return None
@@ -416,15 +283,7 @@ def local_facts(entry: dict[str, Any]) -> dict[str, Any] | None:
 def _local_entry_for(
     probe: dict[str, dict[str, Any]] | None, model_id: str
 ) -> dict[str, Any] | None:
-    """The probe entry for `model_id`: exact id, else the single loaded model.
-
-    A llama.cpp server serves exactly the one model it was launched with and
-    ignores the `model` field of a request, so its `/models` id (often the
-    GGUF filename) need not equal the id Hermes is configured with. When the
-    probe lists exactly one model, it is by construction the one every
-    request on that endpoint reaches. Two or more with no exact match is
-    genuinely ambiguous and answers None.
-    """
+    """The probe entry for `model_id`: exact id, else the single loaded model."""
     if not probe:
         return None
     if model_id in probe:
@@ -432,11 +291,6 @@ def _local_entry_for(
     if len(probe) == 1:
         return next(iter(probe.values()))
     return None
-
-
-# ---------------------------------------------------------------------------
-# Building the catalog
-# ---------------------------------------------------------------------------
 
 
 def _hermes_reasoning(capabilities: Any, model_id: str) -> bool | None:
@@ -472,13 +326,7 @@ def _build_model(
     openrouter: dict[str, dict[str, Any]] | None,
     local_probe: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """One §8 model row, merging the three sources by precedence.
-
-    Price: OpenRouter's live list beats Hermes's on-disk `pricing` map (the
-    list is the authority on price and needs no key), and a local model is
-    free by definition. Capabilities: OpenRouter's where it answered,
-    Hermes's `capabilities.reasoning` otherwise, `null` where nobody knows.
-    """
+    """One §8 model row, merging the three sources by precedence."""
     row: dict[str, Any] = {
         "id": model_id,
         "name": model_id,
@@ -530,7 +378,6 @@ def _build_model(
 def _featured_slugs(providers: list[dict[str, Any]]) -> list[str]:
     """The §8 featured order, over authenticated providers only, capped at four."""
     authenticated = [p for p in providers if p.get("authenticated") is True]
-    # Local first, in Hermes's order among themselves.
     ordered: list[str] = [
         entry["slug"] for entry in authenticated if provider_kind(entry) == KIND_LOCAL
     ]
@@ -544,13 +391,7 @@ def _featured_slugs(providers: list[dict[str, Any]]) -> list[str]:
 def _current_from_options(
     options: dict[str, Any], providers: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """`{provider, model}` for the default profile, as far as `model.options` says.
-
-    `is_current` on a provider entry is measured (§7). The current *model id*
-    is not something the measured shape names explicitly, so the top-level
-    keys a Hermes build plausibly uses are tried in order and the answer is
-    `null` when none is present -- never a guess from the model list.
-    """
+    """`{provider, model}` for the default profile, as far as `model.options` says."""
     current_provider = next((p["slug"] for p in providers if p.get("is_current") is True), None)
     model: str | None = None
     for key in ("current_model", "model", "default_model"):
@@ -572,11 +413,7 @@ def _provider_entries(options: Any) -> list[dict[str, Any]]:
 
 
 def model_ids_for(options: Any, provider: str) -> list[str] | None:
-    """The id strings `model.options` lists for `provider`, or None if the provider is not configured.
-
-    Shared with the validation in `api/profile_admin.py` so the 422 there
-    checks exactly the list the catalog shows.
-    """
+    """The id strings `model.options` lists for `provider`, or None if the provider is not configured."""
     for entry in _provider_entries(options):
         if entry["slug"] == provider:
             models = entry.get("models")
@@ -596,9 +433,6 @@ async def selectable_model_ids(
     """The ids a profile may be pointed at for `provider`: Hermes's list, or --
     for a local provider Hermes lists nothing for -- what its endpoint's
     `/models` probe answers. None when the provider is not configured at all.
-
-    Shared with `api/profile_admin.py`'s 422 so it accepts exactly the ids
-    `build_catalog` shows (same fallback, same memoised probe).
     """
     ids = model_ids_for(options, provider)
     if ids:
@@ -614,12 +448,7 @@ async def selectable_model_ids(
 
 
 def is_openrouter(options: Any, provider: str) -> bool:
-    """Whether `model.options` lists `provider` as OpenRouter (§8 `kind`).
-
-    Hermes's OpenRouter list is curated (44 ids, 2026-09-06) while OpenRouter
-    serves every id on its public list, so `api/profile_admin.py`'s validation
-    widens to that list for this provider and no other.
-    """
+    """Whether `model.options` lists `provider` as OpenRouter (§8 `kind`)."""
     entry = next((e for e in _provider_entries(options) if e["slug"] == provider), None)
     return entry is not None and provider_kind(entry) == KIND_OPENROUTER
 
@@ -631,13 +460,7 @@ async def build_catalog(
     refresh: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """The `GET /api/models/catalog` payload (§8) from a `model.options` result.
-
-    `options` is the live RPC result the route just fetched; `cache` supplies
-    the OpenRouter list and the local probes (both best-effort, both memoised
-    an hour). A local provider is probed only if it carries an `api_url` --
-    there is nothing to probe otherwise.
-    """
+    """The `GET /api/models/catalog` payload (§8) from a `model.options` result."""
     providers = _provider_entries(options)
     featured = _featured_slugs(providers)
     needs_openrouter = any(provider_kind(p) == KIND_OPENROUTER for p in providers)
@@ -659,12 +482,6 @@ async def build_catalog(
         )
         model_ids = model_ids_for(options, slug) or []
         if not model_ids and local_probe:
-            # A user-defined local provider Hermes has not probed yet (it only
-            # probes the *current* custom provider on a normal `model.options`,
-            # every one on `refresh`) lists no ids; the gateway's own probe of
-            # the same endpoint is what the server actually serves, so show
-            # that rather than an empty provider. Measured 2026-09-06 with
-            # `local-3080ti` (llama.cpp, gemma-4-12b-qat): Hermes 0 ids, probe 1.
             model_ids = [mid for mid in local_probe if isinstance(mid, str) and mid]
         built_by_slug[slug] = {
             "slug": slug,
@@ -690,11 +507,6 @@ async def build_catalog(
         "current": _current_from_options(options, providers),
         "providers": ordered,
     }
-
-
-# ---------------------------------------------------------------------------
-# Reading the catalog back -- what the detail route and the stats need
-# ---------------------------------------------------------------------------
 
 
 def find_provider(catalog: dict[str, Any], provider: str) -> dict[str, Any] | None:
@@ -742,19 +554,7 @@ def model_facts_for(
     *,
     openrouter: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """The §8 `model_facts` for one `(provider, model_id)`, or None if nothing lists it.
-
-    `source` says which external source filled the facts in: `openrouter`
-    when the row carries an OpenRouter price/context, `local-endpoint` when a
-    local probe answered, `hermes` when only `model.options` knew the model.
-
-    **`openrouter` is the fallback index** (`ModelCatalogCache.cached_openrouter()`):
-    for the OpenRouter provider, an id absent from Hermes's curated
-    `model.options` list but present in the public list still gets full facts
-    with `source: "openrouter"` -- measured 2026-09-06, `kimi25` runs on
-    `moonshotai/kimi-k2.5`, which Hermes's 44-id list does not carry and the
-    public 430-id list does. An id in neither is None.
-    """
+    """The §8 `model_facts` for one `(provider, model_id)`, or None if nothing lists it."""
     if not provider or not model_id:
         return None
     entry = find_provider(catalog, provider)
@@ -799,20 +599,7 @@ def price_lookup_from_catalog(
     *,
     openrouter: dict[str, dict[str, Any]] | None = None,
 ) -> Callable[[str], tuple[float, float] | None]:
-    """A `price_lookup(model_id) -> (input, output) | None` over every provider in the catalog.
-
-    Built for `domain/profile_stats.py::compute_profile_stats`, which looks
-    prices up by the model id a `session.usage` payload names. That id
-    carries no provider, so the first provider listing it wins, in catalog
-    order (featured first -- so a local model shadows a same-named remote
-    one, which is the cheaper and likelier reading). A free model answers
-    `(0.0, 0.0)`; an unpriced one answers None so the spend stays honest.
-
-    `openrouter` is the same fallback index `model_facts_for()` takes: an id
-    the catalog does not list is priced from the public OpenRouter list when
-    that carries it (the `kimi25` case), so a profile's spend is not `null`
-    merely because Hermes's curated list omits the model it runs on.
-    """
+    """A `price_lookup(model_id) -> (input, output) | None` over every provider in the catalog."""
     table: dict[str, tuple[float, float]] = {}
     for entry in (catalog or {}).get("providers", []):
         if not isinstance(entry, dict):
