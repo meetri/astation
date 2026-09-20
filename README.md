@@ -1,20 +1,44 @@
-# astation — a Research Gateway inside Hermes
+# astation
 
-A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a durable research
-workspace: projects, sessions, runs, artifacts, chat history, speech, and a phone-friendly API for
-the trg-research iOS app.
+A research workspace for [Hermes Agent](https://github.com/NousResearch/hermes-agent), delivered as
+a plugin.
 
-It runs **inside** the Hermes dashboard process. There is no second container, no Docker socket,
-and no separate credential — Hermes's own auth gate is the only one.
+Hermes gives you agents and a conversation. astation adds the durable layer around them: projects
+that group work, sessions that survive restarts, a searchable transcript, artifacts with folders and
+tags, speech in and out, and an audit trail of what each session actually did on the machine.
 
-## Install
+It runs inside the Hermes dashboard process. No second container, no extra port, no separate
+credential — Hermes's own authentication is the only gate.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Verifying the install](#verifying-the-install)
+- [API](#api)
+- [The audit layer](#the-audit-layer)
+- [Configuration](#configuration)
+- [Upgrading](#upgrading)
+- [Development](#development)
+
+## Requirements
+
+| | |
+|---|---|
+| Hermes Agent | 0.21 or later |
+| Python | 3.11+ (uses the interpreter Hermes runs on) |
+| Storage | SQLite, created on first start |
+
+The audit layer is optional and has its own requirements. See
+[`audit-setup/AUDIT_SETUP.md`](audit-setup/AUDIT_SETUP.md).
+
+## Installation
+
+Install the plugin, then the Python packages Hermes does not ship, then restart the dashboard once.
 
 ```bash
-# in the Hermes container / on the Hermes host
-hermes plugins install <owner>/hermes-astation --ref <commit-sha> --enable
+hermes plugins install meetri/astation --ref <commit-sha> --enable
 ```
-
-Then install the Python packages Hermes does not already ship, and restart the dashboard:
 
 ```bash
 uv pip install --python /opt/hermes/.venv/bin/python --target "$HERMES_HOME/lazy-packages" \
@@ -22,80 +46,142 @@ uv pip install --python /opt/hermes/.venv/bin/python --target "$HERMES_HOME/lazy
   "piper-tts>=1.7.0" "edge-tts>=7.2.8"
 ```
 
-**Dependencies are not installed automatically** when a plugin directory is simply dropped in —
-only a real `hermes plugins install` does that, and even then the speech extras are optional. If
-they are missing the plugin comes up with `routers_mounted: 0` and an `import_error`, which
-`GET /health` reports verbatim.
+Speech is optional. Without `piper-tts` and `edge-tts` the plugin starts normally and the speech
+routes return 503; everything else is unaffected.
 
-**Plugin API routes mount once at dashboard startup**, so every install or upgrade needs one
-dashboard restart. `/api/dashboard/plugins/rescan` reloads UI bundles only.
+Two things commonly surprise people on a first install:
 
-## Check it
+**Dependencies are not installed automatically** when a plugin directory is copied into place by
+hand. Only `hermes plugins install` does that. Without them the plugin comes up with
+`routers_mounted: 0` and an `import_error`, which the health endpoint reports verbatim.
+
+**Routes mount once, at dashboard startup.** Every install and every upgrade needs one dashboard
+restart. `/api/dashboard/plugins/rescan` reloads interface bundles only.
+
+### Multiple agent profiles
+
+Each Hermes profile is a separate home with its own configuration and its own plugin directory, so
+the plugin is enabled per profile:
+
+```bash
+hermes -p <profile> plugins enable astation
+```
+
+Profiles that do not have it enabled are unaffected. Session attribution in the audit layer only
+covers profiles where it is enabled.
+
+## Verifying the install
 
 ```
 GET /api/plugins/astation/health
 ```
 
-A healthy instance reports `status: ok`, `routers_mounted: 24`, `services_started: true`,
-`foreign_prompts: "hook"` and `ws_core_module: "hermes_cli.web_server_chat"` (the last is
-version-sensitive; on Hermes 0.20.5 the same helper lives in `hermes_cli.web_server`).
+A healthy instance reports `status: ok` and a non-zero `routers_mounted`. The same response carries
+the migration state, whether background services started, and the error text if anything failed to
+import, so a broken install explains itself rather than returning an empty page.
 
-It also reports `import_error`, `startup_error` and `migration` verbatim — read it first when
-something is wrong, because a plugin that fails to mount is otherwise only one line in a log.
+## API
+
+Everything mounts under `/api/plugins/astation/api/`, behind Hermes's authentication. Roughly 110
+endpoints across these groups:
+
+| Group | What it covers |
+|---|---|
+| `projects` | Projects, membership, filing, instructions |
+| `sessions` | Session lifecycle, resume, transcript, turns |
+| `artifacts` | Files and outputs, folders, tags, collections, search |
+| `runs` | Turn-level execution records |
+| `audit` | Host and session audit queries |
+| `prompts` | Approvals, clarifications, interrupts |
+| `speak`, `transcribe` | Text to speech, speech to text |
+| `sandbox` | Workspace file access |
+| `config`, `instance` | Runtime settings and instance state |
+
+A WebSocket at `/api/plugins/astation/ws/events` streams session and run events.
 
 ## The audit layer
 
-The plugin can record what each session actually did, and answer questions about it.
+astation can record what each session did, and answer questions about it afterwards.
 
-Two independent recorders, joined only when read. The plugin captures every tool call a session
-makes -- the tool, its arguments, how long it took -- tagged with the session, turn and call ids.
-Separately, a kernel sensor records the processes, file writes and network connections on the host,
-knowing nothing about sessions. A session timeline shows both, in labelled tiers, never merged: a
-compromised agent can lie in its own channel and cannot touch the other one.
+Two independent recorders, joined only when read:
 
-**Tool output is deliberately not recorded.** A file read returns the file, and the archive is
-append-only, so a secret that reaches it cannot be removed. What is stored is the duration, the
-status and the error class.
+- **The agent's account.** Every tool call a session makes, tagged with the session, turn and call
+  identifiers, with how long it took and whether it succeeded.
+- **The host's record.** A kernel sensor observes processes, file writes and network connections,
+  knowing nothing about sessions.
 
-`audit-setup/` holds the other half: the sensor, the shipper and the store, as a Compose project
-with its own installer and self-test. Read `audit-setup/AUDIT_SETUP.md` first -- it explains each
-image, what it needs from the host, and what breaks without it. A local-only install needs no
-cloud account.
+A session timeline presents both in labelled tiers and never merges them. This matters: the host's
+record is produced outside the agent and cannot be forged by it, so the two disagreeing is itself
+a signal. A third, weaker tier attributes processes that ran inside a turn on the same profile, and
+is withheld when another session of that profile was running at the same time.
 
-The plugin runs fine without any of it. The forwarder logs that attribution is off, and the audit
-routes answer 503 with a reason rather than pretending nothing happened.
+**Tool output is not recorded.** A file read returns the file, and the archive is append-only, so
+anything written to it cannot later be removed. What is stored is the duration, the status and the
+error class.
 
 ```
 GET  /api/plugins/astation/api/audit/health
 GET  /api/plugins/astation/api/audit/sessions/{id}/timeline
-POST /api/plugins/astation/api/audit/query      # one capped, read-only SELECT
+GET  /api/plugins/astation/api/audit/files
+GET  /api/plugins/astation/api/audit/net
+POST /api/plugins/astation/api/audit/query
+GET  /api/plugins/astation/api/audit/schema
 ```
 
-## What it needs
+`POST /audit/query` accepts one read-only `SELECT`, capped and recorded. Read-only is enforced by
+the database role and again by a validator in front of it.
 
-- **Hermes 0.21.3 or later.** It uses `session.create`'s `profile` parameter, which earlier
-  versions silently ignore, and plugin hooks for capture.
-- **Its own data directory**, `$HERMES_HOME/astation/`: the SQLite workspace database, the
-  content-addressed artifact store, Piper voices and the Whisper model cache. Inside the Hermes
-  data volume, so it survives an image rebuild.
+The sensor, shipper and store live in [`audit-setup/`](audit-setup/) as a Compose project with an
+installer and a self-test. A local-only deployment needs no cloud account.
 
-## How it authenticates
+**The plugin runs without any of it.** With no audit stack configured, session attribution is
+disabled with a log line saying so, and the audit routes return 503 with a reason rather than
+reporting that nothing happened.
 
-Everything is behind Hermes's dashboard auth gate. Clients log in with
-`POST /auth/password-login` and keep the session cookie; a WebSocket upgrade takes a single-use
-`?ticket=` from `POST /api/auth/ws-ticket`.
+## Configuration
 
-Note that Hermes's HTTP auth gates do **not** run for WebSocket routes — Starlette does not
-invoke HTTP middleware for a websocket scope. This plugin's `/ws/events` therefore calls Hermes's
-own `_ws_auth_ok` and `_ws_request_is_allowed` itself and **fails closed**.
+Settings are read from the environment. All are optional; the defaults suit a single-host install.
 
-## Migrations
+| Variable | Purpose |
+|---|---|
+| `AUDIT_INGEST_URL` | Where session audit rows are sent. Unset disables attribution. |
+| `AUDIT_CLICKHOUSE_URL` | Audit store, for the query routes. Unset returns 503. |
+| `AUDIT_CLICKHOUSE_USER`, `AUDIT_CLICKHOUSE_PASSWORD` | Read-only store credentials. |
+| `AUDIT_HOST_LABEL` | Name this host reports itself as. |
 
-The workspace schema is migrated on load, after copying the database aside. A migration failure
-refuses to serve rather than serving a half-migrated database. `hermes trg migrate` runs it by
-hand.
+The `llm.profile_override` capability lets the plugin run a completion on a named profile's own
+model. It is declared in the manifest and still has to be granted:
 
-## This directory is generated
+```yaml
+plugins:
+  entries:
+    astation:
+      llm:
+        allow_profile_override: true
+```
 
-Edit `plugin/` in the `astation` repo and re-run `scripts/build_plugin_repo.sh`. See
-`GENERATED.md` for the source commit.
+Without it, features that rewrite text on a profile whose provider has no directly reachable
+endpoint return 503 instead of falling back to a different model.
+
+## Upgrading
+
+```bash
+hermes plugins install meetri/astation --ref <new-sha>
+```
+
+Restart the dashboard afterwards. Database migrations run on mount, after the existing database is
+copied aside.
+
+## Development
+
+This repository is generated and published as an installable unit; see
+[`GENERATED.md`](GENERATED.md) for what that means for pull requests. Issues and discussion are
+welcome here.
+
+```bash
+pytest tests/
+```
+
+## License
+
+No license has been declared yet. Until one is added, all rights are reserved.

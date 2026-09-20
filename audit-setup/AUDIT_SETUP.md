@@ -9,8 +9,7 @@ The astation plugin in this repo reads that store to answer "what did this sessi
 do on the machine".
 
 You do not need to have read anything else. `README.md` next to this file is the short
-operator card; this file is the explanation. Design rationale lives in `../docs/AUDIT_DESIGN.md`,
-build history and measurements in `../docs/AUDIT_PLAN.md`.
+quick start; this file is the explanation.
 
 **Quickest possible start:** `AUDIT_HOST_LABEL=some-name` in `.env`, then `./install.sh`.
 That is a complete working stack with no AWS account — see [§8](#8-local-only-vs-archived).
@@ -39,8 +38,7 @@ so `host_exec` and `host_exit` come from the daemon's own output.
 **Why it, and not the alternatives.** auditd covers exec well, but whole-filesystem write rules
 are expensive on it and it has no container awareness; Tetragon stamps every event with the
 cgroup-derived container id, which is what ties an event to the container that caused it.
-Falco and osquery were not on the host either; the box was greenfield
-(`../docs/AUDIT_DESIGN.md` §2–3). auditd remains available as an independent second exec
+Falco and osquery were not on the host either; the box was greenfield. auditd remains available as an independent second exec
 witness if a later review wants one.
 
 **What it needs from the host.** This is the most powerful container on the box, and all three
@@ -197,7 +195,7 @@ Read it as four independent facts:
    `reader` user. Two different identities, two different directions.
 4. **Liveness is judged from outside.** A quiet host produces no exec events, so "no data" and
    "dead sensor" are indistinguishable from the inside. `host_beat` is one synthetic event a
-   minute, and `scripts/audit_heartbeat.py` on a machine the audited host does not control
+   minute, and an off-host watcher on a machine the audited host does not control
    watches the newest object under `raw/host_beat/host=<label>/`.
 
 **Gateway-side settings** (the repo's own root `.env`, not this directory's):
@@ -238,11 +236,9 @@ and its ingest port (8686) are hard-coded in `vector/vector.yaml`. Vector parses
 interpolating and only substitutes into strings, so a typed integer or socket-address field cannot
 read an environment variable at all. Change them in that file.
 
-`hosts.yaml` (gitignored; copy `hosts.example.yaml`) is a *different* file with a different job: it
-is the fleet registry on the dev machine that `scripts/deploy_audit.sh` and
-`scripts/audit_heartbeat.py` read. It never goes to a monitored host — `deploy_audit.sh` strips it
-from the bundle, because a list of every host's address has no business on a box that might be
-compromised.
+A note on multi-host installs: if you drive several machines from one workstation, keep the list of
+them on the workstation and never on a monitored host. An inventory of every audited address has no
+business sitting on a box that might be compromised.
 
 ---
 
@@ -266,14 +262,14 @@ generate any missing store passwords; create the data directories; render the sh
 `docker compose up -d --force-recreate`; verify every policy on disk is actually loaded; apply
 `clickhouse/schema.sql` and the retention TTLs; verify the shipper is running; run `selftest.sh`.
 
-`selftest.sh` is the validation table of `../docs/AUDIT_PLAN.md` as a command — 21 checks, each of
+`selftest.sh` is the stack's acceptance test — 21 checks, each of
 which performs a **real** action and then goes looking for the record of it. A pass means the whole
 chain worked (kernel probe → export file → shipper → transform → store), not that a container is
 "up". It is non-destructive: it writes and deletes its own marker files and makes one outbound
 connection to a public address. Run it when someone asks whether a host is really being audited.
 
 **From the dev machine**, for a fleet, the same thing is one command per host — see `README.md`.
-`scripts/deploy_audit.sh <label>` validates every config file locally before shipping anything,
+The installer validates every config file before applying anything,
 which is deliberate: a malformed Tetragon policy takes the whole daemon down.
 
 ---
@@ -290,7 +286,7 @@ gitignored) and **fails if any token survives**. There is no `${VAR}` anywhere i
 purpose; [§9](#9-troubleshooting--the-traps-that-are-already-known) says why. Adding a new per-host
 value means an `@@TOKEN@@` there and a `-e` line here.
 
-**It forces container recreation.** `docker compose up -d --force-recreate`, every time. The fleet
+**It forces container recreation.** `docker compose up -d --force-recreate`, every time. The audited hosts
 deploy installs a bundle by renaming a directory into place, and a running container's bind mounts
 stay attached to the **old** inode — so without recreation a container keeps serving the previous
 config while the files on disk look correct. The cost is a few seconds of sensor downtime per
@@ -331,7 +327,7 @@ refused, `ingest` attempting a SELECT must be refused.
 
 ## 7. Retention
 
-**`retention.yaml` is the only place retention is decided.** `scripts/audit_retention.py` renders
+**`retention.yaml` is the only place retention is decided.** the retention renderer turns
 it into the two systems that enforce it, which cannot see each other:
 
 | Tier | Where | Enforced by |
@@ -355,8 +351,7 @@ must stay audited for at least as long as the data it can read.
 To change retention: edit `retention.yaml`, then
 
 ```bash
-uv run --project services/research-gateway python scripts/audit_retention.py check
-scripts/deploy_audit.sh <label>      # re-renders and re-applies
+./install.sh          # re-renders retention and re-applies it
 ```
 
 A table created by `schema.sql` has **no TTL** until the renderer applies one. `install.sh` does it
@@ -376,7 +371,7 @@ lifecycle policy covers every host in the network without being edited when a ho
 | Containers | tetragon, vector, clickhouse | same |
 | Shipper sinks | 10 ClickHouse sinks | 10 ClickHouse sinks + `aws_s3` |
 | Capture, redaction, schema, TTLs, query surface | identical | identical |
-| Needs an AWS account | no | yes (`scripts/audit_bootstrap_aws.sh`, once per network) |
+| Needs a cloud account | no | yes, one bucket |
 | Tamper-evident | **no** | yes |
 
 In local-only mode `install.sh` deletes the `aws_s3` sink from the rendered config rather than
@@ -396,7 +391,7 @@ matches no route — `route._unmatched`, which is where the `agent_unknown` buck
 sink at all and are dropped. With an archive they still reach S3, because the `aws_s3` sink is the
 only consumer of `route._unmatched`.
 
-Turning the archive on later is not a migration: run `scripts/audit_bootstrap_aws.sh` once for the
+Turning the archive on later is not a migration: create the bucket once for the
 network, put the bucket and the shipper key in `.env`, re-run `./install.sh`. Events from before
 the switch stay in ClickHouse under their hot TTL and are simply not in the archive.
 
@@ -406,7 +401,7 @@ the switch stay in ClickHouse under their hot TTL and are simply not in the arch
 
 These are not hypotheticals. Every one was found by the validation rather than by review, and
 every one was **silent or misleadingly reported** — "the container is up" was true during most of
-them (`../docs/AUDIT_PLAN.md`, *What Phase 1 cost*).
+them.
 
 **Vector does not interpolate environment variables.** Measured on 0.58.0, not assumed. Typed
 fields fail loudly ("invalid socket address syntax" for a port, "invalid uri character" for an
@@ -420,7 +415,7 @@ that file.**
 **A malformed Tetragon policy takes the whole daemon down**, not just that policy — the host is
 left with no sensor at all. Observed with five values in one selector: Tetragon refuses more than
 four and then refuses to boot. `install.sh` therefore checks the daemon is alive *and* that every
-policy file on disk is actually loaded, and `scripts/deploy_audit.sh` parses every config before
+policy file on disk is actually loaded, and the installer parses every config before
 shipping anything.
 
 **A `--` inside an XML comment breaks ClickHouse's users file.** A double hyphen is illegal inside
@@ -488,11 +483,10 @@ rather than as events that quietly stop.
 | `README.md` | the short operator card: add a host, run it, change retention |
 | `docker-compose.yml` | the three services. Images pinned by digest. `AUDIT_ROLE` selects the profile. |
 | `.env.example` | every setting, marked required / defaulted / generated / optional |
-| `hosts.example.yaml` | the shape of the gitignored fleet registry used from the dev machine |
 | `install.sh` | idempotent installer: preflight, secrets, render, up, verify, self-test |
 | `selftest.sh` | 21 end-to-end checks, each performing a real action and finding its record |
 | `retention.yaml` | the only place retention is decided |
-| `tetragon/policies/` | what the kernel watches. Every line is a measured decision — read the header of `file-mutations.yaml` before changing any of it. |
+| `tetragon/policies/` | what the kernel watches. Read the header of `file-mutations.yaml` before changing any of it; the selectors are narrower than they look, for reasons the comments explain. |
 | `vector/vector.yaml` | the shipper **template**; `install.sh` renders it to `vector.rendered.yaml` |
 | `clickhouse/schema.sql` | one table per event class, `CREATE … IF NOT EXISTS` |
 | `clickhouse/users.d/` | the three identities |

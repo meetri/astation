@@ -1,128 +1,83 @@
-# audit-setup — host telemetry for every machine on this network
+# audit-setup
 
-Records what happens on a host at the kernel: every process executed, every file created,
-written, renamed or deleted, and every TCP connection made or accepted. Ships it to a queryable
-store and, optionally, to an append-only archive the host itself cannot alter.
+The host half of the audit layer: a kernel sensor, a shipper and a queryable store, as a Compose
+project.
 
-**This file is the operator card — what to type.** For what the three containers are, why they
-were chosen, how they are wired, every setting, and every trap already found the hard way, read
-**[`AUDIT_SETUP.md`](AUDIT_SETUP.md)**. Design and rationale: `../docs/AUDIT_DESIGN.md`. Build
-plan and measurements: `../docs/AUDIT_PLAN.md`.
+It records what happens on a machine at the kernel level — every process executed, every file
+created, written, renamed or deleted, and every TCP connection made or accepted — and makes it
+queryable. Optionally it also writes to an append-only archive the host itself cannot alter.
 
-## Run it on one host
+The plugin's own half, which ties that activity to the agent session that caused it, is in the
+parent directory and needs nothing from here to run.
 
-```bash
-cp .env.example .env          # set AUDIT_HOST_LABEL; every other value is optional
-./install.sh --preflight      # can this host run it? changes nothing
-./install.sh                  # install/update, then self-test
-```
+**This file is the quick start.** For what each container is, why it was chosen, how they are
+wired, and what every setting does, read [`AUDIT_SETUP.md`](AUDIT_SETUP.md).
 
-That is a complete working stack — sensor, shipper, queryable store — with no AWS account. It
-runs **local-only**: nothing leaves the machine, so the record is not tamper-evident. Set
-`AUDIT_BUCKET` to add the archive ([`AUDIT_SETUP.md` §8](AUDIT_SETUP.md#8-local-only-vs-archived)).
-
-## Add a host to the fleet
-
-Three steps, and the third is one command.
-
-1. **Once per network** — create the bucket and the two credentials:
-
-   ```bash
-   scripts/audit_bootstrap_aws.sh          # idempotent; safe to re-run
-   scripts/audit_verify_aws.sh             # 17 adversarial checks, all must pass
-   ```
-
-2. **Add the host** to `audit-setup/hosts.yaml` (gitignored; copy
-   `hosts.example.yaml`). One entry:
-
-   ```yaml
-   - label: gpu4090            # stable forever: it is in every row and every S3 key
-     ssh: user@host
-     ssh_key: ~/.ssh/some_key  # optional
-     role: sensor              # or `collector` for the one host with the store
-   ```
-
-3. **Install:**
-
-   ```bash
-   scripts/deploy_audit.sh gpu4090
-   ```
-
-   That validates the bundle locally, ships it, installs it, and runs the
-   self-test. There is no fourth step and no runbook — if a host ever needs one,
-   fix `install.sh` instead of writing it down.
-
-Verify from the dev machine, which is the only judgement a compromised host cannot influence:
+## Quick start
 
 ```bash
-uv run --project services/research-gateway python scripts/audit_heartbeat.py --print-age
+cp .env.example .env          # set AUDIT_HOST_LABEL; everything else has a default
+./install.sh --preflight      # check this host can run it; changes nothing
+./install.sh                  # install, then self-test
 ```
 
-## The two roles
+That is a complete working stack with no cloud account: sensor, shipper and queryable store. It
+runs **local-only**, which means nothing leaves the machine and the record is therefore not
+tamper-evident. Set `AUDIT_BUCKET` to add the archive — see
+[§8](AUDIT_SETUP.md#8-local-only-vs-archived).
 
-| | `collector` | `sensor` |
-|---|---|---|
-| Runs | tetragon + vector + clickhouse | tetragon + vector |
-| Archive to S3 | yes, its own | yes, its own |
-| Rows go to | its own store | the collector's store |
-| How many | exactly one per network | the rest |
+## Connecting the plugin
 
-A sensor archives to S3 **directly**, not through the collector. Losing the
-collector costs queryability for a while; it never costs the record.
-
-## Is a host really being audited?
+The plugin reads the store directly and writes session events through the shipper. Point it at
+both:
 
 ```bash
-./selftest.sh      # 21 checks, each performs a real action and then finds its record
+AUDIT_INGEST_URL=http://<shipper-host>:8686/ingest
+AUDIT_CLICKHOUSE_URL=http://<store-host>:8123
+AUDIT_CLICKHOUSE_USER=reader
+AUDIT_CLICKHOUSE_PASSWORD=<the reader password from .env>
+AUDIT_HOST_LABEL=<this host's label>
 ```
 
-A pass means the whole chain worked — kernel probe, export file, shipper, transform, store — not
-that a container is "up". Non-destructive.
+Both services must be reachable from wherever the agent runs. With neither set, the plugin starts
+normally and its audit surface reports that it is not configured.
 
-## Change retention
-
-Edit `retention.yaml` — the only place retention is decided — then:
+## Verifying
 
 ```bash
-uv run --project services/research-gateway python scripts/audit_retention.py check
-scripts/deploy_audit.sh <label>      # re-renders and re-applies
+./selftest.sh
 ```
 
-The renderer refuses windows that S3 or ClickHouse would accept and then fail to
-enforce — an expiry inside the Object Lock window, a transition scheduled after
-the expiry, a zero-day TTL. Those are silent in production and loud here.
+21 checks against the running stack: that an in-container process carries a container id, that file
+creates, renames and deletes are all captured, that paths resolve, that inbound and outbound
+connections are recorded, that a secret is masked rather than dropped, that the reader role cannot
+write, that the ingest role cannot read, and that every table has a retention policy.
 
-## Attack it
+## Updating the configuration
+
+`install.sh` is idempotent. Edit `.env` or any config file and run it again; it re-renders,
+recreates what changed and re-runs the self-test.
 
 ```bash
-scripts/audit_attack.sh <label>
+./install.sh --no-test        # skip the self-test
+./install.sh --uninstall      # stop and remove containers, keep the data
 ```
 
-Stops the sensor and the shipper from *inside* the audited container, then
-proves the archive is still intact and still undeletable. It pauses auditing
-while it runs and restores everything at the end.
+## Retention
 
-## Four things that will bite you
+`retention.yaml` is the only place retention is decided. It sets how long each class of event stays
+in the queryable store, and how long archived copies are kept before moving to colder storage or
+expiring. Edit it and re-run `install.sh`.
 
-The full list, with the diagnosis for each, is in
-[`AUDIT_SETUP.md` §9](AUDIT_SETUP.md#9-troubleshooting--the-traps-that-are-already-known). The
-four worth knowing before you touch anything here:
+## Layout
 
-1. **Do not add a `${VAR}` to `vector/vector.yaml`.** Vector does not interpolate environment
-   variables in this version, and string fields fail *silently*. Per-host values are `@@TOKEN@@`
-   markers rendered by `install.sh`.
-2. **A malformed Tetragon policy takes the whole daemon down**, leaving the host with no sensor
-   at all. `install.sh` checks every policy on disk is loaded; `deploy_audit.sh` parses every
-   config before shipping.
-3. **Containers must be recreated on deploy.** A running container's bind mounts stay attached to
-   the old inode after a directory `mv`, so it keeps serving the previous config while the files
-   on disk look right. Hence `--force-recreate`.
-4. **Retention has to be rendered before it exists.** A table from `schema.sql` has no TTL until
-   `scripts/audit_retention.py` applies one. `install.sh` does it; `selftest.sh` fails if any
-   table is left without one.
-
-## Uninstall
-
-```bash
-./install.sh --uninstall      # stops and removes the containers; keeps all the data
-```
+| Path | What it is |
+|---|---|
+| `docker-compose.yml` | The three services and their profiles |
+| `install.sh` | Renders config, starts the stack, runs the self-test |
+| `selftest.sh` | 21 checks against a running stack |
+| `.env.example` | Every setting, with which are required |
+| `retention.yaml` | Retention policy, per event class |
+| `tetragon/policies/` | What the kernel sensor watches |
+| `vector/vector.yaml` | Parsing, redaction, routing. A template |
+| `clickhouse/` | Schema, roles and server settings |
