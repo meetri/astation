@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from typing import Any, Literal
@@ -69,6 +70,18 @@ def _attach_captured_tool_results(
     except Exception:  # pragma: no cover - defensive
         logger.exception("could not attach captured tool results; transcript served without them")
         return 0
+
+
+def _finish_transcript(
+    app_state: Any, profile: str, stored_id: str, messages: Any, *, light: bool
+) -> tuple[int, Any]:
+    """The transcript's blocking SQLite reads and projection, for `asyncio.to_thread`.
+
+    Returns `(background rows appended, projected messages)`.
+    """
+    _attach_captured_tool_results(app_state, profile, stored_id, messages)
+    added = append_finished_background_results(app_state, stored_id, messages)
+    return added, _project_transcript(messages, light=light)
 
 
 @sessions_router.get("/sessions")
@@ -160,14 +173,17 @@ async def resume_session(
 
     message_count, messages = _transcript(result, "message_count")
     # Hermes keeps a tool call's args but not its result; captured rows restore them.
-    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
     # A background turn leaves no Hermes transcript row; the ledger is the only record.
-    message_count += append_finished_background_results(request.app.state, stored_id, messages)
+    added, projected = await asyncio.to_thread(
+        _finish_transcript, request.app.state, profile, stored_id, messages,
+        light=detail == TRANSCRIPT_DETAIL_LIGHT,
+    )
+    message_count += added
     return {
         "stored_session_id": stored_id,
         "live_session_id": live_id,
         "message_count": message_count,
-        "messages": _project_transcript(messages, light=detail == TRANSCRIPT_DETAIL_LIGHT),
+        "messages": projected,
         "pending_approval": _pending_prompt(result, "approval"),
         "pending_clarify": _pending_prompt(result, "clarify"),
     }
@@ -230,13 +246,16 @@ async def session_messages(
         raise _http_error_from_hermes(exc, stored_id) from exc
 
     count, messages = _transcript(history, "count")
-    _attach_captured_tool_results(request.app.state, profile, stored_id, messages)
-    count += append_finished_background_results(request.app.state, stored_id, messages)
+    added, projected = await asyncio.to_thread(
+        _finish_transcript, request.app.state, profile, stored_id, messages,
+        light=detail == TRANSCRIPT_DETAIL_LIGHT,
+    )
+    count += added
     return {
         "stored_session_id": stored_id,
         "live_session_id": live_id,
         "count": count,
-        "messages": _project_transcript(messages, light=detail == TRANSCRIPT_DETAIL_LIGHT),
+        "messages": projected,
     }
 
 

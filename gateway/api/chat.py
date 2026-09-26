@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -31,8 +32,10 @@ async def session_chat(
     stored_id = _validate_stored_session_id(stored_session_id)
     chat_store: ChatStore = request.app.state.chat_store
     try:
-        rows = chat_store.page(
-            profile=profile, stored_session_id=stored_id, before_seq=before, limit=limit
+        # A blocking SQLite read; off the event loop so it cannot stall other requests.
+        rows = await asyncio.to_thread(
+            chat_store.page,
+            profile=profile, stored_session_id=stored_id, before_seq=before, limit=limit,
         )
     except OperationalError as exc:
         raise schema_missing_error() from exc
