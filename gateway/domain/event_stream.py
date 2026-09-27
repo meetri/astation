@@ -243,9 +243,20 @@ def _gateway_frame(
     }
 
 
-def stream_ready_frame(connection_generation: int | None = None) -> dict[str, Any]:
-    """"You are subscribed" -- the first frame on every socket."""
-    return _gateway_frame(STREAM_READY_EVENT_TYPE, {}, connection_generation=connection_generation)
+def stream_ready_frame(
+    connection_generation: int | None = None, *, replay: bool = False
+) -> dict[str, Any]:
+    """"You are subscribed" -- the first frame on every socket.
+
+    `replay=True` means this connection's `?after=` was honored: buffered frames were (or
+    will be) replayed rather than silently dropped, so a resuming client can skip its own
+    catch-up reload. An older gateway that predates this key, or one connecting with no
+    `after` at all, defaults to `False` -- exactly the "assume nothing was replayed"
+    fallback a resuming client already falls back to.
+    """
+    return _gateway_frame(
+        STREAM_READY_EVENT_TYPE, {"replay": replay}, connection_generation=connection_generation
+    )
 
 
 def resync_required_frame(
@@ -468,6 +479,18 @@ class EventBroadcaster:
         if not self._history or self._history[0][0] > after + 1:
             return [], True
         return [(frame, text) for seq, frame, text in self._history if seq > after], False
+
+    def replay_available(self, after: int | None) -> bool:
+        """Whether `subscribe(after=after)` will resume from history rather than reset.
+
+        A pure read, safe to call before `subscribe()` (no awaits between the two, so the
+        broadcaster's state cannot change in between) so the caller can stamp its
+        `stream.ready` frame with the same answer `subscribe()` is about to act on.
+        """
+        if after is None:
+            return False
+        _replay, needs_reset = self._replay(after)
+        return not needs_reset
 
     @asynccontextmanager
     async def subscribe(

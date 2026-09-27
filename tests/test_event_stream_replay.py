@@ -15,7 +15,7 @@ _gateway_dir = str(Path(__file__).resolve().parents[1] / "gateway")
 _modules_before = set(sys.modules)
 sys.path.insert(0, _gateway_dir)
 try:
-    from domain.event_stream import STREAM_RESET_EVENT_TYPE, EventBroadcaster
+    from domain.event_stream import STREAM_RESET_EVENT_TYPE, EventBroadcaster, stream_ready_frame
 finally:
     sys.path.remove(_gateway_dir)
     for _name in list(sys.modules):
@@ -96,6 +96,35 @@ async def test_reset_when_after_too_old(broadcaster):
 
     assert frame["type"] == STREAM_RESET_EVENT_TYPE
     assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_replay_available_true_when_history_covers_after(broadcaster):
+    for i in range(5):
+        broadcaster.inject(_envelope(str(i)), profile="default")
+
+    assert broadcaster.replay_available(2) is True
+
+
+@pytest.mark.asyncio
+async def test_replay_available_false_when_after_too_old(broadcaster):
+    for i in range(8):
+        broadcaster.inject(_envelope(str(i)), profile="default")
+
+    assert broadcaster.replay_available(1) is False
+
+
+@pytest.mark.asyncio
+async def test_replay_available_false_when_no_after(broadcaster):
+    for i in range(3):
+        broadcaster.inject(_envelope(str(i)), profile="default")
+
+    assert broadcaster.replay_available(None) is False
+
+
+def test_stream_ready_frame_carries_the_replay_flag():
+    assert stream_ready_frame(replay=True)["payload"]["replay"] is True
+    assert stream_ready_frame()["payload"]["replay"] is False
 
 
 @pytest.mark.asyncio
