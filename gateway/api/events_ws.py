@@ -23,8 +23,20 @@ from domain.hermes_runtime import _ensure_connected
 logger = logging.getLogger(__name__)
 
 
+def _parse_after(raw: str | None) -> int | None:
+    """The `?after=` query param as a non-negative seq, or None if absent/invalid."""
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
 async def stream_events(websocket: WebSocket, app_state: Any) -> None:
     """Stream this subscriber's events until the client or the upstream goes."""
+    after = _parse_after(websocket.query_params.get("after"))
     await websocket.accept()
     adapter: HermesAdapter = app_state.hermes_adapter
 
@@ -36,7 +48,7 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
         return
 
     broadcaster: EventBroadcaster = app_state.event_broadcaster
-    async with broadcaster.subscribe(encoded=True) as queue:
+    async with broadcaster.subscribe(encoded=True, after=after) as queue:
         await websocket.send_json(
             stream_ready_frame(getattr(adapter, "connection_generation", None))
         )

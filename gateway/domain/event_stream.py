@@ -55,6 +55,12 @@ _SESSION_IDENTITY_FIELDS: tuple[str, ...] = (
 
 STREAM_RESYNC_EVENT_TYPE = "stream.resync"
 
+STREAM_RESET_EVENT_TYPE = "stream.reset"
+
+# How many past frames the broadcaster keeps so a reconnecting client can replay
+# via `?after=<seq>` instead of missing them outright.
+_HISTORY_MAX_FRAMES = 512
+
 
 # Both caps are enforced; a subscriber past either is cut off rather than having frames dropped.
 _MAX_SUBSCRIBER_QUEUED_FRAMES = 2048
@@ -257,6 +263,11 @@ def resync_required_frame(
     )
 
 
+def stream_reset_frame(connection_generation: int | None = None) -> dict[str, Any]:
+    """"Your `after` is older than what I kept -- reload the transcript, then resume live."""
+    return _gateway_frame(STREAM_RESET_EVENT_TYPE, {}, connection_generation=connection_generation)
+
+
 def desynchronized_frame(
     *,
     connection_generation: int | None,
@@ -413,6 +424,7 @@ class EventBroadcaster:
         on_canonical_event: Callable[[Any, dict[str, Any]], None] | None = None,
         profile: str = DEFAULT_PROFILE_NAME,
         profile_caches: Callable[[], dict[str, Any]] | None = None,
+        history_max_frames: int = _HISTORY_MAX_FRAMES,
     ) -> None:
         self._adapter = adapter
         self._profile = profile
@@ -425,6 +437,9 @@ class EventBroadcaster:
         self._pump: asyncio.Task[None] | None = None
         self._generation_watch: asyncio.Task[None] | None = None
         self._seq = itertools.count(1)
+        # Recent numbered frames, oldest first, for `?after=` replay on a fresh subscribe.
+        self._history: deque[tuple[int, dict[str, Any], str]] = deque(maxlen=history_max_frames)
+        self._last_seq = 0
         self._max_queued_frames = max_queued_frames
         self._max_queued_bytes = max_queued_bytes
         self._live_handle_cache = live_handle_cache
@@ -446,13 +461,36 @@ class EventBroadcaster:
                 self._watch_generation(self._generation_poll_seconds)
             )
 
+    def _replay(self, after: int | None) -> tuple[list[tuple[dict[str, Any], str]], bool]:
+        """Frames newer than `after` to replay, and whether the buffer can't cover it."""
+        if after is None or after >= self._last_seq:
+            return [], False
+        if not self._history or self._history[0][0] > after + 1:
+            return [], True
+        return [(frame, text) for seq, frame, text in self._history if seq > after], False
+
     @asynccontextmanager
-    async def subscribe(self, *, encoded: bool = False) -> AsyncIterator[asyncio.Queue[Any]]:
-        """Register a private feed, guaranteed to be unregistered on exit."""
+    async def subscribe(
+        self, *, encoded: bool = False, after: int | None = None
+    ) -> AsyncIterator[asyncio.Queue[Any]]:
+        """Register a private feed, guaranteed to be unregistered on exit.
+
+        `after` replays buffered frames with a higher seq before going live; if the
+        buffer no longer covers `after`, a `stream.reset` frame is queued instead.
+        """
+        replay, needs_reset = self._replay(after)
         subscriber = _Subscriber(self._max_queued_frames, self._max_queued_bytes, encoded=encoded)
         self._subscribers.add(subscriber)
         self.start()
         try:
+            generation = self._connection_generation()
+            if needs_reset:
+                frame = stream_reset_frame(connection_generation=generation)
+                text = _encode_frame(frame)
+                subscriber.offer(frame, len(text.encode("utf-8")), generation, text)
+            else:
+                for frame, text in replay:
+                    subscriber.offer(frame, len(text.encode("utf-8")), generation, text)
             yield subscriber.queue
         finally:
             self._subscribers.discard(subscriber)
@@ -506,6 +544,10 @@ class EventBroadcaster:
         """Hand one already-bounded frame to every subscriber that can take it."""
         text = _encode_frame(frame)
         size = len(text.encode("utf-8"))
+        seq = frame.get("seq")
+        if isinstance(seq, int) and seq > 0:
+            self._history.append((seq, frame, text))
+            self._last_seq = seq
         for subscriber in list(self._subscribers):
             subscriber.offer(frame, size, generation, text)
 

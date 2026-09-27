@@ -663,7 +663,10 @@ class ProfileConnectionManager:
                     conn.profile,
                 )
         if self._chat_store is not None:
-            self._chat_store.capture_event(conn.profile, canonical, envelope)
+            chat_row_id = self._chat_store.capture_event(conn.profile, canonical, envelope)
+            # Add row id to payload before broadcast.
+            if chat_row_id is not None:
+                envelope = {**envelope, "payload": {**(envelope.get("payload") or {}), "chat_row_id": chat_row_id}}
         broadcaster = self._resolve_broadcaster()
         inject = getattr(broadcaster, "inject", None)
         if inject is not None:
