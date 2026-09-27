@@ -253,12 +253,20 @@ class ChatStore:
                 turn_id=turn_id,
             )
         if event_type == "message.completed":
+            # Some models carry the authoritative reasoning text under
+            # `reasoning_content` rather than `reasoning` -- the same fallback
+            # `transcript.py._measure_reasoning`, `SessionMessage.reasoningText`
+            # (app), and `hermes_state_reader.to_backfill_message` already
+            # apply. Without it here, this row's reasoning is silently dropped
+            # from the chat store -- the app's primary transcript source --
+            # even though it streamed live and Hermes's own transcript has it.
+            reasoning = payload.get("reasoning") or payload.get("reasoning_content")
             return self._write(
                 profile,
                 stored_id,
                 role="assistant",
                 text=payload.get("text"),
-                reasoning=payload.get("reasoning"),
+                reasoning=reasoning,
                 source="live",
                 turn_id=turn_id,
             )
