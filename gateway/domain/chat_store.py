@@ -21,6 +21,13 @@ CAPTURED_EVENT_TYPES: frozenset[str] = frozenset(
     {"message.interim", "tool.completed", "message.completed", "status.update"}
 )
 
+# Not rows of their own: their text is held per run and written onto the next assistant row.
+_REASONING_EVENT_TYPES: frozenset[str] = frozenset({"reasoning.delta"})
+# The keys a `reasoning.delta` payload carries its text under, in the app's order.
+_REASONING_TEXT_KEYS: tuple[str, ...] = ("text", "delta", "reasoning", "content", "chunk")
+# Runs whose reasoning is held at once; an abandoned run's buffer is evicted oldest-first.
+_MAX_REASONING_BUFFERS = 64
+
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
 _LIFECYCLE_STATUS_KIND = "lifecycle"
 
@@ -92,6 +99,8 @@ class ChatStore:
 
     def __init__(self, session_factory: sessionmaker[OrmSession]) -> None:
         self._session_factory = session_factory
+        # Streamed reasoning not yet written to a row, keyed by (profile, stored session, run).
+        self._reasoning: dict[tuple[str, str, str | None], str] = {}
 
 
     def capture_submitted_user_row(
@@ -214,7 +223,7 @@ class ChatStore:
 
     def _capture(self, profile: str, canonical: Any, envelope: dict[str, Any]) -> str | None:
         event_type = getattr(canonical, "type", None)
-        if event_type not in CAPTURED_EVENT_TYPES:
+        if event_type not in CAPTURED_EVENT_TYPES and event_type not in _REASONING_EVENT_TYPES:
             return None
 
         payload = envelope.get("payload") if isinstance(envelope, dict) else None
@@ -230,13 +239,19 @@ class ChatStore:
 
         # The run recorder stamps this id onto the envelope and must run before this capture.
         turn_id = _turn_id(envelope)
+        buffer_key = (profile, stored_id, turn_id)
 
+        if event_type in _REASONING_EVENT_TYPES:
+            self._hold_reasoning(buffer_key, payload)
+            return None
         if event_type == "message.interim":
+            # The reasoning streamed before this segment belongs to it, as the app shows it live.
             return self._write(
                 profile,
                 stored_id,
                 role="assistant",
                 text=payload.get("text"),
+                reasoning=self._reasoning.pop(buffer_key, None),
                 source="live",
                 turn_id=turn_id,
             )
@@ -260,7 +275,10 @@ class ChatStore:
             # apply. Without it here, this row's reasoning is silently dropped
             # from the chat store -- the app's primary transcript source --
             # even though it streamed live and Hermes's own transcript has it.
-            reasoning = payload.get("reasoning") or payload.get("reasoning_content")
+            # A model that only streams its reasoning as `reasoning.delta` leaves both keys
+            # empty; the text held from those frames is the row's reasoning then.
+            streamed = self._reasoning.pop(buffer_key, None)
+            reasoning = payload.get("reasoning") or payload.get("reasoning_content") or streamed
             return self._write(
                 profile,
                 stored_id,
@@ -285,6 +303,20 @@ class ChatStore:
                 turn_id=turn_id,
             )
         return None  # pragma: no cover - CAPTURED_EVENT_TYPES is exhaustive above
+
+    def _hold_reasoning(self, key: tuple[str, str, str | None], payload: dict[str, Any]) -> None:
+        """Append one `reasoning.delta`'s text to its run's held reasoning."""
+        text = next(
+            (v for k in _REASONING_TEXT_KEYS if isinstance(v := payload.get(k), str) and v),
+            None,
+        )
+        if text is None:
+            return
+        if key not in self._reasoning:
+            while len(self._reasoning) >= _MAX_REASONING_BUFFERS:
+                del self._reasoning[next(iter(self._reasoning))]
+            self._reasoning[key] = ""
+        self._reasoning[key] += text
 
     def _write(
         self,
