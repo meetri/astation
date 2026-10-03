@@ -10,6 +10,13 @@ from typing import Any
 # clear it), 11 frames per turn against 945 real reasoning tokens. Folding
 RAW_TO_CANONICAL_TYPE: dict[str, str] = {
     "background.complete": "background.completed",
+    "subagent.start": "subagent.started",
+    "subagent.tool": "subagent.tool",
+    "subagent.progress": "subagent.progress",
+    "subagent.thinking": "subagent.thinking",
+    "subagent.complete": "subagent.completed",
+    "agent.terminal.output": "process.output",
+    "terminal.close": "process.closed",
     "message.start": "message.started",
     "message.delta": "message.delta",
     "message.interim": "message.interim",
@@ -70,6 +77,14 @@ DELIBERATELY_DROPPED_RAW_EVENTS: dict[str, str] = {
         "process-local handles this workspace never stores (PROTOCOL_VERIFIED.md, "
         "two id spaces) and is self-healed by LiveHandleCache's [4001] path (B-01), "
         "so a client has nothing to do with it."
+    ),
+    "subagent.text": (
+        "the child's per-token reply. Hermes never emits it on the parent "
+        "session (tui_gateway/tool_progress.py skips the parent emit: 'hundreds "
+        "of ignored frames'); it feeds only a lazy watch window opened on the "
+        "child's own session, where it arrives as ordinary message.delta. If a "
+        "later build did relay it here it would be a token stream with no row "
+        "to land in -- the child's summary arrives whole on subagent.complete."
     ),
     "reasoning.available": (
         "its payload contradicts its name and would corrupt the reasoning pane. "

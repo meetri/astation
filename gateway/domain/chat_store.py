@@ -12,13 +12,21 @@ from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
 from .models import ChatMessage, new_id, utcnow
+from .watch_sessions import watched
 
 logger = logging.getLogger(__name__)
 
 _STORED_SESSION_ID_FIELD = "_stored_session_id"
 
 CAPTURED_EVENT_TYPES: frozenset[str] = frozenset(
-    {"message.interim", "tool.completed", "message.completed", "status.update"}
+    {
+        "message.interim",
+        "tool.completed",
+        "message.completed",
+        "status.update",
+        "subagent.started",
+        "subagent.completed",
+    }
 )
 
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
@@ -30,6 +38,8 @@ MEMORY_RECALL_MARKER = "Hindsight"
 NOTICE_KIND_COMPACTED = "compacted"
 NOTICE_KIND_MEMORY = "memory"
 NOTICE_KIND_PROCESS = "process"
+NOTICE_KIND_SUBAGENT = "subagent"
+ROLE_SUBAGENT = "subagent"
 
 _MAX_SEQ_RETRIES = 5
 
@@ -44,6 +54,8 @@ def _turn_id(envelope: Any) -> str | None:
 
 def notice_kind(row: ChatMessage) -> str | None:
     """Which notice a `marker` row is, for the app to render without re-parsing."""
+    if row.role == ROLE_SUBAGENT:
+        return NOTICE_KIND_SUBAGENT
     if row.role != "marker":
         return None
     if row.compacted:
@@ -76,6 +88,25 @@ def _row_dict(row: ChatMessage) -> dict[str, Any]:
         if row.created_at.tzinfo is not None
         else row.created_at.isoformat() + "Z",
     }
+
+
+def subagent_row_text(event_type: str, payload: dict[str, Any]) -> str:
+    """The one-line text of a `subagent` row, for a client that knows only
+    the row's text (an older app build renders an unknown role as a plain
+    system line). The structured payload is on `tool_args`."""
+    goal = payload.get("goal")
+    goal = goal.strip() if isinstance(goal, str) else ""
+    if event_type == "subagent.started":
+        return f"Subagent started: {goal}" if goal else "Subagent started"
+    status = payload.get("status")
+    status = status.strip() if isinstance(status, str) and status.strip() else "finished"
+    line = f"Subagent {status}"
+    if goal:
+        line += f": {goal}"
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        line += f" — {summary.strip()}"
+    return line
 
 
 def _is_captured_notice(kind: Any, text: Any) -> bool:
@@ -226,6 +257,8 @@ class ChatStore:
         stored_id = payload.get(_STORED_SESSION_ID_FIELD)
         if not isinstance(stored_id, str) or not stored_id:
             return None
+        if watched.is_watched(stored_id):
+            return None
 
 
         # The run recorder stamps this id onto the envelope and must run before this capture.
@@ -274,6 +307,22 @@ class ChatStore:
                 text=text,
                 source="live",
                 compacted=kind == "compacted",
+                turn_id=turn_id,
+            )
+        if event_type in ("subagent.started", "subagent.completed"):
+            subagent_id = payload.get("subagent_id")
+            if not isinstance(subagent_id, str) or not subagent_id:
+                return None
+            phase = "start" if event_type == "subagent.started" else "complete"
+            return self._write(
+                profile,
+                stored_id,
+                role=ROLE_SUBAGENT,
+                text=subagent_row_text(event_type, payload),
+                tool_name="delegate_task",
+                tool_call_id=f"{subagent_id}#{phase}",
+                tool_args_json={k: v for k, v in payload.items() if not str(k).startswith("_")},
+                source="live",
                 turn_id=turn_id,
             )
         return None  # pragma: no cover - CAPTURED_EVENT_TYPES is exhaustive above

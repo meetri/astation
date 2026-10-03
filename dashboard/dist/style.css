@@ -1,0 +1,40 @@
+/* Agent Station dashboard tab. Every class is astation-prefixed: this sheet is
+   injected into the whole dashboard, not scoped to the tab. Colours follow the
+   host theme through currentColor. */
+.astation { display: flex; flex-direction: column; gap: 1rem; }
+.astation-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; }
+.astation-metric { padding-top: 1rem; }
+.astation-metric-value { font-size: 2rem; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.astation-metric-label { font-size: 0.8rem; opacity: 0.65; margin-top: 0.25rem; }
+.astation-project { border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.astation-project:first-child { border-top: 0; }
+.astation-project-head { display: flex; align-items: center; gap: 0.5rem; }
+.astation-form { display: grid; gap: 0.4rem; padding: 1rem; }
+.astation-form label { margin-top: 0.4rem; }
+.astation-textarea {
+  width: 100%; resize: vertical; padding: 0.5rem; font: inherit; color: inherit;
+  background: transparent; border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.375rem;
+}
+.astation-project-row {
+  display: flex; align-items: center; gap: 0.6rem; flex: 1; min-width: 0; padding: 0.6rem 0.25rem;
+  background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.astation-project-row:hover { background: color-mix(in srgb, currentColor 5%, transparent); }
+.astation-caret { width: 1em; opacity: 0.6; }
+.astation-project-title { font-weight: 500; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.astation-count { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.astation-sessions { padding: 0 0 0.5rem 1.6rem; }
+.astation-session { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; }
+.astation-session + .astation-session { border-top: 1px dashed color-mix(in srgb, currentColor 10%, transparent); }
+.astation-session-main { flex: 1; min-width: 0; }
+.astation-session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.astation-link { display: block; color: inherit; text-decoration: none; }
+.astation-link:hover { text-decoration: underline; }
+.astation-muted { opacity: 0.6; }
+.astation-small { font-size: 0.78rem; }
+.astation-pad { padding: 0.5rem 0; }
+.astation-error { color: #d9534f; }
+@media (max-width: 640px) {
+  .astation-project-row .astation-small { display: none; }
+}

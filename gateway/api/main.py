@@ -19,6 +19,7 @@ from api.attachments import attachment_serve_router, attachments_router
 from api.audit import audit_router
 from api.auth import require_basic_auth, websocket_client_is_authorized
 from api.background import background_router
+from api.background_work import background_work_router
 from api.bootstrap import _profile_adapter_factory, shutdown, startup  # noqa: F401
 from api.chat import chat_router
 from api.commands import commands_router
@@ -45,6 +46,7 @@ from api.sandbox import sandbox_router
 from api.sandbox_text import sandbox_text_router
 from api.sessions import sessions_router
 from api.speak import speak_router
+from api.subagents import subagents_router
 from api.transcribe import transcribe_router
 from config.settings import get_settings
 
@@ -129,6 +131,10 @@ api.include_router(sessions_router)
 api.include_router(projects_router)
 
 api.include_router(prompts_router)
+
+api.include_router(subagents_router)
+
+api.include_router(background_work_router)
 
 api.include_router(background_router)
 

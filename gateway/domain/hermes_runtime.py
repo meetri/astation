@@ -31,6 +31,7 @@ from adapters.hermes import (
     HermesRPCError,
 )
 from domain.live_handles import LiveHandleCache
+from domain.watch_sessions import watched
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +317,7 @@ async def _resume_for_live_id(
     stored_session_id: str,
     cache: LiveHandleCache | None = None,
     profile: str | None = None,
+    lazy: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Given a STORED session id, return `(live_handle, raw_resume_result)`.
 
@@ -342,6 +344,11 @@ async def _resume_for_live_id(
 
     # A bare resume searches only the connection's own profile store; another's is "not found".
     extra = {"profile": profile} if profile and profile != "default" else {}
+    if lazy:
+        extra["lazy"] = True
+        watched.watch(stored_session_id)
+    else:
+        watched.unwatch(stored_session_id)
     result = await adapter.resume_session(stored_session_id, **extra)
     live_id = HermesAdapter.live_id_from_resume(result)
     if cache is not None:

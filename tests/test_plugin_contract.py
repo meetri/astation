@@ -29,11 +29,13 @@ def _load_entry(monkeypatch, home: Path):
 class FakeCtx:
     """Stands in for Hermes's PluginContext."""
 
-    def __init__(self, reject: set[str] | None = None):
+    def __init__(self, reject: set[str] | None = None, reject_skill: bool = False):
         self.hooks: dict[str, object] = {}
         self.cli: list[str] = []
+        self.skills: dict[str, Path] = {}
         self.profile_name = "default"
         self._reject = reject or set()
+        self._reject_skill = reject_skill
 
     def register_hook(self, name, callback):
         if name in self._reject:
@@ -42,6 +44,11 @@ class FakeCtx:
 
     def register_cli_command(self, name, help, setup_fn, handler_fn=None, description=""):
         self.cli.append(name)
+
+    def register_skill(self, name, path, description=""):
+        if self._reject_skill:
+            raise AttributeError("skill registration unavailable")
+        self.skills[name] = Path(path)
 
 
 def test_plugin_yaml_is_valid_and_declares_no_capabilities():
@@ -62,6 +69,16 @@ def test_dashboard_manifest_points_at_an_existing_api_file():
     api = manifest.get("api")
     assert api, "manifest must declare `api` or Hermes mounts no routes"
     assert (PLUGIN_DIR / "dashboard" / api).exists()
+
+
+def test_dashboard_tab_bundle_exists_and_registers_under_its_own_name():
+    """A manifest tab whose `entry` is missing renders "could not load this plugin's script"."""
+    manifest = json.loads((PLUGIN_DIR / "dashboard" / "manifest.json").read_text())
+    for key in ("entry", "css"):
+        assert (PLUGIN_DIR / "dashboard" / manifest[key]).is_file(), f"{key} {manifest[key]!r} missing"
+    source = (PLUGIN_DIR / "dashboard" / manifest["entry"]).read_text()
+    assert "data-hermes-plugin" in source
+    assert "__HERMES_PLUGINS__" in source and ".register(NAME" in source
 
 
 def test_plugin_api_exposes_a_module_level_router():
@@ -117,6 +134,35 @@ def test_every_publish_path_ships_every_module(script):
 
 
 @_upstream_only
+@pytest.mark.parametrize("script", sorted(_PUBLISH_SCRIPTS))
+def test_every_publish_path_ships_plugin_skills(script):
+    text = _publish_script(script)
+    assert "plugin/skills" in text, (
+        f"{script} does not ship plugin/skills to {_PUBLISH_SCRIPTS[script]}; "
+        "register_skill would fail only after deployment"
+    )
+
+
+@_upstream_only
+def test_host_deploy_is_immutable_atomic_and_verifies_every_profile():
+    deploy = _publish_script("deploy_plugin.sh")
+    activate = _publish_script("activate_plugin_release.sh")
+    assert "git archive HEAD" in deploy
+    assert "plugin-deployments/$PLUGIN_NAME" in deploy
+    assert "SOURCE_SHA=$(git rev-parse HEAD)" in deploy
+    assert "BUNDLE_SHA256=$(sha256sum" in deploy
+    assert ".bundle.sha256" in deploy
+    assert "exchange_paths" in activate
+    assert "RENAME_EXCHANGE" in activate
+    assert "trap rollback EXIT" in activate
+    assert "exit \\$status" in deploy
+    assert "test -f \"$link/skills/astation/SKILL.md\"" in activate
+    assert "rm -rf $DATA/plugins/$PLUGIN_NAME" not in deploy
+    assert "ln -sfn" not in deploy
+    assert "cp -R plugin/" not in deploy
+
+
+@_upstream_only
 def test_the_public_repo_ships_the_audit_stack():
     """Half the audit feature is plugin code and the other half is the sensor,
     shipper and store it talks to. Someone installing the published plugin and
@@ -156,6 +202,31 @@ def test_register_registers_every_capture_hook(tmp_path, monkeypatch):
     assert set(ctx.hooks) == set(mod.CAPTURE_HOOKS)
     assert mod.failed_hooks == {}
     assert "trg" in ctx.cli
+    assert set(ctx.skills) == {"astation"}
+    assert ctx.skills["astation"] == PLUGIN_DIR / "skills" / "astation" / "SKILL.md"
+
+
+def test_astation_skill_encodes_mobile_workspace_and_artifact_contract():
+    skill = (PLUGIN_DIR / "skills" / "astation" / "SKILL.md").read_text()
+    assert skill.startswith("---\nname: astation\n")
+    assert "current workspace" in skill
+    assert "<workspace>/tmp/" in skill
+    assert "never `/tmp`" in skill
+    assert "absolute path" in skill
+    assert "language-labelled fenced code" in skill
+    assert "MEDIA:/absolute/path/to/file" in skill
+    assert "Verify that the file exists" in skill
+    assert "detects changed workspace files automatically" in skill
+    assert "Prefer `write_file`" not in skill
+
+
+def test_register_survives_a_build_without_plugin_skills(tmp_path, monkeypatch):
+    mod = _load_entry(monkeypatch, tmp_path)
+    ctx = FakeCtx(reject_skill=True)
+    mod.register(ctx)
+    assert ctx.skills == {}
+    assert "astation" in mod.failed_skills
+    assert set(ctx.hooks) == set(mod.CAPTURE_HOOKS)
 
 
 def test_register_survives_a_hook_name_this_build_rejects(tmp_path, monkeypatch):
@@ -173,6 +244,8 @@ def test_register_writes_a_status_file_readable_by_the_routes(tmp_path, monkeypa
     status = json.loads(mod.status_path().read_text())
     assert status["registered_hooks"] == list(mod.CAPTURE_HOOKS)
     assert status["failed_hooks"] == {}
+    assert status["registered_skills"] == ["astation"]
+    assert status["failed_skills"] == {}
 
 
 def test_hook_callbacks_never_raise(tmp_path, monkeypatch):

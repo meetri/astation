@@ -39,7 +39,7 @@ from domain.instance_config import (
     _instance_config_cache,
 )
 from domain.models import Project, Run
-from domain.snapshot_builder import SnapshotStorageError, take_snapshot
+from domain.snapshot_builder import SnapshotStorageError, _profile_for, take_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -373,7 +373,9 @@ def _file_fork_with_its_parent(
     return summary
 
 
-def _cleanup_workspace_filing(db: OrmSession, stored_id: str) -> dict[str, Any]:
+def _cleanup_workspace_filing(
+    db: OrmSession, stored_id: str, profile: str | None = None
+) -> dict[str, Any]:
     """Drop the workspace's own row for a session Hermes no longer has."""
     summary: dict[str, Any] = {
         "workspace_filing_deleted": False,
@@ -383,7 +385,7 @@ def _cleanup_workspace_filing(db: OrmSession, stored_id: str) -> dict[str, Any]:
         "workspace_cleanup_error": None,
     }
     try:
-        filing = _find_filing(db, HERMES_RUNTIME, stored_id)
+        filing = _find_filing(db, HERMES_RUNTIME, stored_id, profile=profile)
         if filing is None:
             return summary
         summary["workspace_session_id"] = filing.id
@@ -417,6 +419,8 @@ async def delete_session(
 ) -> dict:
     """**Delete one session from Hermes's own store -- after copying it.**"""
     stored_id = _validate_stored_session_id_for_argv(stored_session_id)
+    if not profile or profile == "default":
+        profile = _profile_for(stored_id, db)
     profile_argv = ["-p", profile] if profile and profile != "default" else []
     argv = [*profile_argv, *HERMES_SESSIONS_DELETE_ARGV, stored_id, HERMES_ASSUME_YES]
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
@@ -475,7 +479,7 @@ async def delete_session(
 
     logger.warning("DELETED Hermes session %s from the instance", stored_id)
     live_handle_closed = await _close_live_handle(request.app.state, adapter, cache, stored_id)
-    cleanup = _cleanup_workspace_filing(db, stored_id)
+    cleanup = _cleanup_workspace_filing(db, stored_id, profile)
     return {
         "stored_session_id": stored_id,
         "deleted": True,

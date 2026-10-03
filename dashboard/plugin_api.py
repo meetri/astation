@@ -91,6 +91,7 @@ else:
         from api.attachments import attachment_serve_router, attachments_router
         from api.audit import audit_router
         from api.background import background_router
+        from api.background_work import background_work_router
         from api.chat import chat_router
         from api.commands import commands_router
         from api.compress import compress_router
@@ -109,6 +110,7 @@ else:
         from api.snapshot_sweep import snapshot_sweep_router
         from api.snapshots import snapshots_router
         from api.speak import speak_router
+        from api.subagents import subagents_router
         from api.transcribe import transcribe_router
 
         # Mount order sets route precedence; it matches api/main.py and must not be re-sorted.
@@ -116,6 +118,8 @@ else:
             (sessions_router, "sessions"),
             (projects_router, "projects"),
             (prompts_router, "prompts"),
+            (subagents_router, "subagents"),
+            (background_work_router, "background_work"),
             (background_router, "background"),
             (runs_router, "runs"),
             (commands_router, "commands"),
