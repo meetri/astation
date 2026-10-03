@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -11,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
-from .models import ChatMessage, new_id, utcnow
+from .models import ChatMessage, ReasoningArchive, new_id, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,15 @@ _REASONING_EVENT_TYPES: frozenset[str] = frozenset({"reasoning.delta"})
 _REASONING_TEXT_KEYS: tuple[str, ...] = ("text", "delta", "reasoning", "content", "chunk")
 # Runs whose reasoning is held at once; an abandoned run's buffer is evicted oldest-first.
 _MAX_REASONING_BUFFERS = 64
+# A tool call ends a model step: the reasoning held for that step is written before it.
+_STEP_END_EVENT_TYPES: frozenset[str] = frozenset({"tool.started"})
+# A streaming step's archive row is rewritten at most this often, or once this much is unwritten.
+_ARCHIVE_FLUSH_INTERVAL_S = 2.0
+_ARCHIVE_FLUSH_CHARS = 8192
+
+ARCHIVE_SOURCE_STREAM = "stream"
+ARCHIVE_SOURCE_PAYLOAD = "payload"
+ARCHIVE_SOURCE_HERMES = "hermes"
 
 _MARKER_STATUS_KINDS: frozenset[str] = frozenset({"compacted", "process"})
 _LIFECYCLE_STATUS_KIND = "lifecycle"
@@ -85,6 +97,14 @@ def _row_dict(row: ChatMessage) -> dict[str, Any]:
     }
 
 
+def _iso(value: Any) -> str:
+    return (
+        value.isoformat().replace("+00:00", "Z")
+        if value.tzinfo is not None
+        else value.isoformat() + "Z"
+    )
+
+
 def _is_captured_notice(kind: Any, text: Any) -> bool:
     """Whether a `status.update` earns a marker row (B-191, module docstring)."""
     if kind in _MARKER_STATUS_KINDS:
@@ -94,13 +114,59 @@ def _is_captured_notice(kind: Any, text: Any) -> bool:
     return False
 
 
+_BufferKey = tuple[str, str, str | None]
+
+
+@dataclass
+class _ArchiveCursor:
+    """Where one streaming step's reasoning sits in `reasoning_archive`."""
+
+    step: int
+    row_id: str | None = None
+    flushed_chars: int = 0
+    flushed_at: float = 0.0
+
+
+def _contains(outer: str, inner: str) -> bool:
+    """Whether `inner` is part of `outer`, ignoring surrounding whitespace."""
+    return inner.strip() in outer
+
+
+def final_reasoning(streamed: str | None, payload: str | None, spent: list[str]) -> str | None:
+    """The reasoning a turn's final row keeps, from what streamed and what `message.completed` says.
+
+    Hermes's payload carries only the turn's most recent non-empty reasoning block, which can be
+    a block already written onto an earlier step's row; repeating it would show it twice. When
+    one text holds the other, the longer wins; otherwise the payload is authoritative.
+    """
+    streamed = streamed if streamed and streamed.strip() else None
+    payload = payload if payload and payload.strip() else None
+    if payload is None:
+        return streamed
+    if streamed is None:
+        if any(spent_text.strip() == payload.strip() for spent_text in spent):
+            return None
+        return payload
+    if _contains(streamed, payload):
+        return streamed
+    return payload
+
+
 class ChatStore:
     """The durable chat-history read/write surface (`chat_messages`)."""
 
     def __init__(self, session_factory: sessionmaker[OrmSession]) -> None:
         self._session_factory = session_factory
         # Streamed reasoning not yet written to a row, keyed by (profile, stored session, run).
-        self._reasoning: dict[tuple[str, str, str | None], str] = {}
+        self._reasoning: dict[_BufferKey, str] = {}
+        # Reasoning already written to a row this turn, so the final payload is not written twice.
+        self._spent: dict[_BufferKey, list[str]] = {}
+        # Each held buffer's archive row; the step counter outlives it until the turn completes.
+        self._archive: dict[_BufferKey, _ArchiveCursor] = {}
+        self._steps: dict[_BufferKey, int] = {}
+        self._archive_failed_logged = False
+        # Called with (profile, stored session id) once a turn's final row is written.
+        self.on_turn_completed: Callable[[str, str], None] | None = None
 
 
     def capture_submitted_user_row(
@@ -223,7 +289,11 @@ class ChatStore:
 
     def _capture(self, profile: str, canonical: Any, envelope: dict[str, Any]) -> str | None:
         event_type = getattr(canonical, "type", None)
-        if event_type not in CAPTURED_EVENT_TYPES and event_type not in _REASONING_EVENT_TYPES:
+        if (
+            event_type not in CAPTURED_EVENT_TYPES
+            and event_type not in _REASONING_EVENT_TYPES
+            and event_type not in _STEP_END_EVENT_TYPES
+        ):
             return None
 
         payload = envelope.get("payload") if isinstance(envelope, dict) else None
@@ -244,17 +314,31 @@ class ChatStore:
         if event_type in _REASONING_EVENT_TYPES:
             self._hold_reasoning(buffer_key, payload)
             return None
+        if event_type in _STEP_END_EVENT_TYPES:
+            # A step that called a tool without writing any text has no `message.interim` to
+            # carry its reasoning, so it gets a reasoning-only row of its own, as the app draws
+            # it live. Not returned: the id would stamp the tool frame with another row's id.
+            held = self._reasoning.get(buffer_key)
+            if held and held.strip():
+                row_id = self._write(
+                    profile, stored_id, role="assistant", text="", reasoning=held,
+                    source="live", turn_id=turn_id,
+                )
+                self._spend(buffer_key, row_id)
+            return None
         if event_type == "message.interim":
             # The reasoning streamed before this segment belongs to it, as the app shows it live.
-            return self._write(
+            row_id = self._write(
                 profile,
                 stored_id,
                 role="assistant",
                 text=payload.get("text"),
-                reasoning=self._reasoning.pop(buffer_key, None),
+                reasoning=self._reasoning.get(buffer_key),
                 source="live",
                 turn_id=turn_id,
             )
+            self._spend(buffer_key, row_id)
+            return row_id
         if event_type == "tool.completed":
             return self._write(
                 profile,
@@ -277,9 +361,11 @@ class ChatStore:
             # even though it streamed live and Hermes's own transcript has it.
             # A model that only streams its reasoning as `reasoning.delta` leaves both keys
             # empty; the text held from those frames is the row's reasoning then.
-            streamed = self._reasoning.pop(buffer_key, None)
-            reasoning = payload.get("reasoning") or payload.get("reasoning_content") or streamed
-            return self._write(
+            streamed = self._reasoning.get(buffer_key)
+            claimed = payload.get("reasoning") or payload.get("reasoning_content")
+            claimed = claimed if isinstance(claimed, str) else None
+            reasoning = final_reasoning(streamed, claimed, self._spent.get(buffer_key, []))
+            row_id = self._write(
                 profile,
                 stored_id,
                 role="assistant",
@@ -288,6 +374,26 @@ class ChatStore:
                 source="live",
                 turn_id=turn_id,
             )
+            spent = self._spent.get(buffer_key, [])
+            self._spend(buffer_key, row_id)
+            if (
+                claimed
+                and claimed.strip()
+                and not _contains(streamed or "", claimed)
+                and not any(text.strip() == claimed.strip() for text in spent)
+            ):
+                # The payload's own text, kept even where the stream's text was chosen over it.
+                self._archive_text(
+                    profile, stored_id, turn_id, claimed, source=ARCHIVE_SOURCE_PAYLOAD,
+                    chat_message_id=row_id,
+                )
+            self._end_turn(buffer_key)
+            if self.on_turn_completed is not None:
+                try:
+                    self.on_turn_completed(profile, stored_id)
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception("turn-completed hook failed for session %r", stored_id)
+            return row_id
         if event_type == "status.update":
             kind = payload.get("kind")
             text = payload.get("text")
@@ -304,7 +410,7 @@ class ChatStore:
             )
         return None  # pragma: no cover - CAPTURED_EVENT_TYPES is exhaustive above
 
-    def _hold_reasoning(self, key: tuple[str, str, str | None], payload: dict[str, Any]) -> None:
+    def _hold_reasoning(self, key: _BufferKey, payload: dict[str, Any]) -> None:
         """Append one `reasoning.delta`'s text to its run's held reasoning."""
         text = next(
             (v for k in _REASONING_TEXT_KEYS if isinstance(v := payload.get(k), str) and v),
@@ -314,9 +420,157 @@ class ChatStore:
             return
         if key not in self._reasoning:
             while len(self._reasoning) >= _MAX_REASONING_BUFFERS:
-                del self._reasoning[next(iter(self._reasoning))]
+                evicted = next(iter(self._reasoning))
+                # Abandoned, not lost: its archive row keeps everything that streamed.
+                self._flush_archive(evicted, force=True)
+                self._forget(evicted)
             self._reasoning[key] = ""
         self._reasoning[key] += text
+        self._flush_archive(key, force=False)
+
+    def _spend(self, key: _BufferKey, row_id: str | None) -> None:
+        """The held reasoning is on a row now: seal its archive row and start the next step."""
+        held = self._reasoning.pop(key, None)
+        if held is None:
+            return
+        self._flush_archive(key, force=True, held=held, sealed=True, chat_message_id=row_id)
+        self._archive.pop(key, None)
+        self._steps[key] = self._steps.get(key, 0) + 1
+        if held.strip():
+            spent = self._spent.setdefault(key, [])
+            spent.append(held)
+            while len(self._spent) > _MAX_REASONING_BUFFERS:
+                del self._spent[next(iter(self._spent))]
+
+    def _end_turn(self, key: _BufferKey) -> None:
+        self._spent.pop(key, None)
+        self._steps.pop(key, None)
+
+    def _forget(self, key: _BufferKey) -> None:
+        self._reasoning.pop(key, None)
+        self._archive.pop(key, None)
+        self._end_turn(key)
+
+    def _flush_archive(
+        self,
+        key: _BufferKey,
+        *,
+        force: bool,
+        held: str | None = None,
+        sealed: bool = False,
+        chat_message_id: str | None = None,
+    ) -> None:
+        """Write a step's streamed reasoning to `reasoning_archive`, at most every few seconds."""
+        text = held if held is not None else self._reasoning.get(key)
+        if not text:
+            return
+        cursor = self._archive.get(key)
+        if cursor is None:
+            cursor = self._archive[key] = _ArchiveCursor(step=self._steps.get(key, 0))
+        now = time.monotonic()
+        unwritten = len(text) - cursor.flushed_chars
+        if not force and (
+            unwritten < _ARCHIVE_FLUSH_CHARS
+            and cursor.row_id is not None
+            and now - cursor.flushed_at < _ARCHIVE_FLUSH_INTERVAL_S
+        ):
+            return
+        if unwritten == 0 and not sealed:
+            return
+        profile, stored_id, turn_id = key
+        try:
+            with self._session_factory() as db:
+                row = db.get(ReasoningArchive, cursor.row_id) if cursor.row_id else None
+                if row is None:
+                    row = ReasoningArchive(
+                        id=new_id("ra"),
+                        profile=profile,
+                        stored_session_id=stored_id,
+                        turn_id=turn_id,
+                        step=cursor.step,
+                        source=ARCHIVE_SOURCE_STREAM,
+                        text=text,
+                        created_at=utcnow(),
+                    )
+                    db.add(row)
+                row.text = text
+                row.sealed = sealed
+                if chat_message_id is not None:
+                    row.chat_message_id = chat_message_id
+                row.updated_at = utcnow()
+                db.commit()
+                cursor.row_id = row.id
+        except Exception:
+            # The archive is a second copy: failing it must never cost the chat row itself.
+            if not self._archive_failed_logged:
+                self._archive_failed_logged = True
+                logger.exception("reasoning archive write failed; chat capture continues")
+            return
+        cursor.flushed_chars = len(text)
+        cursor.flushed_at = now
+
+    def _archive_text(
+        self,
+        profile: str,
+        stored_id: str,
+        turn_id: str | None,
+        text: str,
+        *,
+        source: str,
+        chat_message_id: str | None = None,
+    ) -> None:
+        """One finished reasoning body into `reasoning_archive`, best-effort."""
+        try:
+            with self._session_factory() as db:
+                db.add(
+                    ReasoningArchive(
+                        id=new_id("ra"),
+                        profile=profile,
+                        stored_session_id=stored_id,
+                        turn_id=turn_id,
+                        source=source,
+                        chat_message_id=chat_message_id,
+                        text=text,
+                        sealed=True,
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
+                    )
+                )
+                db.commit()
+        except Exception:
+            if not self._archive_failed_logged:
+                self._archive_failed_logged = True
+                logger.exception("reasoning archive write failed; chat capture continues")
+
+    def reasoning_archive(self, *, profile: str, stored_session_id: str) -> list[dict[str, Any]]:
+        """Every archived reasoning body for one session, oldest first."""
+        with self._session_factory() as db:
+            rows = list(
+                db.execute(
+                    select(ReasoningArchive)
+                    .where(
+                        ReasoningArchive.profile == profile,
+                        ReasoningArchive.stored_session_id == stored_session_id,
+                    )
+                    .order_by(ReasoningArchive.created_at.asc(), ReasoningArchive.step.asc())
+                ).scalars().all()
+            )
+        return [
+            {
+                "id": row.id,
+                "turn_id": row.turn_id,
+                "step": row.step,
+                "source": row.source,
+                "hermes_row_id": row.hermes_row_id,
+                "chat_message_id": row.chat_message_id,
+                "sealed": bool(row.sealed),
+                "chars": len(row.text),
+                "text": row.text,
+                "created_at": _iso(row.created_at),
+                "updated_at": _iso(row.updated_at),
+            }
+            for row in rows
+        ]
 
     def _write(
         self,

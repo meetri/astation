@@ -38,6 +38,7 @@ from domain.hermes_runtime import (
 )
 from domain.live_handles import LiveHandleCache
 from domain.project_workspace import instructions_file_exists
+from domain.reasoning_reconcile import reconcile_reasoning
 from domain.project_workspace import workspace_dir as project_workspace_dir
 from domain.sandbox_fs import sandbox_fs_for
 from domain.tool_result_backfill import attach_captured_results
@@ -72,6 +73,19 @@ def _attach_captured_tool_results(
         return 0
 
 
+def _reconcile_reasoning(app_state: Any, profile: str, stored_id: str, messages: Any) -> None:
+    """Archive the transcript's reasoning and fill the chat rows that lost theirs.
+
+    Best-effort by the same contract as the tool results above."""
+    session_factory = getattr(app_state, "db_sessions", None)
+    if session_factory is None:
+        return
+    try:
+        reconcile_reasoning(session_factory, profile or "default", stored_id, messages)
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("could not reconcile reasoning; transcript served without it")
+
+
 def _finish_transcript(
     app_state: Any, profile: str, stored_id: str, messages: Any, *, light: bool
 ) -> tuple[int, Any]:
@@ -80,6 +94,7 @@ def _finish_transcript(
     Returns `(background rows appended, projected messages)`.
     """
     _attach_captured_tool_results(app_state, profile, stored_id, messages)
+    _reconcile_reasoning(app_state, profile, stored_id, messages)
     added = append_finished_background_results(app_state, stored_id, messages)
     return added, _project_transcript(messages, light=light)
 

@@ -47,3 +47,21 @@ async def session_chat(
         "limit": limit,
         "messages": rows,
     }
+
+
+@chat_router.get("/sessions/{stored_session_id}/reasoning")
+async def session_reasoning_archive(
+    stored_session_id: str,
+    request: Request,
+    profile: str = Query(default=DEFAULT_PROFILE),
+) -> dict[str, Any]:
+    """Every reasoning body archived for a session: each streamed step and each Hermes row."""
+    stored_id = _validate_stored_session_id(stored_session_id)
+    chat_store: ChatStore = request.app.state.chat_store
+    try:
+        entries = await asyncio.to_thread(
+            chat_store.reasoning_archive, profile=profile, stored_session_id=stored_id
+        )
+    except OperationalError as exc:
+        raise schema_missing_error() from exc
+    return {"stored_session_id": stored_id, "profile": profile, "entries": entries}

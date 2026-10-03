@@ -163,3 +163,128 @@ def test_held_reasoning_is_spent_once(chat_store: ChatStore) -> None:
     first, second = _rows(chat_store)
     assert first["reasoning"] == "once"
     assert second["reasoning"] is None
+
+
+# --- Multi-step turns: every step's reasoning is kept ------------------------------------------
+
+
+def test_each_tool_step_keeps_its_own_reasoning(chat_store: ChatStore) -> None:
+    """The bug: Hermes's `message.complete` repeats only the turn's last reasoning block, and
+    it used to replace everything streamed across the turn's earlier tool-call steps."""
+    _capture(chat_store, "reasoning.delta", {"text": "step one thinking"})
+    _capture(chat_store, "tool.started", {"tool_id": "t1", "name": "read"})
+    _capture(chat_store, "tool.completed", {"tool_id": "t1", "name": "read", "result": "x"})
+    _capture(chat_store, "reasoning.delta", {"text": "step two thinking"})
+    _capture(chat_store, "tool.started", {"tool_id": "t2", "name": "grep"})
+    _capture(chat_store, "tool.completed", {"tool_id": "t2", "name": "grep", "result": "y"})
+    _capture(chat_store, "reasoning.delta", {"text": "final thinking"})
+    _capture(chat_store, "message.completed", {"text": "Answer", "reasoning": "final thinking"})
+
+    rows = _rows(chat_store)
+    assert [(r["role"], r["text"], r["reasoning"]) for r in rows] == [
+        ("assistant", "", "step one thinking"),
+        ("tool", None, None),
+        ("assistant", "", "step two thinking"),
+        ("tool", None, None),
+        ("assistant", "Answer", "final thinking"),
+    ]
+
+
+def test_tool_started_returns_no_row_id(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "thinking"})
+    assert _capture(chat_store, "tool.started", {"tool_id": "t1", "name": "read"}) is None
+
+
+def test_parallel_tool_calls_write_one_reasoning_row(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "plan"})
+    _capture(chat_store, "tool.started", {"tool_id": "t1", "name": "read"})
+    _capture(chat_store, "tool.started", {"tool_id": "t2", "name": "read"})
+    _capture(chat_store, "message.completed", {"text": "Done."})
+
+    rows = _rows(chat_store)
+    assert [(r["text"], r["reasoning"]) for r in rows] == [("", "plan"), ("Done.", None)]
+
+
+def test_payload_repeating_an_earlier_step_is_not_written_twice(chat_store: ChatStore) -> None:
+    """A final step with no reasoning of its own: Hermes's payload falls back to the tool
+    step's block, which is already on that step's row."""
+    _capture(chat_store, "reasoning.delta", {"text": "only thinking"})
+    _capture(chat_store, "tool.started", {"tool_id": "t1", "name": "read"})
+    _capture(chat_store, "message.completed", {"text": "Done.", "reasoning": "only thinking"})
+
+    step, final = _rows(chat_store)
+    assert step["reasoning"] == "only thinking"
+    assert final["reasoning"] is None
+
+
+def test_streamed_text_wins_when_it_holds_the_payload(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "long streamed reasoning, then the tail"})
+    _capture(chat_store, "message.completed", {"text": "A", "reasoning": "then the tail"})
+
+    [row] = _rows(chat_store)
+    assert row["reasoning"] == "long streamed reasoning, then the tail"
+
+
+def test_payload_wins_when_it_holds_the_stream(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "the start"})
+    _capture(chat_store, "message.completed", {"text": "A", "reasoning": "the start and the rest"})
+
+    [row] = _rows(chat_store)
+    assert row["reasoning"] == "the start and the rest"
+
+
+# --- The reasoning archive -------------------------------------------------------------------
+
+
+def _archive(chat_store: ChatStore) -> list[dict]:
+    return chat_store.reasoning_archive(profile=PROFILE, stored_session_id=STORED_ID)
+
+
+def test_streamed_reasoning_is_archived_while_it_streams(chat_store: ChatStore) -> None:
+    """A gateway restart mid-turn must not lose what already streamed."""
+    _capture(chat_store, "reasoning.delta", {"text": "first chunk"})
+
+    [entry] = _archive(chat_store)
+    assert (entry["source"], entry["text"], entry["sealed"]) == ("stream", "first chunk", False)
+
+
+def test_archive_seals_each_step_against_its_row(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "step one"})
+    _capture(chat_store, "tool.started", {"tool_id": "t1", "name": "read"})
+    _capture(chat_store, "reasoning.delta", {"text": "step two"})
+    row_id = _capture(chat_store, "message.completed", {"text": "Answer"})
+
+    entries = _archive(chat_store)
+    assert [(e["step"], e["text"], e["sealed"]) for e in entries] == [
+        (0, "step one", True),
+        (1, "step two", True),
+    ]
+    step_row, final_row = _rows(chat_store)
+    assert entries[0]["chat_message_id"] == step_row["id"]
+    assert entries[1]["chat_message_id"] == final_row["id"] == row_id
+
+
+def test_archive_keeps_a_payload_that_differs_from_the_stream(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "partial"})
+    _capture(chat_store, "message.completed", {"text": "A", "reasoning": "authoritative"})
+
+    texts = {(e["source"], e["text"]) for e in _archive(chat_store)}
+    assert texts == {("stream", "partial"), ("payload", "authoritative")}
+
+
+def test_archive_flushes_are_throttled_but_sealing_writes_everything(chat_store: ChatStore) -> None:
+    _capture(chat_store, "reasoning.delta", {"text": "a"})
+    _capture(chat_store, "reasoning.delta", {"text": "b"})
+    [entry] = _archive(chat_store)
+    assert entry["text"] == "a"  # second chunk waits for the flush interval
+
+    _capture(chat_store, "message.completed", {"text": "A"})
+    [entry] = _archive(chat_store)
+    assert (entry["text"], entry["sealed"]) == ("ab", True)
+
+
+def test_turn_completed_hook_fires(chat_store: ChatStore) -> None:
+    seen: list[tuple[str, str]] = []
+    chat_store.on_turn_completed = lambda profile, stored_id: seen.append((profile, stored_id))
+    _capture(chat_store, "message.completed", {"text": "A"})
+    assert seen == [(PROFILE, STORED_ID)]

@@ -23,6 +23,7 @@ from domain.attachment_orchestrator import AttachmentOrchestrator
 from domain.audit_store import AuditRecorder, AuditStore
 from domain.background_ledger import BackgroundLedger
 from domain.chat_store import ChatStore
+from domain.reasoning_reconcile import PostTurnReasoningSync
 from domain.db import make_engine, make_sessionmaker
 from domain.event_stream import EventBroadcaster
 from domain.foreign_prompt_capture import ForeignPromptCapture
@@ -80,6 +81,8 @@ def open_database(app_state: Any, settings: Settings) -> None:
 def open_chat_store(app_state: Any) -> None:
     """`app.state.chat_store` -- the durable chat-history store."""
     app_state.chat_store = ChatStore(app_state.db_sessions)
+    app_state.reasoning_sync = PostTurnReasoningSync(app_state)
+    app_state.chat_store.on_turn_completed = app_state.reasoning_sync.schedule
 
 
 def build_profile_connection_manager(app_state: Any, settings: Settings) -> None:
@@ -294,6 +297,9 @@ async def shutdown(app_state: Any, runtime: GatewayRuntime) -> None:
             with contextlib.suppress(Exception):
                 await client.aclose()
     await app_state.profile_connection_manager.close()
+    reasoning_sync = getattr(app_state, "reasoning_sync", None)
+    if reasoning_sync is not None:
+        await reasoning_sync.close()
     # Everything that can hold a resume closes before the adapter and broadcaster below.
     await runtime.snapshot_sweeper.close()
     await runtime.attachment_orchestrator.close()

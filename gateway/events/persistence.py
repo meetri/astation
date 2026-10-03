@@ -44,9 +44,10 @@ NOT_PERSISTED_EVENT_TYPES: dict[str, str] = {
     ),
     "reasoning.delta": (
         "the highest-volume stream on the wire (945 frames vs 328 "
-        "message.delta in one measured turn), display-only; the "
-        "authoritative reasoning text for a turn arrives once on "
-        "message.completed's payload (B-14/B-35) and is persisted there."
+        "message.delta in one measured turn), display-only here; its durable "
+        "home is `reasoning_archive` (one row per model step, flushed while "
+        "it streams) and the chat row each step's reasoning is written onto. "
+        "message.completed's payload carries only the turn's last block."
     ),
     "thinking.status": (
         "a transient TUI status label with replace-not-append semantics and "

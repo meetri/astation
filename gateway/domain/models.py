@@ -157,6 +157,34 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ReasoningArchive(Base):
+    """Every reasoning body a session produced, kept apart from the rows the app renders.
+
+    `source="stream"` rows hold one step's streamed `reasoning.delta` text, flushed while it
+    streams so a reconnect or a gateway restart cannot lose it; `source="hermes"` rows copy each
+    reasoning body Hermes's own transcript holds, one per Hermes row id.
+    """
+
+    __tablename__ = "reasoning_archive"
+    __table_args__ = (
+        Index("ix_reasoning_archive_session", "profile", "stored_session_id"),
+        Index("ix_reasoning_archive_hermes_row", "profile", "stored_session_id", "hermes_row_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("ra"))
+    profile: Mapped[str] = mapped_column(String, nullable=False)
+    stored_session_id: Mapped[str] = mapped_column(String, nullable=False)
+    turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    hermes_row_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chat_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ContextSnapshot(Base):
     __tablename__ = "context_snapshots"
 
