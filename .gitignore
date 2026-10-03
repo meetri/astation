@@ -13,3 +13,6 @@ audit-setup/.env
 audit-setup/hosts.yaml
 audit-setup/retention.ttl.sql
 audit-setup/vector/vector.rendered.yaml
+
+# Deploy settings for scripts/deploy.sh: host, ssh login, Hermes credentials.
+.env
