@@ -30,6 +30,9 @@ PERSISTED_RUN_EVENT_TYPES: frozenset[str] = frozenset(
         "secret.resolved",
         "status.update",
         "session.usage",
+        "subagent.started",
+        "subagent.tool",
+        "subagent.completed",
     }
 )
 
@@ -59,6 +62,30 @@ NOT_PERSISTED_EVENT_TYPES: dict[str, str] = {
         "resume and session.title on renames, neither belongs to a turn, and "
         "the durable home for session metadata is the sessions table / "
         "Hermes itself -- not a run's event log."
+    ),
+    "subagent.thinking": (
+        "the child's transient status label ('deliberating...'), relayed per "
+        "thinking callback -- thinking.status one level down, replace "
+        "semantics, no durable meaning. The child's outcome lands whole on "
+        "subagent.completed."
+    ),
+    "subagent.progress": (
+        "Hermes's own batched summary ('tool a, tool b, ...' every five child "
+        "calls) of subagent.tool frames that are each already persisted; a "
+        "second copy of the same information."
+    ),
+    "process.output": (
+        "a background process's raw output, chunk by chunk, for as long as it "
+        "runs -- a training job can emit thousands. Hermes keeps the last 4000 "
+        "characters itself and `process.list` serves them "
+        "(`GET /sessions/{id}/background-work`), so a stored copy would be a "
+        "larger, staler duplicate."
+    ),
+    "process.closed": (
+        "a background process ended. Not a turn (the process outlives the one "
+        "that started it); its exit is on `process.list` while Hermes retains "
+        "it, and a `notify=true` process's completion re-enters the "
+        "conversation as a new turn that is recorded like any other."
     ),
     "background.completed": (
         "the background-task LEDGER owns this event (P2-1/B-42: "

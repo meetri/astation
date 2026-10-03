@@ -221,6 +221,7 @@ def _profile_for(stored_id: str, db: OrmSession | None) -> str:
                 Session.runtime == HERMES_RUNTIME,
                 Session.runtime_session_id == stored_id,
             )
+            .order_by(Session.profile == "default")
         ).first()
     except SQLAlchemyError:
         return "default"
@@ -249,7 +250,9 @@ async def take_snapshot(
     store: ArtifactStore = app_state.artifact_store
 
     _live_id, resume_result = await _with_reconnect(
-        app_state, adapter, lambda: _resume_for_live_id(adapter, stored_id, cache)
+        app_state,
+        adapter,
+        lambda: _resume_for_live_id(adapter, stored_id, cache, profile=resolved_profile),
     )
     if list_row is None:
         try:
@@ -266,7 +269,7 @@ async def take_snapshot(
     taken_at = utcnow()
 
     def _write(session: OrmSession) -> tuple[dict[str, Any], SessionSnapshot]:
-        filing = find_filing(session, HERMES_RUNTIME, stored_id)
+        filing = find_filing(session, HERMES_RUNTIME, stored_id, profile=resolved_profile)
         project = session.get(Project, filing.project_id) if filing is not None else None
         finished = ledger_ops.finished_results_for_session(session, stored_id)
         background_results = [synthesized_transcript_row(task) for task in finished]

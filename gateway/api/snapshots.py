@@ -38,6 +38,7 @@ from domain.snapshot_builder import (  # noqa: F401  (re-exported; see module do
     SNAPSHOT_SOURCE_RESUME,
     SnapshotStorageError,
     _newest_first,
+    _profile_for,
     is_archived,
     latest_snapshot_summary,
     latest_snapshots_by_stored_id,
@@ -199,8 +200,10 @@ async def archive_session(
     """Archive to project: file (if asked) -> snapshot -> flag -> best-effort pin."""
     stored_id = _validate_stored_session_id_for_argv(stored_session_id)
     body = body if body is not None else ArchiveRequest()
+    if not profile or profile == "default":
+        profile = _profile_for(stored_id, db)
 
-    filing = _find_filing(db, HERMES_RUNTIME, stored_id)
+    filing = _find_filing(db, HERMES_RUNTIME, stored_id, profile=profile)
     if filing is None:
         if body.project_id is None:
             raise HTTPException(
@@ -211,13 +214,13 @@ async def archive_session(
                 ),
             )
         project = _load_project(db, body.project_id)
-        file_stored_session(db, project, stored_id, body.title)
-        filing = _find_filing(db, HERMES_RUNTIME, stored_id)
+        file_stored_session(db, project, stored_id, body.title, profile=profile)
+        filing = _find_filing(db, HERMES_RUNTIME, stored_id, profile=profile)
         if filing is None:  # pragma: no cover - file_stored_session just committed it
             raise HTTPException(status_code=500, detail="filing row vanished after filing")
     elif body.project_id is not None and body.project_id != filing.project_id:
         project = _load_project(db, body.project_id)
-        file_stored_session(db, project, stored_id, body.title)
+        file_stored_session(db, project, stored_id, body.title, profile=filing.profile)
 
     session_profile = filing.profile or profile if filing is not None else profile
 
@@ -228,7 +231,7 @@ async def archive_session(
     except (HermesError, SnapshotStorageError) as exc:
         _raise_for_snapshot_failure(exc, stored_id)
 
-    filing = _find_filing(db, HERMES_RUNTIME, stored_id)
+    filing = _find_filing(db, HERMES_RUNTIME, stored_id, profile=session_profile)
     archived_at = utcnow()
     if filing is not None:
         filing.archived_at = archived_at

@@ -35,6 +35,61 @@ class Base(DeclarativeBase):
     pass
 
 
+class RemoteJobOrigin(Base):
+    """Authenticated local record of the turn that called ``remote_job_start``."""
+
+    __tablename__ = "remote_job_origins"
+
+    job_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(256), nullable=False)
+    profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin_session_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    stored_session_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    turn_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    host: Mapped[str] = mapped_column(String(256), nullable=False)
+    task_label: Mapped[str] = mapped_column(String(160), nullable=False, default="Remote job")
+    task_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ownership_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RemoteJobCompletion(Base):
+    """One stable broker completion and its independent Hermes wake state."""
+
+    __tablename__ = "remote_job_completions"
+
+    event_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("remote_job_origins.job_id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    request_digest: Mapped[str] = mapped_column(String(256), nullable=False)
+    profile: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    stored_session_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    host: Mapped[str] = mapped_column(String(256), nullable=False)
+    delivery_identity: Mapped[str] = mapped_column(String(256), nullable=False)
+    delivery_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    terminal_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    verification_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    observation_state: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")
+    verification_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    result_json: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatch_state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    dispatch_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    lease_owner: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatch_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    takeover_reconcile_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reconciliation_session_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -262,10 +317,17 @@ class BackgroundTask(Base):
     __tablename__ = "background_tasks"
     __table_args__ = (
         Index("ix_background_tasks_stored_session_id", "stored_session_id"),
+        Index(
+            "ix_background_tasks_profile_stored_session_id",
+            "profile",
+            "stored_session_id",
+        ),
         Index("ix_background_tasks_state", "state"),
     )
 
     task_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    profile: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
 
     stored_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
 

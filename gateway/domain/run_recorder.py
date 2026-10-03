@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from domain import runs as runs_ops
 from domain.event_stream import STORED_SESSION_ID_FIELD
 from domain.models import HERMES_RUNTIME, Run, RunEvent, Session, utcnow
+from domain.watch_sessions import watched
 from events import is_persisted_event_type, persist_run_event
 from events.canonical import CanonicalEvent
 
@@ -69,10 +70,17 @@ RUN_OPENING_TYPES: frozenset[str] = frozenset(
         "clarify.requested",
         "sudo.requested",
         "secret.requested",
+        "subagent.started",
+        "subagent.tool",
+        "subagent.progress",
+        "subagent.thinking",
+        "subagent.completed",
     }
 )
 
-NON_RUN_TYPES: frozenset[str] = frozenset({"session.updated", "background.completed"})
+NON_RUN_TYPES: frozenset[str] = frozenset(
+    {"session.updated", "background.completed", "process.output", "process.closed"}
+)
 
 
 DEFAULT_RUN_PROFILE = "default"
@@ -181,6 +189,8 @@ class RunRecorder:
         stored_id = stored_raw if isinstance(stored_raw, str) and stored_raw else None
 
         if stored_id is None or event_type in NON_RUN_TYPES:
+            return
+        if watched.is_watched(stored_id):
             return
 
         record = self._open.get(stored_id)

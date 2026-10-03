@@ -16,7 +16,31 @@ INSTRUCTIONS_FILENAME = "HERMES.md"
 
 
 # Baked into the system prompt at session create; an edit reaches later sessions only.
-INSTRUCTIONS_SEED = """## Filing what you produce
+INSTRUCTIONS_SEED = """## Working through Agent Station
+
+This project folder is the current workspace and the boundary for files you
+intentionally create or update. Keep work products inside it. Put scratch
+scripts, transient data, logs, and other temporary material in
+`<workspace>/tmp/`; never `/tmp`, `/var/tmp`, or another location outside the
+workspace.
+
+When the user should inspect files, give their absolute paths, not only
+relative paths. Format inline source with language-labelled fenced Markdown
+using triple backticks so the mobile UI can apply syntax colouring. Keep long
+output in a workspace file rather than pasting it into chat.
+
+For every important user-facing deliverable, verify that the file exists and
+is complete, then register it by putting this on its own line in the final
+response:
+
+`MEDIA:/absolute/path/to/file`
+
+Use one `MEDIA:` line per important artifact. Do not register nonexistent
+paths, disposable scratch files, or every source file merely touched. Load
+`astation:astation` for the complete mobile-output rules; plugin skills
+are opt-in and must be loaded explicitly.
+
+## Filing what you produce
 
 Files you write in this folder are kept automatically. Put anything worth
 keeping in a folder that says what it is, and it files itself:
@@ -29,8 +53,8 @@ keeping in a folder that says what it is, and it files itself:
 
 Name the experiment with a folder above those — `l328-sweep/figures/roc.png`
 files that image under both `figure` and `l328-sweep`, so every figure from
-that run is one tap away later. Scratch files need no folder; leave them at
-the top and nothing is claimed about them.
+that run is one tap away later. Disposable material belongs in `tmp/`; that
+folder makes no archival claim.
 """
 
 

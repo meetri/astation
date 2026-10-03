@@ -2,6 +2,10 @@
   "name": "astation",
   "label": "Agent Station",
   "description": "Projects, sessions, runs and artifacts for the research app.",
+  "icon": "FolderOpen",
   "version": "0.1.0",
+  "tab": { "path": "/agent-station", "position": "after:sessions" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
   "api": "plugin_api.py"
 }

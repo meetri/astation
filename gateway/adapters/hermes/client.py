@@ -647,6 +647,65 @@ class HermesAdapter:
         """Drop a session from the Hermes *process*. `session_id` is a **LIVE handle**."""
         return await self.request("session.close", {"session_id": session_id, **extra_params})
 
+
+    async def subagent_list(self, session_id: str, **extra_params: Any) -> dict[str, Any]:
+        """`{"subagents": [{subagent_id, parent_id, depth, goal, delegation_id,
+        model, started_at, status, tool_count, last_tool, accepting_steer}],
+        "delegations": []}` for the children running under `session_id`."""
+        return await self.request("subagent.list", {"session_id": session_id, **extra_params})
+
+    async def subagent_tail(
+        self, session_id: str, *, subagent_id: str, **extra_params: Any
+    ) -> dict[str, Any]:
+        """`{"subagent_id", "available", "text", "truncated"}` -- the last 16 KB
+        of Hermes's per-child live log; `available: false` for a child not
+        in the live roster."""
+        return await self.request(
+            "subagent.tail", {"session_id": session_id, "subagent_id": subagent_id, **extra_params}
+        )
+
+    async def subagent_interrupt(
+        self, session_id: str, *, subagent_id: str, **extra_params: Any
+    ) -> dict[str, Any]:
+        """`{"found": bool, "subagent_id"}` -- a found-flag, never an error,
+        for an unknown or finished child."""
+        return await self.request(
+            "subagent.interrupt",
+            {"session_id": session_id, "subagent_id": subagent_id, **extra_params},
+        )
+
+    async def subagent_steer(
+        self, session_id: str, *, subagent_id: str, text: str, **extra_params: Any
+    ) -> dict[str, Any]:
+        """`{"status": "queued" | "rejected", "subagent_id", "text"}`."""
+        return await self.request(
+            "subagent.steer",
+            {"session_id": session_id, "subagent_id": subagent_id, "text": text, **extra_params},
+        )
+
+    async def delegation_status(self, **extra_params: Any) -> dict[str, Any]:
+        """`{"active": [...], "paused", "max_spawn_depth", "max_concurrent_children"}`."""
+        return await self.request("delegation.status", dict(extra_params))
+
+    async def process_list(self, session_id: str, **extra_params: Any) -> dict[str, Any]:
+        """`{"processes": [{session_id, command, cwd, pid, owner_task_id,
+        started_at, uptime_seconds, status, output_preview, output_tail,
+        exit_code?, notify_on_complete?, detached?}]}` -- the agent's
+        background processes (`terminal(background=true)`) for `session_id`,
+        a **LIVE handle**. Hermes matches on the session's `session_key`,
+        which a resume sets to the stored id, so a fresh handle still sees
+        processes an earlier handle started."""
+        return await self.request("process.list", {"session_id": session_id, **extra_params})
+
+    async def process_kill(
+        self, session_id: str, *, process_id: str, **extra_params: Any
+    ) -> dict[str, Any]:
+        """Kill ONE background process owned by the live session `session_id`.
+        Hermes answers `[4044] no such process` for an id another session owns."""
+        return await self.request(
+            "process.kill", {"session_id": session_id, "process_id": process_id, **extra_params}
+        )
+
     async def session_branch(self, live_session_id: str, **extra_params: Any) -> dict[str, Any]:
         """Fork a session: copy its transcript into a brand-new session."""
         return await self.request("session.branch", {"session_id": live_session_id, **extra_params})

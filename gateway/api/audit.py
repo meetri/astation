@@ -30,6 +30,22 @@ _audit_db = schema_checked_db(
     lambda engine: columns_present(engine, "runs", "runtime_session_id"),
 )
 
+
+_ATTRIBUTED_EXEC = """(
+            SELECT e.ts AS ts, e.exec_id AS exec_id, e.uid AS uid, e.binary AS binary,
+                   e.arguments AS arguments, e.container_id AS container_id,
+                   t.tool_call_id AS tool_call_id, t.tool_name AS tool_name, t.profile AS profile
+            FROM audit.host_exec AS e
+            INNER JOIN (
+                SELECT toDateTime(ts) + k AS sec, ts AS call_ts, command,
+                       tool_call_id, tool_name, profile
+                FROM audit.agent_tool ARRAY JOIN range(16) AS k
+                WHERE stored_session_id = {session:String} AND command != ''
+            ) AS t ON toDateTime(e.ts) = t.sec
+            WHERE position(e.arguments, t.command) > 0
+              AND t.call_ts <= e.ts AND e.ts <= t.call_ts + INTERVAL 15 SECOND
+        )"""
+
 _FALLBACK_WINDOW_S = 3600
 
 _HEALTH_CLASSES = ("host_exec", "host_file", "host_net", "host_beat")
@@ -321,8 +337,8 @@ async def session_timeline(
                container_id, uid, exec_id, toString(tool_name) AS extra,
                'host' AS source, tool_call_id AS ref, toString(profile) AS row_profile,
                toUInt32(0) AS duration_ms, '' AS status
-        FROM audit.exec_attributed
-        WHERE stored_session_id = {{session:String}}{host_window}
+        FROM {_ATTRIBUTED_EXEC} AS ae
+        WHERE 1 = 1{host_window}
         UNION ALL
         SELECT 'file' AS kind, f.ts, f.path AS subject, f.op AS detail,
                f.container_id, f.uid, f.exec_id,
@@ -331,8 +347,8 @@ async def session_timeline(
                toUInt32(0) AS duration_ms, '' AS status
         FROM audit.host_file AS f
         INNER JOIN (
-            SELECT DISTINCT exec_id FROM audit.exec_attributed
-            WHERE stored_session_id = {{session:String}} AND exec_id != ''
+            SELECT DISTINCT exec_id FROM {_ATTRIBUTED_EXEC} AS a
+            WHERE exec_id != ''
         ) AS ae ON f.exec_id = ae.exec_id
         UNION ALL
         SELECT 'net' AS kind, n.ts,
@@ -343,8 +359,8 @@ async def session_timeline(
                toUInt32(0) AS duration_ms, '' AS status
         FROM audit.host_net AS n
         INNER JOIN (
-            SELECT DISTINCT exec_id FROM audit.exec_attributed
-            WHERE stored_session_id = {{session:String}} AND exec_id != ''
+            SELECT DISTINCT exec_id FROM {_ATTRIBUTED_EXEC} AS a
+            WHERE exec_id != ''
         ) AS ae ON n.exec_id = ae.exec_id
         ORDER BY ts
         LIMIT {{limit:UInt32}}
@@ -364,23 +380,23 @@ async def session_timeline(
                 "end": window["ended_at"],
                 "limit": max(1, limit // 4),
             }
-            inferred_sql = """
+            inferred_sql = f"""
                 SELECT 'exec' AS kind, e.ts, e.binary AS subject,
                        e.arguments AS detail, e.container_id, e.uid, e.exec_id,
                        e.parent_binary AS extra, 'inferred' AS source, '' AS ref,
                        '' AS row_profile, toUInt32(0) AS duration_ms, '' AS status
                 FROM audit.host_exec AS e
-                WHERE e.ts BETWEEN parseDateTimeBestEffort({start:String})
-                              AND parseDateTimeBestEffort({end:String})
-                  AND (position(e.arguments, {pfx:String}) > 0
-                       OR position(e.cwd, {pfx:String}) > 0
-                       OR position(e.parent_arguments, {pfx:String}) > 0)
+                WHERE e.ts BETWEEN parseDateTimeBestEffort({{start:String}})
+                              AND parseDateTimeBestEffort({{end:String}})
+                  AND (position(e.arguments, {{pfx:String}}) > 0
+                       OR position(e.cwd, {{pfx:String}}) > 0
+                       OR position(e.parent_arguments, {{pfx:String}}) > 0)
                   AND e.exec_id NOT IN (
-                      SELECT exec_id FROM audit.exec_attributed
-                      WHERE stored_session_id = {session:String} AND exec_id != ''
+                      SELECT exec_id FROM {_ATTRIBUTED_EXEC} AS a
+                      WHERE exec_id != ''
                   )
                 ORDER BY e.ts
-                LIMIT {limit:UInt32}
+                LIMIT {{limit:UInt32}}
             """
             try:
                 extra = await _run_read(

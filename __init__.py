@@ -14,6 +14,8 @@ from typing import Any
 
 log = logging.getLogger("astation.plugin")
 
+ASTATION_SKILL_PATH = Path(__file__).resolve().parent / "skills" / "astation" / "SKILL.md"
+
 CAPTURE_HOOKS = (
     "on_session_start",
     "pre_llm_call",
@@ -104,6 +106,8 @@ def _make(hook_name: str):
 
 registered_hooks: list[str] = []
 failed_hooks: dict[str, str] = {}
+registered_skills: list[str] = []
+failed_skills: dict[str, str] = {}
 
 plugin_ctx = None
 
@@ -114,6 +118,8 @@ def register(ctx) -> None:
     _start_audit_forwarder(ctx)
     registered_hooks.clear()
     failed_hooks.clear()
+    registered_skills.clear()
+    failed_skills.clear()
     for hook_name in CAPTURE_HOOKS:
         try:
             ctx.register_hook(hook_name, _make(hook_name))
@@ -121,6 +127,17 @@ def register(ctx) -> None:
         except Exception as exc:
             failed_hooks[hook_name] = str(exc)
             log.warning("astation: hook %s did not register: %s", hook_name, exc)
+
+    try:
+        ctx.register_skill(
+            "astation",
+            ASTATION_SKILL_PATH,
+            "Keep Agent Station work inside the workspace and present artifacts for mobile review.",
+        )
+        registered_skills.append("astation")
+    except Exception as exc:
+        failed_skills["astation"] = str(exc)
+        log.warning("astation: astation skill did not register: %s", exc)
 
     try:
         ctx.register_cli_command(
@@ -159,6 +176,8 @@ def _write_status(ctx) -> None:
                     "registered_hooks": registered_hooks,
                     "failed_hooks": failed_hooks,
                     "expected_hooks": list(CAPTURE_HOOKS),
+                    "registered_skills": registered_skills,
+                    "failed_skills": failed_skills,
                 },
                 default=str,
                 indent=1,
