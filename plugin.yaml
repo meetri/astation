@@ -37,4 +37,4 @@ python_dependencies:
   # import is missing, so a slim install can drop these two lines.
   - faster-whisper>=1.2.1
   - piper-tts>=1.7.0
-  - edge-tts>=7.2.8
+  - edge-tts>=7.2.7

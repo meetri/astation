@@ -20,7 +20,7 @@ Install the Python packages Hermes does not ship, then restart the dashboard onc
 ```bash
 uv pip install --python /opt/hermes/.venv/bin/python --target "$HERMES_HOME/lazy-packages" \
   "sqlalchemy>=2" alembic pydantic-settings "python-multipart>=0.0.32" \
-  "piper-tts>=1.7.0" "edge-tts>=7.2.8"
+  "piper-tts>=1.7.0" "edge-tts>=7.2.7"
 ```
 
 Speech is optional. Without `piper-tts` and `edge-tts` the plugin starts normally and the speech
