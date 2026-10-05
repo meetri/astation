@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -161,10 +162,38 @@ def _hermes_app():
     return None
 
 
+_BACKUPS_KEPT = 3
+
+
+def _db_revisions(db_path: Path) -> set[str]:
+    """The Alembic revisions the database is stamped with; empty when it has none."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            return {row[0] for row in conn.execute("SELECT version_num FROM alembic_version")}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+
+
+def _backup_before_migrate(db_path: Path) -> Path:
+    """Copy the database aside and keep only the newest `_BACKUPS_KEPT` such copies."""
+    stamp = time.strftime("%Y-%m-%d-%H%M%S")
+    backup = db_path.with_name(f"{db_path.name}.bak-{stamp}-pre-migrate")
+    shutil.copy2(db_path, backup)
+    # The stamp sorts by time, so the name order is the age order.
+    copies = sorted(db_path.parent.glob(f"{db_path.name}.bak-*-pre-migrate"))
+    for old in copies[:-_BACKUPS_KEPT]:
+        old.unlink(missing_ok=True)
+    return backup
+
+
 def _migrate() -> str:
-    """Back up the workspace database, then bring it to the Alembic head."""
+    """Bring the workspace database to the Alembic head, backing it up first when it will change."""
     from alembic import command
     from alembic.config import Config
+    from alembic.script import ScriptDirectory
 
     from config.settings import get_settings
 
@@ -190,10 +219,11 @@ def _migrate() -> str:
     cfg.set_main_option("sqlalchemy.url", "")
 
     if db_path.exists() and db_path.stat().st_size > 0:
-        stamp = time.strftime("%Y-%m-%d-%H%M%S")
-        backup = db_path.with_name(f"{db_path.name}.bak-{stamp}-pre-migrate")
-        shutil.copy2(db_path, backup)
-        note = f"backed up to {backup.name}"
+        heads = set(ScriptDirectory.from_config(cfg).get_heads())
+        if _db_revisions(db_path) == heads:
+            note = "already at head, no backup taken"
+        else:
+            note = f"backed up to {_backup_before_migrate(db_path).name}"
     else:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         note = "fresh database"
