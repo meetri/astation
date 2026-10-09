@@ -45,6 +45,8 @@ _REQUEST_TIMEOUT_S = 30.0
 _HEARTBEAT_INTERVAL_S = 25.0
 # A method this build actually implements: gateway.ping answers [-32601] unknown method here.
 _KEEPALIVE_METHOD = "session.active_list"
+# How a client tells Hermes what it handles; answered with the server requests Hermes knows.
+_CAPABILITIES_METHOD = "client.capabilities"
 
 
 # session.resume returns a whole transcript in one frame; the library default 1 MiB closes on it.
@@ -210,7 +212,19 @@ class HermesAdapter:
                 f"did not observe a '{_READY_EVENT_METHOD}' event within {_READY_TIMEOUT_S}s of connecting"
             ) from exc
 
+        await self._advertise_capabilities()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _advertise_capabilities(self) -> None:
+        """Tell Hermes this connection answers server -> client requests (clarify, approval, sudo,
+        secret). Hermes fails every such request at once for a WebSocket client that never said
+        so, and the question never reaches the app. A Hermes without the method answers with an
+        RPC error, and it needs no announcement.
+        """
+        try:
+            await self.request(_CAPABILITIES_METHOD, {"server_requests": True})
+        except HermesRPCError as exc:
+            logger.info("Hermes did not take %s (%s); assuming it predates it", _CAPABILITIES_METHOD, exc)
 
     async def _heartbeat_loop(self) -> None:
         """Poke Hermes periodically so an idle socket isn't reaped."""
