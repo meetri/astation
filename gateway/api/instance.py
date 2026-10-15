@@ -292,7 +292,7 @@ async def fork_session(
     if isinstance(message_count, bool) or not isinstance(message_count, int):
         message_count = None
 
-    filing = _file_fork_with_its_parent(db, parent_stored, fork_stored, title)
+    filing = _file_fork_with_its_parent(db, parent_stored, fork_stored, title, profile=profile)
     logger.info(
         "forked session %s -> %s (project=%r)",
         stored_id,
@@ -327,7 +327,8 @@ def _fork_http_error(exc: HermesError, stored_id: str) -> HTTPException:
 
 
 def _file_fork_with_its_parent(
-    db: OrmSession, parent_stored_id: str, fork_stored_id: str, title: str | None
+    db: OrmSession, parent_stored_id: str, fork_stored_id: str,
+    title: str | None, *, profile: str
 ) -> dict[str, Any]:
     """File the fork into whatever project its parent is filed in."""
     summary: dict[str, Any] = {
@@ -338,7 +339,7 @@ def _file_fork_with_its_parent(
         "filing_error": None,
     }
     try:
-        parent_filing = _find_filing(db, HERMES_RUNTIME, parent_stored_id)
+        parent_filing = _find_filing(db, HERMES_RUNTIME, parent_stored_id, profile=profile)
         if parent_filing is None:
             return summary
         project = db.get(Project, parent_filing.project_id)
@@ -348,7 +349,9 @@ def _file_fork_with_its_parent(
                 "which no longer exists"
             )
             return summary
-        filing_row, _created = file_stored_session(db, project, fork_stored_id, title)
+        filing_row, _created = file_stored_session(
+            db, project, fork_stored_id, title, profile=profile
+        )
         summary["project_id"] = project.id
         summary["project_title"] = project.title
         summary["workspace_session_id"] = filing_row["workspace_session_id"]
