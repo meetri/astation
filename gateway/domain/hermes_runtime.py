@@ -346,10 +346,13 @@ async def _resume_for_live_id(
     extra = {"profile": profile} if profile and profile != "default" else {}
     if lazy:
         extra["lazy"] = True
-        watched.watch(stored_session_id)
+        watched.watch(stored_session_id, profile or "default")
     else:
-        watched.unwatch(stored_session_id)
+        watched.unwatch(stored_session_id, profile or "default")
+    generation = getattr(adapter, "connection_generation", None)
     result = await adapter.resume_session(stored_session_id, **extra)
+    if generation != getattr(adapter, "connection_generation", None):
+        raise HermesConnectionError("connection changed during session.resume", request_was_sent=True)
     live_id = HermesAdapter.live_id_from_resume(result)
     if cache is not None:
         cache.put(stored_session_id, live_id)

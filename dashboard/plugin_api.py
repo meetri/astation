@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sqlite3
 import sys
 import time
@@ -19,6 +20,15 @@ log = logging.getLogger("astation.plugin")
 router = APIRouter()
 
 _HERE = Path(__file__).resolve().parent
+# Snapshot at import, never mistake changed disk files for newly loaded code.
+try:
+    _root = _HERE.parent
+    _LOADED_REVISION = subprocess.check_output(
+        ['git', '-c', f'safe.directory={_root}', '-C', str(_root), 'rev-parse', 'HEAD'],
+        text=True, stderr=subprocess.DEVNULL, timeout=2,
+    ).strip()
+except (OSError, subprocess.SubprocessError):
+    _LOADED_REVISION = None
 _CANDIDATES = [
     Path(os.environ["TRG_GATEWAY_SRC"]) if os.environ.get("TRG_GATEWAY_SRC") else None,
     _HERE.parent / "gateway",
@@ -266,6 +276,38 @@ def _build_adapter_class():
     from adapters.hermes.client import HermesAdapter
 
     class InProcessHermesAdapter(HermesAdapter):
+        @property
+        def event_identity_epoch(self):
+            # One host registry incarnation, not one socket generation.
+            from tui_gateway import server
+            return server._BACKEND_NONCE
+
+        @property
+        def event_recovery_path(self):
+            return Path(self._settings.research_gateway_db_path).with_suffix('.event-inbox.sqlite')
+
+        @property
+        def event_inbox_max_rows(self):
+            return self._settings.event_inbox_max_rows
+
+        @property
+        def event_inbox_max_bytes(self):
+            return self._settings.event_inbox_max_bytes
+
+        @property
+        def event_inbox_page_size(self):
+            return self._settings.event_inbox_page_size
+
+        def resolve_event_identity_at(self, stored_id, live_id, observed_at):
+            from domain.host_identity import resolve_host_identity
+            from tui_gateway import server
+            return resolve_host_identity(server, stored_id, live_id, observed_at=observed_at)
+
+        def resolve_event_identity(self, stored_id, live_id):
+            from tui_gateway import server
+            from domain.host_identity import resolve_host_identity
+            return resolve_host_identity(server, stored_id, live_id)
+
         def _gate_engaged(self) -> bool:
             app = _hermes_app()
             return bool(getattr(getattr(app, "state", None), "auth_required", False))
@@ -455,6 +497,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok" if (_started and not _import_error) else "degraded",
         "plugin": "astation",
+        "loaded_revision": _LOADED_REVISION,
         "gateway_src": str(_gateway_src) if _gateway_src else None,
         "routers_mounted": len(_routers),
         "services_started": _started,
@@ -471,7 +514,29 @@ async def health() -> dict[str, Any]:
         "sandbox_fs": _sandbox_fs_mode(),
         "artifacts": _artifact_ingest_stats(),
         "audit_attribution": _audit_forwarder_stats(),
+        "event_inbox": _event_inbox_stats(),
     }
+
+
+def _event_inbox_stats() -> Any:
+    """Counts only: never expose an event identity, type, profile, or payload."""
+    app = _hermes_app()
+    adapter = getattr(getattr(app, "state", None), "hermes_adapter", None)
+    path = getattr(adapter, "event_recovery_path", None)
+    epoch = getattr(adapter, "event_identity_epoch", None)
+    if not path or not epoch:
+        return "not configured"
+    try:
+        from domain.event_inbox import EventInbox
+        inbox = EventInbox(
+            path,
+            max_rows=getattr(adapter, "event_inbox_max_rows", 10_000),
+            max_bytes=getattr(adapter, "event_inbox_max_bytes", 64 * 1024 * 1024),
+            page_size=getattr(adapter, "event_inbox_page_size", 100),
+        )
+        return inbox.counts(epoch)
+    except Exception:
+        return {"error": "unavailable"}
 
 
 def _artifact_ingest_stats() -> Any:

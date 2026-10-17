@@ -585,6 +585,9 @@ class ProfileConnectionManager:
         self, conn: ProfileConnection, broadcaster: Any
     ) -> None:
         """Capture the default profile's stream through the shared broadcaster."""
+        if getattr(broadcaster, "captures_chat", False):
+            # The bootstrap hook already captured every shared-profile frame.
+            return
         while True:
             try:
                 async with broadcaster.subscribe() as queue:

@@ -54,6 +54,15 @@ class LiveHandleCache:
         self._handles[(generation, stored_id)] = live_id
         self._remember_live_mapping(generation, stored_id, live_id)
 
+    def bound_stored_ids_for_live(self, live_id: str) -> tuple[str, ...]:
+        """Only explicit resume/create bindings, never an event's observed guess."""
+        generation = self._generation()
+        if generation is None:
+            return ()
+        self._sweep(generation)
+        return tuple(stored for (gen, stored), live in self._handles.items()
+                     if gen == generation and live == live_id)
+
     def observe_live_mapping(self, stored_id: str, live_id: str) -> None:
         """Learn a live->stored pairing for *labelling* events only."""
         generation = self._generation()

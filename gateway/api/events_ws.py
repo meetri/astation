@@ -51,11 +51,14 @@ async def stream_events(websocket: WebSocket, app_state: Any) -> None:
     # Computed before `subscribe()` so `stream.ready` can tell the client, in the same
     # frame, whether its `?after=` will actually be honored (see `replay_available`'s
     # docstring for why calling it first is safe).
+    after, cursor_reset = broadcaster.resume_cursor(after, websocket.query_params.get('epoch'))
     replay = broadcaster.replay_available(after)
     async with broadcaster.subscribe(encoded=True, after=after) as queue:
-        await websocket.send_json(
-            stream_ready_frame(getattr(adapter, "connection_generation", None), replay=replay)
-        )
+        ready = stream_ready_frame(getattr(adapter, "connection_generation", None), replay=replay)
+        ready['stream_epoch'] = broadcaster.stream_epoch
+        ready['payload'].update(stream_epoch=broadcaster.stream_epoch,
+                                cursor_reset=cursor_reset, last_seq=broadcaster._last_seq)
+        await websocket.send_json(ready)
 
         forward = asyncio.create_task(_forward_events(websocket, queue))
         disconnected = asyncio.create_task(_watch_for_disconnect(websocket))

@@ -147,15 +147,27 @@ def wire_event_stream(
         run_recorder.handle_generation_change(generation, previous)
         background_ledger.handle_generation_change(generation, previous)
 
+    def _on_canonical_event(canonical: Any, envelope: dict[str, Any]) -> None:
+        # The shared connection is transport, not the owner of a resumed session.
+        profile = envelope["payload"]["_profile"]
+        run_recorder.handle_event(canonical, envelope, profile)
+        chat_store = getattr(app_state, "chat_store", None)
+        if chat_store is not None:
+            row_id = chat_store.capture_event(profile, canonical, envelope)
+            if row_id is not None:
+                envelope["payload"]["chat_row_id"] = row_id
+
     broadcaster = EventBroadcaster(
         adapter,
         live_handle_cache,
         on_background_complete=background_ledger.handle_completed,
         on_generation_change=_on_generation_change,
-        on_canonical_event=run_recorder.handle_event,
+        on_canonical_event=_on_canonical_event,
         # A callable, not the dict: the per-profile caches are built lazily, after this point.
         profile_caches=lambda: getattr(app_state, "shared_profile_handle_caches", {}) or {},
     )
+    # Capture precedes fan-out, so completion identities reach live clients too.
+    broadcaster.captures_chat = True
     app_state.hermes_adapter = adapter
     app_state.event_broadcaster = broadcaster
     app_state.live_handle_cache = live_handle_cache

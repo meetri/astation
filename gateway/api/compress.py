@@ -178,7 +178,7 @@ async def compress_session(
     args = compress_args(body)
 
     recorder = getattr(request.app.state, "run_recorder", None)
-    if recorder is not None and recorder.has_open_run(stored_id):
+    if recorder is not None and recorder.has_open_run(stored_id, profile):
         raise HTTPException(
             status_code=409,
             detail=f"session {stored_id!r} has a turn running through this gateway; wait for it to finish",

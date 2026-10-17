@@ -363,7 +363,7 @@ async def submit_turn(
 ) -> dict:
     """Submit one user turn to a saved session -- the chat send path."""
     stored_id = _validate_stored_session_id(stored_session_id)
-    watched.unwatch(stored_id)
+    watched.unwatch(stored_id, profile)
     adapter: HermesAdapter = resolve_profile_adapter(request.app.state, profile)
     cache: LiveHandleCache = resolve_live_handle_cache(request.app.state, profile)
     chat_store: ChatStore | None = getattr(request.app.state, "chat_store", None)

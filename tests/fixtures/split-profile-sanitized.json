@@ -1,0 +1,299 @@
+[
+  {
+    "id": "row1",
+    "profile": "gpt-astra",
+    "seq": 1,
+    "role": "user",
+    "turn_id": null,
+    "text": "User1",
+    "timestamp": "2026-10-16 23:46:30.489223"
+  },
+  {
+    "id": "row2",
+    "profile": "default",
+    "seq": 1,
+    "role": "assistant",
+    "turn_id": "turn2",
+    "text": "Assistant1",
+    "timestamp": "2026-10-16 23:47:18.704036"
+  },
+  {
+    "id": "row3",
+    "profile": "gpt-astra",
+    "seq": 2,
+    "role": "user",
+    "turn_id": null,
+    "text": "User2",
+    "timestamp": "2026-10-16 23:54:09.537268"
+  },
+  {
+    "id": "row4",
+    "profile": "default",
+    "seq": 2,
+    "role": "marker",
+    "turn_id": "turn6",
+    "text": "Marker1",
+    "timestamp": "2026-10-16 23:59:12.168885"
+  },
+  {
+    "id": "row5",
+    "profile": "default",
+    "seq": 3,
+    "role": "tool",
+    "turn_id": "turn6",
+    "text": "Tool1",
+    "timestamp": "2026-10-16 23:59:14.195695"
+  },
+  {
+    "id": "row6",
+    "profile": "default",
+    "seq": 4,
+    "role": "assistant",
+    "turn_id": "turn6",
+    "text": "Assistant2",
+    "timestamp": "2026-10-16 23:59:39.356132"
+  },
+  {
+    "id": "row7",
+    "profile": "gpt-astra",
+    "seq": 3,
+    "role": "user",
+    "turn_id": null,
+    "text": "User3",
+    "timestamp": "2026-10-17 00:07:22.649050"
+  },
+  {
+    "id": "row8",
+    "profile": "default",
+    "seq": 5,
+    "role": "assistant",
+    "turn_id": "turn8",
+    "text": "Assistant3",
+    "timestamp": "2026-10-17 00:07:39.843683"
+  },
+  {
+    "id": "row9",
+    "profile": "gpt-astra",
+    "seq": 4,
+    "role": "user",
+    "turn_id": null,
+    "text": "User4",
+    "timestamp": "2026-10-17 00:16:15.710099"
+  },
+  {
+    "id": "row10",
+    "profile": "default",
+    "seq": 6,
+    "role": "subagent",
+    "turn_id": "turn12",
+    "text": "Subagent1",
+    "timestamp": "2026-10-17 00:16:36.361058"
+  },
+  {
+    "id": "row11",
+    "profile": "default",
+    "seq": 7,
+    "role": "tool",
+    "turn_id": "turn12",
+    "text": "Tool2",
+    "timestamp": "2026-10-17 00:16:36.406735"
+  },
+  {
+    "id": "row12",
+    "profile": "default",
+    "seq": 8,
+    "role": "assistant",
+    "turn_id": "turn12",
+    "text": "Assistant4",
+    "timestamp": "2026-10-17 00:16:40.757545"
+  },
+  {
+    "id": "row13",
+    "profile": "default",
+    "seq": 9,
+    "role": "subagent",
+    "turn_id": "turn17",
+    "text": "Subagent2",
+    "timestamp": "2026-10-17 00:28:19.789145"
+  },
+  {
+    "id": "row14",
+    "profile": "default",
+    "seq": 10,
+    "role": "marker",
+    "turn_id": "turn17",
+    "text": "Marker2",
+    "timestamp": "2026-10-17 00:28:19.831859"
+  },
+  {
+    "id": "row15",
+    "profile": "default",
+    "seq": 11,
+    "role": "tool",
+    "turn_id": "turn17",
+    "text": "Tool3",
+    "timestamp": "2026-10-17 00:28:23.964614"
+  },
+  {
+    "id": "row16",
+    "profile": "default",
+    "seq": 12,
+    "role": "tool",
+    "turn_id": "turn17",
+    "text": "Tool4",
+    "timestamp": "2026-10-17 00:28:27.491495"
+  },
+  {
+    "id": "row17",
+    "profile": "default",
+    "seq": 13,
+    "role": "assistant",
+    "turn_id": "turn17",
+    "text": "Assistant5",
+    "timestamp": "2026-10-17 00:28:42.614018"
+  },
+  {
+    "id": "row18",
+    "profile": "gpt-astra",
+    "seq": 5,
+    "role": "user",
+    "turn_id": null,
+    "text": "User5",
+    "timestamp": "2026-10-17 00:49:10.957869"
+  },
+  {
+    "id": "row19",
+    "profile": "default",
+    "seq": 14,
+    "role": "tool",
+    "turn_id": "turn20",
+    "text": "Tool5",
+    "timestamp": "2026-10-17 00:49:13.748074"
+  },
+  {
+    "id": "row20",
+    "profile": "default",
+    "seq": 15,
+    "role": "assistant",
+    "turn_id": "turn20",
+    "text": "Assistant6",
+    "timestamp": "2026-10-17 00:49:42.415555"
+  },
+  {
+    "id": "row21",
+    "profile": "gpt-astra",
+    "seq": 6,
+    "role": "user",
+    "turn_id": null,
+    "text": "User6",
+    "timestamp": "2026-10-17 01:24:54.845343"
+  },
+  {
+    "id": "row22",
+    "profile": "default",
+    "seq": 16,
+    "role": "assistant",
+    "turn_id": "turn22",
+    "text": "Assistant7",
+    "timestamp": "2026-10-17 01:25:10.545521"
+  },
+  {
+    "id": "row23",
+    "profile": "gpt-astra",
+    "seq": 7,
+    "role": "user",
+    "turn_id": null,
+    "text": "User7",
+    "timestamp": "2026-10-17 01:28:04.369761"
+  },
+  {
+    "id": "row24",
+    "profile": "default",
+    "seq": 17,
+    "role": "assistant",
+    "turn_id": "turn24",
+    "text": "Assistant8",
+    "timestamp": "2026-10-17 01:28:13.237211"
+  },
+  {
+    "id": "row25",
+    "profile": "gpt-astra",
+    "seq": 8,
+    "role": "user",
+    "turn_id": null,
+    "text": "User8",
+    "timestamp": "2026-10-17 01:34:02.648771"
+  },
+  {
+    "id": "row26",
+    "profile": "default",
+    "seq": 18,
+    "role": "assistant",
+    "turn_id": "turn26",
+    "text": "Assistant9",
+    "timestamp": "2026-10-17 01:34:23.195396"
+  },
+  {
+    "id": "row27",
+    "profile": "gpt-astra",
+    "seq": 9,
+    "role": "user",
+    "turn_id": null,
+    "text": "User9",
+    "timestamp": "2026-10-17 01:37:20.862989"
+  },
+  {
+    "id": "row28",
+    "profile": "default",
+    "seq": 19,
+    "role": "tool",
+    "turn_id": "turn29",
+    "text": "Tool6",
+    "timestamp": "2026-10-17 01:37:25.669003"
+  },
+  {
+    "id": "row29",
+    "profile": "default",
+    "seq": 20,
+    "role": "assistant",
+    "turn_id": "turn29",
+    "text": "Assistant10",
+    "timestamp": "2026-10-17 01:37:50.213110"
+  },
+  {
+    "id": "row30",
+    "profile": "gpt-astra",
+    "seq": 10,
+    "role": "user",
+    "turn_id": null,
+    "text": "User10",
+    "timestamp": "2026-10-17 01:43:11.703071"
+  },
+  {
+    "id": "row31",
+    "profile": "default",
+    "seq": 21,
+    "role": "assistant",
+    "turn_id": "turn31",
+    "text": "Assistant11",
+    "timestamp": "2026-10-17 01:43:25.006994"
+  },
+  {
+    "id": "row32",
+    "profile": "gpt-astra",
+    "seq": 11,
+    "role": "user",
+    "turn_id": null,
+    "text": "User11",
+    "timestamp": "2026-10-17 01:44:35.342434"
+  },
+  {
+    "id": "row33",
+    "profile": "default",
+    "seq": 22,
+    "role": "assistant",
+    "turn_id": "turn33",
+    "text": "Assistant12",
+    "timestamp": "2026-10-17 01:44:47.728596"
+  }
+]

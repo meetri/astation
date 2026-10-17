@@ -251,6 +251,11 @@ class Settings(BaseSettings):
     research_gateway_db_path: str = Field(
         alias="RESEARCH_GATEWAY_DB_PATH", default="./data/research-gateway.db"
     )
+    event_inbox_max_rows: int = Field(alias="EVENT_INBOX_MAX_ROWS", default=10_000, ge=1)
+    event_inbox_max_bytes: int = Field(
+        alias="EVENT_INBOX_MAX_BYTES", default=64 * 1024 * 1024, ge=1
+    )
+    event_inbox_page_size: int = Field(alias="EVENT_INBOX_PAGE_SIZE", default=100, ge=1)
     research_gateway_artifact_root: str = Field(
         alias="RESEARCH_GATEWAY_ARTIFACT_ROOT", default="./data/artifacts"
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -103,6 +104,10 @@ def is_persisted_event_type(event_type: str) -> bool:
     return event_type in PERSISTED_RUN_EVENT_TYPES
 
 
+def persisted_event_id(event_id: str) -> str:
+    return 'revt_' + hashlib.sha256(event_id.encode()).hexdigest()
+
+
 def persist_run_event(
     db: Session,
     *,
@@ -111,10 +116,12 @@ def persist_run_event(
     event_type: str,
     payload: dict[str, Any] | None,
     timestamp: datetime,
+    event_id: str | None = None,
 ) -> RunEvent:
     """Write one `run_events` row."""
     # No commit or flush: the caller batches a whole forwarded frame into one commit.
     run_event = RunEvent(
+        id=persisted_event_id(event_id) if event_id else None,
         run_id=run_id,
         # The caller-allocated per-run cursor, never the broadcaster's global counter.
         seq=seq,

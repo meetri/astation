@@ -485,6 +485,8 @@ class HermesAdapter:
 
     def _enqueue_event(self, frame: dict[str, Any]) -> None:
         """Queue one event for `events()`, dropping (loudly) if nobody drains."""
+        # Transport-owned metadata, overwritten even if upstream supplied it.
+        frame = {**frame, "_adapter_generation": self._connection_generation}
         try:
             self._event_queue.put_nowait(frame)
         except asyncio.QueueFull:
@@ -507,6 +509,7 @@ class HermesAdapter:
             )
 
         request_id = next(self._id_counter)
+        generation = self._connection_generation
         envelope = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
@@ -524,6 +527,10 @@ class HermesAdapter:
             self._pending.pop(request_id, None)
             raise HermesProtocolError(f"'{method}' timed out waiting for a response") from exc
 
+        if generation != self._connection_generation:
+            raise HermesConnectionError(
+                "connection changed while awaiting RPC response", request_was_sent=True
+            )
         if "error" in frame and frame["error"] is not None:
             err = frame["error"] or {}
             raise HermesRPCError(

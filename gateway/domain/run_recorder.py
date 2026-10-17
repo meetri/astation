@@ -18,6 +18,7 @@ from domain.models import HERMES_RUNTIME, Run, RunEvent, Session, utcnow
 from domain.watch_sessions import watched
 from events import is_persisted_event_type, persist_run_event
 from events.canonical import CanonicalEvent
+from events.persistence import persisted_event_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +125,9 @@ class RunRecorder:
         on_run_opened: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._open: dict[str, _OpenRun] = {}
+        self._open: dict[tuple[str, str], _OpenRun] = {}
         self._on_run_opened = on_run_opened
-        self._db_failure_logged: set[str] = set()
+        self._db_failure_logged: set[tuple[str, str]] = set()
 
 
     def interrupt_open_runs_on_startup(self) -> int:
@@ -177,6 +178,8 @@ class RunRecorder:
         try:
             self._handle(canonical, envelope, profile)
         except Exception:  # pragma: no cover - defensive; same contract as B-26
+            if envelope.get('_durable_capture_id'):
+                raise
             logger.exception(
                 "run recorder failed on a %r frame; the frame is still forwarded",
                 canonical.type,
@@ -190,10 +193,21 @@ class RunRecorder:
 
         if stored_id is None or event_type in NON_RUN_TYPES:
             return
-        if watched.is_watched(stored_id):
+        if watched.is_watched(stored_id, profile):
             return
 
-        record = self._open.get(stored_id)
+        key = (profile, stored_id)
+        if envelope.get('_durable_capture_id'):
+            # A committed event is a successful retry, not a new run/sequence.
+            with self._session_factory() as db:
+                existing = db.get(RunEvent, persisted_event_id(canonical.event_id))
+                if existing is not None:
+                    run = db.get(Run, existing.run_id)
+                    if run is None or run.profile != profile or run.runtime_session_id != stored_id:
+                        raise ValueError('durable run identity conflict')
+                    envelope.update(project_id=run.project_id, session_id=run.session_id, run_id=run.id)
+                    return
+        record = self._open.get(key)
         opening = (
             record is None
             and event_type in RUN_OPENING_TYPES
@@ -223,6 +237,7 @@ class RunRecorder:
                         event_type=event_type,
                         payload=payload if isinstance(payload, dict) else None,
                         timestamp=canonical.timestamp,
+                        event_id=getattr(canonical, "event_id", None) or None,
                     )
                 if closes:
                     run = db.get(Run, record.run_id)
@@ -236,8 +251,10 @@ class RunRecorder:
                             )
                 db.commit()
         except Exception:
-            if stored_id not in self._db_failure_logged:
-                self._db_failure_logged.add(stored_id)
+            if envelope.get('_durable_capture_id'):
+                raise
+            if key not in self._db_failure_logged:
+                self._db_failure_logged.add(key)
                 logger.exception(
                     "could not persist run state for session %s; the stream "
                     "continues, this run's durable timeline has a gap "
@@ -249,15 +266,15 @@ class RunRecorder:
                 self._stamp(envelope, record)
             return
 
-        self._db_failure_logged.discard(stored_id)
+        self._db_failure_logged.discard(key)
         if persists:
             record.last_seq = seq
             self._remember_request(record, event_type, payload)
         self._stamp(envelope, record)
         if closes:
-            self._open.pop(stored_id, None)
+            self._open.pop(key, None)
         else:
-            self._open[stored_id] = record
+            self._open[key] = record
         if not preexisting and self._on_run_opened is not None:
             try:
                 self._on_run_opened(profile, stored_id, record.run_id)
@@ -274,6 +291,7 @@ class RunRecorder:
         filing = db.execute(
             select(Session.id, Session.project_id).where(
                 Session.runtime == HERMES_RUNTIME,
+                Session.profile == profile,
                 Session.runtime_session_id == stored_id,
             )
         ).first()
@@ -317,7 +335,7 @@ class RunRecorder:
         self, request_id: str, profile: str = DEFAULT_RUN_PROFILE
     ) -> str | None:
         """The stored session id whose run saw `<kind>.requested` with this id."""
-        for stored_id, record in self._open.items():
+        for (_profile, stored_id), record in self._open.items():
             if record.profile == profile and request_id in record.pending_requests:
                 return stored_id
         try:
@@ -387,7 +405,7 @@ class RunRecorder:
                 event_type,
             )
             return False
-        record = self._open.get(stored_id)
+        record = self._open.get((profile, stored_id))
         if record is None or record.profile != profile:
             return self._record_synthetic_durable(stored_id, event_type, payload, profile)
         row_payload = dict(payload)
@@ -458,9 +476,9 @@ class RunRecorder:
         return True
 
 
-    def has_open_run(self, stored_id: str) -> bool:
+    def has_open_run(self, stored_id: str, profile: str = DEFAULT_RUN_PROFILE) -> bool:
         """Whether a turn this gateway can see is open on `stored_id` right now."""
-        return stored_id in self._open
+        return (profile, stored_id) in self._open
 
 
     @property

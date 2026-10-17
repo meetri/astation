@@ -7,7 +7,9 @@ import contextlib
 import itertools
 import json
 import logging
+import time
 import uuid
+from copy import deepcopy
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -45,6 +47,14 @@ LIVE_SESSION_ID_FIELD = "_live_session_id"
 CONNECTION_GENERATION_FIELD = "_connection_generation"
 PROFILE_FIELD = "_profile"
 DEFAULT_PROFILE_NAME = "default"
+
+
+class UnboundSessionIdentity(ValueError):
+    """A shared stream cannot prove exactly one profile-scoped session owner."""
+
+
+class ConflictingSessionIdentity(UnboundSessionIdentity):
+    """Known contradictory evidence must not become trusted through eviction."""
 
 _SESSION_IDENTITY_FIELDS: tuple[str, ...] = (
     STORED_SESSION_ID_FIELD,
@@ -436,6 +446,9 @@ class EventBroadcaster:
         profile: str = DEFAULT_PROFILE_NAME,
         profile_caches: Callable[[], dict[str, Any]] | None = None,
         history_max_frames: int = _HISTORY_MAX_FRAMES,
+        quarantine_max_frames: int = 512,
+        quarantine_max_bytes: int = 8 * 1024 * 1024,
+        quarantine_max_age: float = 60.0,
     ) -> None:
         self._adapter = adapter
         self._profile = profile
@@ -447,6 +460,7 @@ class EventBroadcaster:
         self._subscribers: set[_Subscriber] = set()
         self._pump: asyncio.Task[None] | None = None
         self._generation_watch: asyncio.Task[None] | None = None
+        self.stream_epoch = str(uuid.uuid4())
         self._seq = itertools.count(1)
         # Recent numbered frames, oldest first, for `?after=` replay on a fresh subscribe.
         self._history: deque[tuple[int, dict[str, Any], str]] = deque(maxlen=history_max_frames)
@@ -456,6 +470,106 @@ class EventBroadcaster:
         self._live_handle_cache = live_handle_cache
         self._generation_seen: int | None = self._connection_generation()
         self._unknown_types_logged: set[str] = set()
+        # Private, unnumbered frames: never history, recorder, or subscriber data
+        # until a generation-bound explicit resume/create binding proves ownership.
+        self._quarantine: deque[tuple[int | None, Any, dict[str, Any], str | None, float, int]] = deque()
+        self._quarantine_bytes = 0
+        self._quarantine_max_frames = quarantine_max_frames
+        self._quarantine_max_bytes = quarantine_max_bytes
+        self._quarantine_max_age = quarantine_max_age
+        self._identity_gap = False
+        self._inbox = None
+        self._inbox_cursor = None
+        self._identity_epoch = getattr(adapter, "event_identity_epoch", None)
+        recovery_path = getattr(adapter, "event_recovery_path", None)
+        if recovery_path and self._identity_epoch:
+            from domain.event_inbox import EventInbox
+            self._inbox = EventInbox(
+                recovery_path,
+                max_rows=getattr(adapter, "event_inbox_max_rows", 10_000),
+                max_bytes=getattr(adapter, "event_inbox_max_bytes", 64 * 1024 * 1024),
+                page_size=getattr(adapter, "event_inbox_page_size", 100),
+            )
+
+    def _identity_resync(self, reason: str) -> None:
+        # No session IDs, profiles, types, or private text in this control frame.
+        # Retain the gap for future subscribers too: seq=0 is not replay history.
+        self._identity_gap = True
+        logger.warning("shared event recovery requires transcript reload: %s", reason)
+        frame = stream_reset_frame(self._connection_generation())
+        frame["payload"].update(_reason=reason, _must_resync=True)
+        self._fan_out(frame, self._connection_generation())
+
+    def _hold(self, generation: int | None, canonical: Any,
+              envelope: dict[str, Any], raw_type: str | None) -> None:
+        if self._inbox is not None:
+            try:
+                self._inbox.put(self._identity_epoch, envelope, raw_type)
+            except Exception:
+                logger.warning("private event inbox write failed; details suppressed")
+                self._identity_resync("identity_inbox_unavailable")
+            return
+        size = _frame_size(envelope)
+        if (len(self._quarantine) >= self._quarantine_max_frames
+                or self._quarantine_bytes + size > self._quarantine_max_bytes):
+            self._identity_resync("identity_quarantine_overflow")
+            return
+        self._quarantine.append((generation, canonical, deepcopy(envelope), raw_type,
+                                 time.monotonic(), size))
+        self._quarantine_bytes += size
+
+    def _replay_quarantine(self) -> None:
+        if self._inbox is not None:
+            from events.canonical import CanonicalEvent
+            try:
+                page = self._inbox.pending(self._identity_epoch, after_id=self._inbox_cursor)
+                self._inbox_cursor = page[-1][0]['event_id'] if page else None
+            except Exception:
+                logger.warning("private event inbox read failed; details suppressed")
+                self._identity_resync("identity_inbox_unavailable")
+                page = []
+            for envelope, raw_type in page:
+                try:
+                    if not envelope.pop('_bound_identity', False):
+                        self._stamp_session_identity(raw_type, envelope["payload"], self._connection_generation(), observed_at=envelope.get('timestamp'))
+                        self._inbox.bind(envelope)
+                except ConflictingSessionIdentity:
+                    self._identity_resync("identity_conflict")
+                    continue
+                except UnboundSessionIdentity:
+                    continue
+                except Exception:
+                    logger.warning("authoritative event identity resolution failed; details suppressed")
+                    self._identity_resync("identity_resolution_failed")
+                    continue
+                data = dict(envelope)
+                data['timestamp'] = datetime.fromisoformat(data['timestamp'].replace('Z', '+00:00'))
+                canonical = CanonicalEvent(**data)
+                envelope['_durable_capture_id'] = 'cm_' + envelope['event_id']
+                try:
+                    self._deliver(canonical, envelope, self._connection_generation())
+                    self._inbox.acknowledge(envelope['event_id'])
+                except Exception:
+                    self._identity_resync('identity_capture_failed')
+        pending, self._quarantine = self._quarantine, deque()
+        self._quarantine_bytes = 0
+        for generation, canonical, envelope, raw_type, arrived, size in pending:
+            if generation != self._connection_generation():
+                self._identity_resync("identity_quarantine_generation_changed")
+                continue
+            if time.monotonic() - arrived >= self._quarantine_max_age:
+                self._identity_resync("identity_quarantine_expired")
+                continue
+            try:
+                self._stamp_session_identity(raw_type, envelope["payload"], generation)
+            except ConflictingSessionIdentity:
+                self._identity_resync("identity_conflict")
+                continue
+            except UnboundSessionIdentity:
+                self._quarantine.append((generation, canonical, envelope, raw_type, arrived, size))
+                self._quarantine_bytes += size
+                continue
+            self._deliver(canonical, envelope, generation)
 
     @property
     def subscriber_count(self) -> int:
@@ -474,11 +588,21 @@ class EventBroadcaster:
 
     def _replay(self, after: int | None) -> tuple[list[tuple[dict[str, Any], str]], bool]:
         """Frames newer than `after` to replay, and whether the buffer can't cover it."""
-        if after is None or after >= self._last_seq:
+        if after is None or after == self._last_seq:
             return [], False
+        if after > self._last_seq:
+            return [], True
         if not self._history or self._history[0][0] > after + 1:
             return [], True
         return [(frame, text) for seq, frame, text in self._history if seq > after], False
+
+    def resume_cursor(self, after: int | None, epoch: str | None) -> tuple[int | None, bool]:
+        """A cursor is valid only in its explicitly named broadcaster epoch."""
+        if after is None:
+            return None, False
+        if epoch != self.stream_epoch or not self.replay_available(after):
+            return None, True
+        return after, False
 
     def replay_available(self, after: int | None) -> bool:
         """Whether `subscribe(after=after)` will resume from history rather than reset.
@@ -487,7 +611,7 @@ class EventBroadcaster:
         broadcaster's state cannot change in between) so the caller can stamp its
         `stream.ready` frame with the same answer `subscribe()` is about to act on.
         """
-        if after is None:
+        if after is None or self._identity_gap:
             return False
         _replay, needs_reset = self._replay(after)
         return not needs_reset
@@ -507,7 +631,7 @@ class EventBroadcaster:
         self.start()
         try:
             generation = self._connection_generation()
-            if needs_reset:
+            if needs_reset or self._identity_gap:
                 frame = stream_reset_frame(connection_generation=generation)
                 text = _encode_frame(frame)
                 subscriber.offer(frame, len(text.encode("utf-8")), generation, text)
@@ -527,6 +651,10 @@ class EventBroadcaster:
         self._pump = None
         self._generation_watch = None
         self._subscribers.clear()
+        if self._quarantine:
+            self._identity_resync("identity_quarantine_closed")
+            self._quarantine.clear()
+            self._quarantine_bytes = 0
 
 
     def _connection_generation(self) -> int | None:
@@ -560,11 +688,13 @@ class EventBroadcaster:
             await asyncio.sleep(poll_seconds)
             try:
                 self._note_connection_generation()
+                self._replay_quarantine()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("connection-generation watcher failed; continuing")
 
     def _fan_out(self, frame: dict[str, Any], generation: int | None) -> None:
         """Hand one already-bounded frame to every subscriber that can take it."""
+        frame['stream_epoch'] = self.stream_epoch
         text = _encode_frame(frame)
         size = len(text.encode("utf-8"))
         seq = frame.get("seq")
@@ -608,11 +738,20 @@ class EventBroadcaster:
                 )
 
     def _stamp_session_identity(
-        self, raw_type: str | None, payload: dict[str, Any], generation: int | None
+        self, raw_type: str | None, payload: dict[str, Any], generation: int | None,
+        observed_at: str | None = None,
     ) -> None:
         """Add the STORED id (and the live handle, and the generation) to a frame."""
         stored_id, live_id = session_identity_from_payload(raw_type, payload)
-        stored_id, live_id, profile = self._resolve_identity(stored_id, live_id)
+        timed_resolver = getattr(self._adapter, 'resolve_event_identity_at', None)
+        if timed_resolver is not None and observed_at:
+            observed = datetime.fromisoformat(observed_at.replace('Z', '+00:00')).timestamp()
+            identity = timed_resolver(stored_id, live_id, observed)
+            if identity is None:
+                raise UnboundSessionIdentity()
+            stored_id, live_id, profile = identity
+        else:
+            stored_id, live_id, profile = self._resolve_identity(stored_id, live_id)
 
         payload[STORED_SESSION_ID_FIELD] = stored_id
         payload[LIVE_SESSION_ID_FIELD] = live_id
@@ -638,7 +777,38 @@ class EventBroadcaster:
         self, stored_id: str | None, live_id: str | None
     ) -> tuple[str | None, str | None, str]:
         """Complete the id pair, and name the profile the session belongs to."""
+        resolver = getattr(self._adapter, "resolve_event_identity", None)
+        if resolver is not None:
+            # A host-local registry read, never a profile claim from an event or
+            # a resume probe (resume may adopt lineage and reattach transports).
+            identity = resolver(stored_id, live_id)
+            if identity is None:
+                raise UnboundSessionIdentity()
+            return identity
         caches = self._caches()
+
+        if self._profile_caches is not None and (stored_id is not None or live_id is not None):
+            # A shared adapter's default profile is not session ownership. Only
+            # generation-bound resume/create results can establish that binding.
+            candidates: set[tuple[str, str, str]] = set()
+            for name, cache in caches:
+                if cache.adapter is not self._adapter:
+                    continue
+                if live_id is not None:
+                    for stored in cache.bound_stored_ids_for_live(live_id):
+                        candidates.add((name, stored, live_id))
+                elif stored_id is not None:
+                    live = cache.get(stored_id)
+                    if live is not None:
+                        candidates.add((name, stored_id, live))
+            if len(candidates) > 1:
+                raise ConflictingSessionIdentity()
+            if not candidates:
+                raise UnboundSessionIdentity()
+            name, stored, live = next(iter(candidates))
+            if stored_id is not None and stored != stored_id:
+                raise ConflictingSessionIdentity()
+            return stored, live, name
 
         if stored_id is not None and live_id is not None:
             for name, cache in caches:
@@ -682,6 +852,10 @@ class EventBroadcaster:
     def _forward_one(self, raw_event: dict[str, Any]) -> None:
         """Normalize, size-check and fan out exactly one upstream event."""
         generation = self._note_connection_generation()
+        self._replay_quarantine()
+        if raw_event.get("_adapter_generation", generation) != generation:
+            self._identity_resync("identity_event_generation_changed")
+            return
         context = EventContext(
             project_id=None,
             session_id=None,
@@ -693,11 +867,44 @@ class EventBroadcaster:
             self._note_unnormalized(raw_event)
             return
         envelope = canonical.to_dict()
-        self._stamp_session_identity(raw_event_type(raw_event), envelope["payload"], generation)
+        if self._inbox is not None:
+            try:
+                self._inbox.put(self._identity_epoch, envelope, raw_event_type(raw_event))
+            except Exception:
+                self._identity_resync('identity_inbox_unavailable')
+                return
+        try:
+            self._stamp_session_identity(raw_event_type(raw_event), envelope["payload"], generation, observed_at=envelope.get('timestamp'))
+        except ConflictingSessionIdentity:
+            self._identity_resync("identity_conflict")
+            return
+        except UnboundSessionIdentity:
+            self._hold(generation, canonical, envelope, raw_event_type(raw_event))
+            return
+        except Exception:
+            logger.warning("authoritative event identity resolution failed; details suppressed")
+            self._hold(generation, canonical, envelope, raw_event_type(raw_event))
+            self._identity_resync("identity_resolution_failed")
+            return
+        if self._inbox is not None:
+            try:
+                self._inbox.bind(envelope)
+                envelope['_durable_capture_id'] = 'cm_' + envelope['event_id']
+                self._deliver(canonical, envelope, generation)
+                self._inbox.acknowledge(envelope['event_id'])
+            except Exception:
+                self._identity_resync('identity_capture_failed')
+        else:
+            self._deliver(canonical, envelope, generation)
+
+    def _deliver(self, canonical: Any, envelope: dict[str, Any], generation: int | None) -> None:
+        """Capture then publish one bound frame; replay uses this exact same path."""
         if self._on_canonical_event is not None:
             try:
                 self._on_canonical_event(canonical, envelope)
             except Exception:  # pragma: no cover - defensive
+                if envelope.get("_durable_capture_id"):
+                    raise
                 logger.exception("canonical-event hook failed; forwarding the frame unattributed")
         injected: dict[str, Any] | None = None
         if (

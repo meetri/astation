@@ -7,6 +7,9 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from contextvars import ContextVar
+
+_capture_row_id: ContextVar[str | None] = ContextVar("capture_row_id", default=None)
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -308,15 +311,28 @@ class ChatStore:
 
     def capture_event(self, profile: str, canonical: Any, envelope: dict[str, Any]) -> str | None:
         """Map one forwarded canonical event to a `chat_messages` row, if any."""
+        identity = envelope.get("_durable_capture_id")
+        token = _capture_row_id.set(identity)
         try:
+            if identity:
+                with self._session_factory() as db:
+                    existing = db.get(ChatMessage, identity)
+                    if existing is not None:
+                        if (existing.profile != profile or existing.stored_session_id != envelope["payload"].get(_STORED_SESSION_ID_FIELD)):
+                            raise ValueError("durable event identity crosses session owner")
+                        return existing.id
             return self._capture(profile, canonical, envelope)
         except Exception:  # pragma: no cover - defensive; same contract as B-26
+            if identity:
+                raise
             logger.exception(
                 "chat store failed to capture a %r event for profile %r; continuing",
                 getattr(canonical, "type", None),
                 profile,
             )
             return None
+        finally:
+            _capture_row_id.reset(token)
 
     def _capture(self, profile: str, canonical: Any, envelope: dict[str, Any]) -> str | None:
         event_type = getattr(canonical, "type", None)
@@ -336,7 +352,7 @@ class ChatStore:
         stored_id = payload.get(_STORED_SESSION_ID_FIELD)
         if not isinstance(stored_id, str) or not stored_id:
             return None
-        if watched.is_watched(stored_id):
+        if watched.is_watched(stored_id, profile):
             return None
 
 
@@ -660,25 +676,10 @@ class ChatStore:
                 ).scalar()
                 if duplicate is not None:
                     return None
-            else:
-                # No live event carries a row id: a redelivery is caught by the newest row's text.
-                last = db.execute(
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.profile == profile,
-                        ChatMessage.stored_session_id == stored_session_id,
-                    )
-                    .order_by(ChatMessage.seq.desc())
-                    .limit(1)
-                ).scalar_one_or_none()
-                if (
-                    last is not None
-                    and last.role == role
-                    and last.text == text
-                    and last.reasoning == reasoning
-                    and last.source == source
-                ):
-                    return None
+            # Events without a producer identity are intentionally not compared by
+            # content: two consecutive identical answers can be two real turns.
+            # Durable inbox replay supplies `_capture_row_id`, which is the only safe
+            # idempotency key for no-ID completions.
 
             return self._insert(
                 db,
@@ -726,7 +727,7 @@ class ChatStore:
     ) -> str:
         """Allocate the next `seq` and insert, retrying on a real collision."""
         row = ChatMessage(
-            id=new_id("cm"),
+            id=_capture_row_id.get() or new_id("cm"),
             profile=profile,
             stored_session_id=stored_session_id,
             turn_id=turn_id,
