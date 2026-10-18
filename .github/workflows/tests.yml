@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install test dependencies
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python pytest pytest-asyncio sqlalchemy alembic \
+            pydantic pydantic-settings fastapi httpx python-multipart uvicorn websockets pyyaml
+      - name: Run the tests
+        run: .venv/bin/python -m pytest tests -q

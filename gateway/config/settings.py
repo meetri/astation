@@ -277,6 +277,19 @@ class Settings(BaseSettings):
         alias="RESEARCH_GATEWAY_SNAPSHOT_SWEEP_SCOPE", default="filed"
     )
 
+    # Tool inputs/outputs of finished runs older than this many days are replaced with a stub, so the
+    # run-event table stops growing without bound. Messages, usage and approvals are never touched.
+    # 0 keeps everything forever. See domain/run_event_retention.py.
+    research_gateway_run_event_retention_days: int = Field(
+        alias="RESEARCH_GATEWAY_RUN_EVENT_RETENTION_DAYS", default=90, ge=0
+    )
+    research_gateway_run_event_prune_interval_s: int = Field(
+        alias="RESEARCH_GATEWAY_RUN_EVENT_PRUNE_INTERVAL_S", default=86400, ge=60
+    )
+    research_gateway_run_event_prune_startup_delay_s: int = Field(
+        alias="RESEARCH_GATEWAY_RUN_EVENT_PRUNE_STARTUP_DELAY_S", default=300, ge=0
+    )
+
 
     research_gateway_profile_reconcile_interval_s: int = Field(
         alias="RESEARCH_GATEWAY_PROFILE_RECONCILE_INTERVAL_S", default=0, ge=0

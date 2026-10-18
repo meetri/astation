@@ -82,6 +82,24 @@ Read from the environment. All optional; the audit variables are only needed if 
 | `AUDIT_CLICKHOUSE_URL` | Audit store, for the query endpoints |
 | `AUDIT_CLICKHOUSE_USER` / `_PASSWORD` | Read-only store credentials |
 | `AUDIT_HOST_LABEL` | Name this host reports itself as |
+| `RESEARCH_GATEWAY_RUN_EVENT_RETENTION_DAYS` | Default `90`. Tool inputs and outputs of finished runs older than this are replaced with a stub; `0` keeps everything |
+| `RESEARCH_GATEWAY_RUN_EVENT_PRUNE_INTERVAL_S` | Default `86400`. How often the pruning pass runs |
+| `ASTATION_CAPTURE_THREAD` | Default on. Set to `0` to run event persistence on the event loop again (the previous behaviour); only useful for diagnosing |
+
+### Database size
+
+Every tool call and result of a run is stored so the run's timeline can be replayed. That is the bulk
+of the workspace database (about 78% on the reference deployment), so old runs are trimmed:
+after `RESEARCH_GATEWAY_RUN_EVENT_RETENTION_DAYS` the payloads of tool events in *finished* runs are
+replaced with a small stub. Rows, ordering, messages, usage statistics and approvals are untouched,
+and a run that is still open is never trimmed. The file stops growing but does not shrink by itself;
+to give the space back to the filesystem, stop Hermes and run `VACUUM` on the database once.
+
+The database and the event inbox run in SQLite's WAL mode with `synchronous=NORMAL`: a crash of
+Hermes loses nothing, while a power cut or operating-system crash can roll back the last few
+commits (it cannot corrupt the file). Back the database up with SQLite's backup API (or
+`sqlite3 research.db ".backup file"`), not by copying the file, because recent commits can still be
+in the `-wal` file next to it.
 
 The plugin declares one capability, `llm.profile_override`, which lets it run a completion on a
 named profile's own model. Grant it in Hermes's config:
@@ -122,4 +140,12 @@ pytest tests/
 
 ## License
 
-No license has been declared yet. Until one is added, all rights are reserved.
+[BSD Zero Clause (0BSD)](LICENSE): use, copy, modify and distribute it for any purpose, with or
+without attribution.
+
+The plugin's own code is the only thing covered by that license. Its dependencies keep theirs, and
+two of the optional speech packages are copyleft: `piper-tts` is GPL-3.0-or-later and `edge-tts` is
+LGPL-3.0. The plugin only imports them when present and does not bundle them, so installing the
+plugin does not change its own license, but if you redistribute an image or bundle that includes
+them you take on their terms. The other dependencies (SQLAlchemy, Alembic, pydantic-settings,
+faster-whisper) are MIT and `python-multipart` is Apache-2.0.

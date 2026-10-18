@@ -32,6 +32,7 @@ from domain.live_handles import LiveHandleCache
 from domain.profile_connection import ProfileConnectionManager, SubprocessProfileLauncher
 from domain.project_workspace import workspace_subdir
 from domain.prompt_files import PromptFileStore, hermes_prompt_reader, prompt_dir
+from domain.run_event_retention import RunEventRetention
 from domain.run_recorder import RunRecorder
 from domain.sandbox_fs import SandboxFS
 from domain.snapshot_sweeper import SnapshotSweeper
@@ -257,6 +258,14 @@ def start_snapshot_sweeper(app_state: Any, settings: Settings) -> SnapshotSweepe
     return snapshot_sweeper
 
 
+def start_run_event_retention(app_state: Any, settings: Settings) -> RunEventRetention:
+    """`app.state.run_event_retention` -- bounds `run_events`; a no-op when retention days is 0."""
+    retention = RunEventRetention.from_settings(app_state, settings)
+    app_state.run_event_retention = retention
+    retention.start()
+    return retention
+
+
 def build_audit_store(app_state: Any, settings: Settings) -> None:
     """`app.state.audit_store` / `audit_recorder` -- the read-only audit surface."""
     app_state.audit_store = AuditStore(
@@ -297,6 +306,7 @@ def startup(
     ingest_tasks = start_artifact_ingestors(app_state, settings, adapter, broadcaster)
     attachment_orchestrator = build_attachment_orchestrator(app_state)
     snapshot_sweeper = start_snapshot_sweeper(app_state, settings)
+    start_run_event_retention(app_state, settings)
     build_audit_store(app_state, settings)
     return GatewayRuntime(
         adapter=adapter,
@@ -320,6 +330,9 @@ async def shutdown(app_state: Any, runtime: GatewayRuntime) -> None:
         await reasoning_sync.close()
     # Everything that can hold a resume closes before the adapter and broadcaster below.
     await runtime.snapshot_sweeper.close()
+    retention = getattr(app_state, "run_event_retention", None)
+    if retention is not None:
+        await retention.close()
     await runtime.attachment_orchestrator.close()
     capture = getattr(app_state, "foreign_prompt_capture", None)
     if capture is not None:
