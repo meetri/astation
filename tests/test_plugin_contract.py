@@ -163,14 +163,6 @@ def test_host_deploy_is_immutable_atomic_and_verifies_every_profile():
 
 
 @_upstream_only
-def test_the_public_repo_ships_the_audit_stack():
-    """Half the audit feature is plugin code and the other half is the sensor,
-    shipper and store it talks to. Someone installing the published plugin and
-    turning on its audit surface cannot stand up that half any other way."""
-    assert "audit-setup" in _publish_script("build_plugin_repo.sh")
-
-
-@_upstream_only
 def test_the_publish_paths_are_both_still_known_here():
     """If a third way to publish the plugin appears, it has to be added above,
     or it inherits the drift this file exists to prevent."""

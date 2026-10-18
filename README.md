@@ -68,9 +68,10 @@ GET  /api/plugins/astation/api/audit/net
 POST /api/plugins/astation/api/audit/query      # one capped, read-only SELECT
 ```
 
-The sensor and store are in [`audit-setup/`](audit-setup/). The plugin runs without them: session
-attribution is disabled with a log line saying so, and the audit endpoints return 503 with a
-reason rather than an empty result.
+The sensor and store are a separate project, [astation-audit](https://github.com/meetri/astation-audit),
+kept out of this repository so the plugin stays small and installable. The plugin runs without
+them: session attribution is disabled with a log line saying so, and the audit endpoints return
+503 with a reason rather than an empty result.
 
 ## Configure
 
