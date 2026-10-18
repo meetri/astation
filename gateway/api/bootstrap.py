@@ -22,6 +22,7 @@ from domain.artifact_store import ArtifactStore
 from domain.attachment_orchestrator import AttachmentOrchestrator
 from domain.audit_store import AuditRecorder, AuditStore
 from domain.background_ledger import BackgroundLedger
+from domain.capture_executor import call_on_loop
 from domain.chat_store import ChatStore
 from domain.reasoning_reconcile import PostTurnReasoningSync
 from domain.db import make_engine, make_sessionmaker
@@ -120,7 +121,12 @@ def build_run_recorder(app_state: Any) -> RunRecorder:
     app_state.foreign_prompt_capture = capture
     run_recorder = RunRecorder(
         app_state.db_sessions,
-        on_run_opened=capture.handle_run_opened if capture is not None else None,
+        # The recorder runs on the capture thread; this hook schedules a task, which needs the loop.
+        on_run_opened=(
+            (lambda profile, stored_id, run_id: call_on_loop(
+                capture.handle_run_opened, profile, stored_id, run_id))
+            if capture is not None else None
+        ),
     )
     run_recorder.interrupt_open_runs_on_startup()
     app_state.run_recorder = run_recorder

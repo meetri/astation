@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from adapters.hermes import HermesAdapter, HermesError
+from domain.capture_executor import run_capture
 from domain.event_stream import (
     LIVE_SESSION_ID_FIELD,
     PROFILE_FIELD,
@@ -611,8 +612,9 @@ class ProfileConnectionManager:
                             if isinstance(origin, str) and origin and origin != conn.profile:
                                 continue
                         if self._chat_store is not None:
-                            self._chat_store.capture_event(
-                                conn.profile, _EnvelopeAsCanonical(frame.get("type")), frame
+                            await run_capture(
+                                self._chat_store.capture_event,
+                                conn.profile, _EnvelopeAsCanonical(frame.get("type")), frame,
                             )
             except asyncio.CancelledError:
                 raise
@@ -629,7 +631,7 @@ class ProfileConnectionManager:
             try:
                 async for raw_event in conn.adapter.events():
                     try:
-                        self._forward_one(conn, raw_event)
+                        await self._forward_one_staged(conn, raw_event)
                     except Exception:  # pragma: no cover - defensive
                         logger.exception(
                             "profile %r: failed to capture an event; continuing",
@@ -647,14 +649,38 @@ class ProfileConnectionManager:
             await asyncio.sleep(_PUMP_RESTART_DELAY_S)
 
     def _forward_one(self, conn: ProfileConnection, raw_event: dict[str, Any]) -> None:
+        """Normalize, capture and fan out one event, all on this thread."""
+        prepared = self._prepare_event(conn, raw_event)
+        if prepared is None:
+            return
+        self._publish_event(conn, self._capture_event(conn, *prepared))
+
+    async def _forward_one_staged(self, conn: ProfileConnection, raw_event: dict[str, Any]) -> None:
+        """`_forward_one` for the pump: the SQLite capture runs on the capture thread, not the loop."""
+        prepared = self._prepare_event(conn, raw_event)
+        if prepared is None:
+            return
+        envelope = await run_capture(self._capture_event, conn, *prepared)
+        self._publish_event(conn, envelope)
+
+    def _prepare_event(
+        self, conn: ProfileConnection, raw_event: dict[str, Any]
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """In-memory half, on the loop: normalize and stamp identity."""
         context = EventContext(project_id=None, session_id=None, run_id=None, seq=0)
         canonical = normalize_event(raw_event, context)
         if canonical is None:
-            return
+            return None
         envelope = canonical.to_dict()
         payload = envelope.get("payload")
         if isinstance(payload, dict):
             self._stamp_identity(conn, raw_event_type(raw_event), payload)
+        return canonical, envelope
+
+    def _capture_event(
+        self, conn: ProfileConnection, canonical: Any, envelope: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Blocking half: the run-recorder hook, then the chat-store row. Returns the envelope to fan out."""
         hook = self._resolve_canonical_event_hook()
         if hook is not None:
             # Runs before the chat-store capture: the hook stamps the run id the row stores as its turn id.
@@ -670,6 +696,10 @@ class ProfileConnectionManager:
             # Add row id to payload before broadcast.
             if chat_row_id is not None:
                 envelope = {**envelope, "payload": {**(envelope.get("payload") or {}), "chat_row_id": chat_row_id}}
+        return envelope
+
+    def _publish_event(self, conn: ProfileConnection, envelope: dict[str, Any]) -> None:
+        """Hand the captured frame to the live subscribers (loop thread)."""
         broadcaster = self._resolve_broadcaster()
         inject = getattr(broadcaster, "inject", None)
         if inject is not None:

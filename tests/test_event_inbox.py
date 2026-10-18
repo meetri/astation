@@ -62,3 +62,69 @@ def test_plugin_health_exposes_counts_but_no_private_payload(tmp_path, monkeypat
     assert result['pending'] == 2
     assert result['stranded_old_epoch'] == 1
     assert 'PRIVATE' not in str(result) and 'private-id' not in str(result)
+
+
+def test_inbox_runs_in_wal_with_normal_sync_and_keeps_siblings_private(tmp_path):
+    path = tmp_path / 'inbox.sqlite'
+    inbox = EventInbox(path)
+    inbox.put('e', envelope('one', 'PRIVATE'), 'message.complete')
+    with inbox.connect() as db:
+        assert db.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
+        assert db.execute('PRAGMA synchronous').fetchone()[0] == 1  # NORMAL
+    for sibling in (tmp_path / 'inbox.sqlite-wal', tmp_path / 'inbox.sqlite-shm'):
+        assert sibling.exists()
+        assert os.stat(sibling).st_mode & 0o777 == 0o600
+
+
+def test_inbox_reuses_one_connection(tmp_path):
+    inbox = EventInbox(tmp_path / 'inbox.sqlite')
+    with inbox.connect() as first:
+        pass
+    with inbox.connect() as second:
+        pass
+    assert first is second
+
+
+def test_inbox_is_safe_to_use_from_worker_threads(tmp_path):
+    import threading
+    inbox = EventInbox(tmp_path / 'inbox.sqlite')
+    errors = []
+
+    def work(worker):
+        try:
+            for i in range(50):
+                key = f'{worker}-{i}'
+                inbox.put('e', envelope(key), 'message.complete')
+                inbox.bind(envelope(key))
+                inbox.acknowledge(key)
+                inbox.counts('e')
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+    assert inbox.counts('e')['pending'] == 0
+
+
+def test_inbox_survives_close_and_reopens_lazily(tmp_path):
+    path = tmp_path / 'inbox.sqlite'
+    inbox = EventInbox(path)
+    inbox.put('e', envelope('kept'), 'message.complete')
+    inbox.close()
+    inbox.close()  # idempotent
+    assert inbox.counts('e')['pending'] == 1
+    other = EventInbox(path)  # a second handle (health stats) sees the same committed rows
+    assert other.counts('e')['pending'] == 1
+    other.close()
+
+
+def test_inbox_discards_a_connection_that_raised_a_database_error(tmp_path):
+    import sqlite3
+    inbox = EventInbox(tmp_path / 'inbox.sqlite')
+    with pytest.raises(sqlite3.OperationalError):
+        with inbox.connect() as db:
+            db.execute('SELECT * FROM table_that_does_not_exist')
+    inbox.put('e', envelope('after'), 'message.complete')  # reopens a fresh connection
+    assert inbox.counts('e')['pending'] == 1

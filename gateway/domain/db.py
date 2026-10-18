@@ -38,14 +38,35 @@ def make_engine(db_path: str) -> Engine:
     )
 
     @event.listens_for(engine, "connect")
-    def _enable_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+    def _configure_connection(dbapi_connection: Any, _record: Any) -> None:
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
+            _enter_wal(cursor)
         finally:
             cursor.close()
 
     return engine
+
+
+def _enter_wal(cursor: Any) -> None:
+    """WAL + synchronous=NORMAL: a commit appends to the log instead of fsyncing a rollback journal.
+
+    The event pipeline commits to this database on every streamed event, on the thread that serves the
+    dashboard; with the default journal each commit cost ~12 ms of fsync on the production disk and a
+    busy stream froze every request behind it. WAL is a property of the file, so this is a no-op once
+    set; ``synchronous`` is per connection. A crash of this process loses nothing; an operating-system
+    crash or power cut may roll back the last few commits but cannot corrupt the file. Anything that
+    copies the database must use SQLite's backup API (see ``_backup_before_migrate``), not a file copy.
+    """
+    try:
+        mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(mode).lower() != "wal":
+            logger.warning("workspace database stays in journal_mode=%s (WAL unavailable)", mode)
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        # Switching modes needs a moment with no other writer; try again on the next connection.
+        logger.warning("could not enable WAL on the workspace database; continuing as is", exc_info=True)
 
 
 def make_sessionmaker(engine: Engine) -> sessionmaker[OrmSession]:

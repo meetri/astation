@@ -3,12 +3,24 @@
 No TTL/deletion on disconnect: only successful canonical capture acknowledges
 an entry. A new server incarnation cannot bind an old live handle. Old-epoch
 entries remain available for explicitly authorized recovery, never profile guesses.
+
+Every event is written, bound and acknowledged here, so each event costs three commits on the hot path.
+The store runs in WAL mode with ``synchronous=NORMAL`` on one long-lived connection: a commit
+is an append to the log instead of a rollback-journal round trip with several fsyncs (measured ~12 ms
+against ~0.04 ms on the production disk). Durability is unchanged against a crash of this process;
+after an operating-system crash or power loss the last few commits may be rolled back, but the file
+cannot be corrupted. WAL also creates ``-wal``/``-shm`` siblings, which SQLite gives the main file's
+mode, so the 0600 restriction below covers them.
 """
 from contextlib import contextmanager
 import json
+import logging
 import os
 import sqlite3
+import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class EventInboxFull(RuntimeError):
@@ -27,16 +39,44 @@ class EventInbox:
         self.max_rows = max_rows
         self.max_bytes = max_bytes
         self.page_size = page_size
+        # One connection, serialized: sqlite3 connections are not safe for concurrent use, and the
+        # event pipeline may call from a worker thread while the loop reads counts for health.
+        self._lock = threading.RLock()
+        self._db = None
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, epoch TEXT NOT NULL, envelope TEXT NOT NULL, raw_type TEXT)')
 
+    def _open(self):
+        db = sqlite3.connect(self.path, check_same_thread=False)
+        try:
+            mode = db.execute('PRAGMA journal_mode=WAL').fetchone()[0]
+            if str(mode).lower() != 'wal':
+                # e.g. a filesystem without shared-memory support: still correct, just slower.
+                logger.warning('event inbox could not enter WAL mode (journal_mode=%s)', mode)
+            db.execute('PRAGMA synchronous=NORMAL')
+        except Exception:
+            db.close()
+            raise
+        return db
+
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path)
-        try:
-            with db:
-                yield db
-        finally:
+        """One transaction on the shared connection: commits on success, rolls back on error."""
+        with self._lock:
+            if self._db is None:
+                self._db = self._open()
+            try:
+                with self._db:
+                    yield self._db
+            except sqlite3.Error:
+                # A connection that raised a database error is not trusted again.
+                self.close()
+                raise
+
+    def close(self):
+        with self._lock:
+            db, self._db = self._db, None
+        if db is not None:
             db.close()
 
     def put(self, epoch, envelope, raw_type):

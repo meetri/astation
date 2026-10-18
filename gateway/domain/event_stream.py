@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from adapters.hermes import HermesAdapter
+from domain.capture_executor import call_on_loop, on_loop_thread, run_capture
 from domain.live_handles import LiveHandleCache
 from events import (
     DELIBERATELY_DROPPED_RAW_EVENTS,
@@ -478,6 +479,9 @@ class EventBroadcaster:
         self._quarantine_max_bytes = quarantine_max_bytes
         self._quarantine_max_age = quarantine_max_age
         self._identity_gap = False
+        # Held across one event's generation check and capture stage (and the watcher's), so the
+        # loop-side generation hooks never run while the capture thread is mid-event.
+        self._stage_gate = asyncio.Lock()
         self._inbox = None
         self._inbox_cursor = None
         self._identity_epoch = getattr(adapter, "event_identity_epoch", None)
@@ -492,6 +496,10 @@ class EventBroadcaster:
             )
 
     def _identity_resync(self, reason: str) -> None:
+        if not on_loop_thread():
+            # Called from the capture thread: subscriber state is the loop's.
+            call_on_loop(self._identity_resync, reason)
+            return
         # No session IDs, profiles, types, or private text in this control frame.
         # Retain the gap for future subscribers too: seq=0 is not replay history.
         self._identity_gap = True
@@ -687,8 +695,9 @@ class EventBroadcaster:
         while True:
             await asyncio.sleep(poll_seconds)
             try:
-                self._note_connection_generation()
-                self._replay_quarantine()
+                async with self._stage_gate:
+                    self._note_connection_generation()
+                    await run_capture(self._replay_quarantine)
             except Exception:  # pragma: no cover - defensive
                 logger.exception("connection-generation watcher failed; continuing")
 
@@ -730,7 +739,7 @@ class EventBroadcaster:
     async def _run(self) -> None:
         async for raw_event in self._adapter.events():
             try:
-                self._forward_one(raw_event)
+                await self._forward_one_staged(raw_event)
             except Exception:  # pragma: no cover - defensive
                 logger.exception(
                     "failed to forward a %r event; dropping it and continuing",
@@ -850,8 +859,21 @@ class EventBroadcaster:
         self._fan_out(frame, self._generation_seen)
 
     def _forward_one(self, raw_event: dict[str, Any]) -> None:
-        """Normalize, size-check and fan out exactly one upstream event."""
-        generation = self._note_connection_generation()
+        """Normalize, size-check and fan out exactly one upstream event, all on this thread."""
+        self._forward_one_body(raw_event, self._note_connection_generation())
+
+    async def _forward_one_staged(self, raw_event: dict[str, Any]) -> None:
+        """`_forward_one` for the pump: the blocking persistence runs on the capture thread.
+
+        The generation check stays here on the loop (it fans a frame out and schedules tasks); the
+        rest -- inbox, run recorder, chat store -- is SQLite work that must not stall the loop. The
+        gate keeps the watcher's own generation check from overlapping the stage.
+        """
+        async with self._stage_gate:
+            generation = self._note_connection_generation()
+            await run_capture(self._forward_one_body, raw_event, generation)
+
+    def _forward_one_body(self, raw_event: dict[str, Any], generation: int | None) -> None:
         self._replay_quarantine()
         if raw_event.get("_adapter_generation", generation) != generation:
             self._identity_resync("identity_event_generation_changed")
@@ -919,13 +941,18 @@ class EventBroadcaster:
         if frame is None:
             return
 
-        # Spent last, after every branch that could discard the frame, so a client sees no gap.
-        frame["seq"] = next(self._seq)
+        # Handed to the loop in order; the number is spent there, last, after every branch that could
+        # discard the frame, so a client sees no gap and `inject()` frames cannot interleave out of order.
         del size
-        self._fan_out(frame, generation)
+        call_on_loop(self._publish, frame, generation)
 
         if injected is not None:
             injected_frame = _bounded_client_frame(injected)
             if injected_frame is not None:
                 injected_frame["seq"] = _SEQ_GATEWAY_SYNTHETIC
-                self._fan_out(injected_frame, generation)
+                call_on_loop(self._fan_out, injected_frame, generation)
+
+    def _publish(self, frame: dict[str, Any], generation: int | None) -> None:
+        """Number one captured frame and hand it to the subscribers (loop thread)."""
+        frame["seq"] = next(self._seq)
+        self._fan_out(frame, generation)

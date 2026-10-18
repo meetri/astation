@@ -48,10 +48,37 @@ def test_backup_keeps_only_the_newest_copies(tmp_path):
     backup = api._backup_before_migrate(db)
 
     copies = sorted(p.name for p in tmp_path.glob("research.db.bak-*-pre-migrate"))
-    assert backup.name in copies and backup.read_bytes() == db.read_bytes()
+    assert backup.name in copies
+    copy = sqlite3.connect(backup)
+    try:
+        assert copy.execute("SELECT version_num FROM alembic_version").fetchall() == [("abc123",)]
+    finally:
+        copy.close()
     assert len(copies) == api._BACKUPS_KEPT
     assert copies[:2] == [
         "research.db.bak-2026-09-04-000000-pre-migrate",
         "research.db.bak-2026-09-05-000000-pre-migrate",
     ]
     assert unrelated.exists()
+
+
+def test_backup_includes_rows_still_in_the_wal(tmp_path):
+    """The database runs in WAL mode: committed rows can live only in -wal, which a file copy drops."""
+    api = _plugin_api()
+    db = _stamped_db(tmp_path / "research.db", "abc123")
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("PRAGMA wal_autocheckpoint=0")
+    live.execute("CREATE TABLE t (v TEXT)")
+    live.execute("INSERT INTO t VALUES ('committed-but-uncheckpointed')")
+    live.commit()
+    assert (tmp_path / "research.db-wal").stat().st_size > 0
+
+    backup = api._backup_before_migrate(db)
+    live.close()
+
+    copy = sqlite3.connect(backup)
+    try:
+        assert copy.execute("SELECT v FROM t").fetchall() == [("committed-but-uncheckpointed",)]
+    finally:
+        copy.close()

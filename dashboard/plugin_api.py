@@ -191,7 +191,18 @@ def _backup_before_migrate(db_path: Path) -> Path:
     """Copy the database aside and keep only the newest `_BACKUPS_KEPT` such copies."""
     stamp = time.strftime("%Y-%m-%d-%H%M%S")
     backup = db_path.with_name(f"{db_path.name}.bak-{stamp}-pre-migrate")
-    shutil.copy2(db_path, backup)
+    # SQLite's backup API, not a file copy: the database runs in WAL mode, where committed rows
+    # can still sit in the -wal file and a plain copy of the main file would silently drop them.
+    source = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        target = sqlite3.connect(backup)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+    shutil.copystat(db_path, backup)
     # The stamp sorts by time, so the name order is the age order.
     copies = sorted(db_path.parent.glob(f"{db_path.name}.bak-*-pre-migrate"))
     for old in copies[:-_BACKUPS_KEPT]:
@@ -534,7 +545,10 @@ def _event_inbox_stats() -> Any:
             max_bytes=getattr(adapter, "event_inbox_max_bytes", 64 * 1024 * 1024),
             page_size=getattr(adapter, "event_inbox_page_size", 100),
         )
-        return inbox.counts(epoch)
+        try:
+            return inbox.counts(epoch)
+        finally:
+            inbox.close()
     except Exception:
         return {"error": "unavailable"}
 
